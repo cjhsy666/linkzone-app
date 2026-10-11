@@ -8,7 +8,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateItem
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -749,8 +748,7 @@ private fun MessageList(
                 // 历史消息不挂动画状态（rememberSaveable + 动画），滚动更流畅
                 val isNew = index >= nodes.lastIndex - 2
                 Column(
-                    modifier = (if (isNew) Modifier.messageEnter() else Modifier)
-                        .animateItem()
+                    modifier = if (isNew) Modifier.messageEnter() else Modifier
                 ) {
                     val msg = node.selected
                     val prev = nodes.getOrNull(index - 1)?.selected
@@ -1536,7 +1534,7 @@ internal fun PendingMediaStrip(
     ) {
         items(items, key = { it.id }) { item ->
             Box(
-                modifier = Modifier.animateItem()
+                modifier = Modifier
             ) {
                 // 缩略卡
                 Box(
