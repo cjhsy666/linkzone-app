@@ -164,7 +164,7 @@ private fun LocalBackupTab(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    "备份内容为本地 LLM 配置（Provider / Agent / Skills / 偏好与本地数据库）。",
+                    "备份涵盖 AI 全量配置：Provider 与 API Key、智能体、技能（含文件）、提示词、世界书、快捷指令、MCP、记忆、本地会话、用量统计与偏好。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

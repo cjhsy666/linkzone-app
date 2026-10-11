@@ -50,6 +50,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.FileProvider
+import com.cjhsy.linkzone.ai.character.CharacterCardParser
 import com.cjhsy.linkzone.ai.core.ReasoningLevel
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
@@ -60,10 +61,12 @@ import com.cjhsy.linkzone.data.model.LlmPrompt
 import com.cjhsy.linkzone.data.model.LlmQuickMessage
 import com.cjhsy.linkzone.data.model.LlmSkill
 import com.cjhsy.linkzone.data.repository.LlmRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.koin.androidx.compose.koinViewModel
@@ -227,6 +230,45 @@ class LlmAgentViewModel(
         }
     }
 
+    /**
+     * 导入 SillyTavern 角色卡（PNG / JSON 字节）：解析为智能体 + 世界书，
+     * 重名时自动追加「·导入」后缀；世界书随卡创建并自动关联。
+     */
+    fun importCharacterCard(bytes: ByteArray) {
+        viewModelScope.launch {
+            try {
+                val card = withContext(Dispatchers.IO) { CharacterCardParser.parse(bytes) }
+                var name = card.name.ifBlank { "导入的角色" }
+                if (_state.value.agents.any { it.name == name }) name += " ·导入"
+                var agent = LlmAgent(
+                    name = name,
+                    avatarEmoji = "🎭",
+                    systemPrompt = card.systemPrompt
+                )
+                val book = card.lorebook
+                if (book != null) {
+                    llmRepository.upsertLorebook(book)
+                    agent = agent.copy(lorebookIds = setOf(book.id))
+                }
+                llmRepository.upsertAgent(agent)
+                _state.value = _state.value.copy(
+                    message = if (book != null) {
+                        "已导入角色卡「$name」（含世界书 ${book.entries.size} 条）"
+                    } else {
+                        "已导入角色卡「$name」"
+                    },
+                    error = null
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    error = "角色卡导入失败：${e.message ?: "文件格式不正确"}"
+                )
+            }
+        }
+    }
+
     /** 可选模型展示名 */
     fun modelLabel(modelId: String?): String {
         if (modelId == null) return "跟随全局默认"
@@ -272,6 +314,23 @@ fun LlmAgentScreen(
         }
     }
 
+    // 角色卡导入：SillyTavern 导出的 PNG / JSON 卡片
+    val cardLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: error("无法读取所选文件")
+                    viewModel.importCharacterCard(bytes)
+                }.onFailure { e ->
+                    Toast.makeText(context, "导入失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().safeDrawingPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -288,6 +347,7 @@ fun LlmAgentScreen(
                     TextButton(onClick = onBack) { Text("返回") }
                     TextButton(onClick = viewModel::startCreate) { Text("新建") }
                     TextButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) { Text("导入") }
+                    TextButton(onClick = { cardLauncher.launch(arrayOf("image/png", "application/json")) }) { Text("角色卡") }
                 }
             }
         }
