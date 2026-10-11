@@ -28,6 +28,11 @@ data class LocalConversationEntity(
     val lastMsg: String,
     val lastTime: Long,
     val createdAt: Long,
+    /**
+     * 会话级智能体覆盖配置（完整 LlmAgent JSON 快照），非空时聊天页使用它而非绑定的原智能体；
+     * 仅影响本会话，不回写 llm_agent 表。null = 跟随原智能体最新配置。
+     */
+    val agentOverrideJson: String? = null,
 )
 
 /**
@@ -89,6 +94,9 @@ interface LocalChatDao {
 
     @Upsert
     suspend fun insertMessages(entities: List<LocalMessageEntity>)
+
+    @Query("UPDATE llm_local_conversation SET agentOverrideJson = :json WHERE id = :convId")
+    suspend fun setAgentOverride(convId: String, json: String?)
 
     @Query("DELETE FROM llm_local_message WHERE id IN (:ids)")
     suspend fun deleteMessages(ids: List<String>)

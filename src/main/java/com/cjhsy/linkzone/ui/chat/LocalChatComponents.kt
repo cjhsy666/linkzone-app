@@ -2,11 +2,13 @@ package com.cjhsy.linkzone.ui.chat
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -30,6 +32,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -55,18 +58,47 @@ import com.cjhsy.linkzone.data.model.LlmSkill
 // 统一聊天页通过组件复用这些能力（云端会话不显示）
 // ============================================================
 
-/** 顶栏模型选择底部菜单：按服务商分组；底部附切换智能体 / 管理智能体入口 */
+/**
+ * 顶栏模型选择底部菜单：
+ * - 顶部搜索框（按模型名 / id / 服务商过滤，渠道与模型多时快速定位）
+ * - 无搜索词时：「最近使用」分组置顶，其余按服务商分组
+ * - 底部附切换智能体 / 管理智能体入口
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun LocalModelSheet(
     models: List<ChatModelOption>,
     currentModelId: String,
+    recentModelIds: List<String>,
     onPick: (String) -> Unit,
     onSwitchAgent: () -> Unit,
     onManageAgents: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by androidx.compose.runtime.mutableStateOf("")
+    val keyword = query.trim().lowercase()
+
+    // 搜索结果：label / modelId / providerName 任一中即命中，保持 provider 分组顺序
+    val filtered = remember(keyword, models) {
+        if (keyword.isBlank()) models
+        else models.filter {
+            it.label.lowercase().contains(keyword) ||
+                it.modelId.lowercase().contains(keyword) ||
+                it.providerName.lowercase().contains(keyword)
+        }
+    }
+    // 最近使用：按 prefs 顺序映射到现有模型，最多 6 个
+    val recent = remember(recentModelIds, models, keyword) {
+        if (keyword.isNotBlank()) emptyList()
+        else recentModelIds.mapNotNull { id -> models.firstOrNull { it.modelId == id } }.take(6)
+    }
+    val recentIds = remember(recent) { recent.map { it.modelId }.toSet() }
+    val grouped = remember(filtered, recentIds) {
+        if (keyword.isNotBlank()) listOf("搜索结果" to filtered)
+        else filtered.filter { it.modelId !in recentIds }.groupBy { it.providerName }.toList()
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState
@@ -80,70 +112,52 @@ internal fun LocalModelSheet(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
             )
-            if (models.isEmpty()) {
+
+            // 搜索框
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("搜索模型或服务商", style = MaterialTheme.typography.bodyMedium) },
+                singleLine = true,
+                leadingIcon = {
+                    Icon(
+                        androidx.compose.material.icons.Icons.Filled.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+            )
+
+            if (filtered.isEmpty()) {
                 Text(
-                    text = "暂无可用模型，请先在「设置 → 模型服务」中启用服务商并添加模型",
+                    text = if (models.isEmpty()) "暂无可用模型，请先在「AI 中心 → 模型服务」中添加"
+                    else "没有匹配的模型",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                    modifier = Modifier.padding(20.dp)
                 )
             } else {
-                // 按服务商分组保持顺序（LinkedHashMap 保序）
-                val grouped = remember(models) {
-                    models.groupBy { it.providerName }.toList()
-                }
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 420.dp)
+                        .padding(top = 6.dp)
                 ) {
-                    grouped.forEach { (provider, list) ->
-                        item(key = "prov_$provider") {
-                            Text(
-                                text = provider,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(
-                                    start = 20.dp, end = 20.dp,
-                                    top = 10.dp, bottom = 4.dp
-                                )
-                            )
+                    if (recent.isNotEmpty()) {
+                        item(key = "recent_header") { GroupHeader("最近使用") }
+                        items(recent, key = { "recent_${it.modelId}" }) { model ->
+                            ModelRow(model, model.modelId == currentModelId, onPick)
                         }
-                        items(list, key = { "m_${it.modelId}" }) { model ->
-                            val selected = model.modelId == currentModelId
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onPick(model.modelId) }
-                                    .padding(horizontal = 20.dp, vertical = 11.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        text = model.label,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    if (model.modelId != model.label) {
-                                        Text(
-                                            text = model.modelId,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                                if (selected) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Check,
-                                        contentDescription = "当前模型",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
+                    }
+                    grouped.forEach { (provider, list) ->
+                        if (list.isNotEmpty()) {
+                            item(key = "prov_$provider") { GroupHeader(provider) }
+                            items(list, key = { "m_${it.modelId}" }) { model ->
+                                ModelRow(model, model.modelId == currentModelId, onPick)
                             }
                         }
                     }
@@ -170,17 +184,68 @@ internal fun LocalModelSheet(
     }
 }
 
+@Composable
+private fun GroupHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 4.dp)
+    )
+}
+
+@Composable
+private fun ModelRow(model: ChatModelOption, selected: Boolean, onPick: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onPick(model.modelId) }
+            .padding(horizontal = 20.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = model.label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (model.modelId != model.label) {
+                Text(
+                    text = "${model.modelId} · ${model.providerName}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        if (selected) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = "当前模型",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
 // ============================================================
 // AI 扩展入口（Rikka 式：输入栏上方功能 chips + 扩展面板）
 // ============================================================
 
-/** 输入栏上方功能行：模型 chip + 联网搜索开关 chip + 推理等级 chip + AI 扩展入口 chip（带角标） */
+/**
+ * 输入栏上方功能行：联网搜索开关 chip + 推理等级 chip（点击直接选等级）+ AI 扩展入口 chip（带角标）。
+ * 模型切换统一由顶栏标题区承担，此处不再放重复入口。
+ */
 @Composable
 internal fun LocalExtensionChips(
     agent: LlmAgent?,
-    currentModelLabel: String?,
-    onOpenModels: () -> Unit,
     onToggleSearch: () -> Unit,
+    onReasoningChange: (ReasoningLevel) -> Unit,
     onOpenExtensions: () -> Unit,
     extensionsCount: Int = 0
 ) {
@@ -191,14 +256,6 @@ internal fun LocalExtensionChips(
             .padding(horizontal = 12.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        item(key = "model") {
-            LocalToggleChip(
-                label = currentModelLabel?.let { "模型 · $it" } ?: "选择模型",
-                icon = Icons.Filled.SmartToy,
-                checked = false,
-                onClick = onOpenModels
-            )
-        }
         item(key = "web_search") {
             LocalToggleChip(
                 label = "联网搜索",
@@ -208,11 +265,9 @@ internal fun LocalExtensionChips(
             )
         }
         item(key = "reasoning") {
-            LocalToggleChip(
-                label = "推理·${reasoningLevelLabel(agent.reasoningLevel)}",
-                icon = Icons.Filled.Psychology,
-                checked = agent.reasoningLevel.isEnabled,
-                onClick = onOpenExtensions
+            ReasoningChip(
+                level = agent.reasoningLevel,
+                onSelect = onReasoningChange
             )
         }
         item(key = "extensions") {
@@ -223,6 +278,41 @@ internal fun LocalExtensionChips(
                 badge = extensionsCount,
                 onClick = onOpenExtensions
             )
+        }
+    }
+}
+
+/** 推理等级 chip：点击弹出等级菜单直接切换，不再跳转大面板 */
+@Composable
+private fun ReasoningChip(
+    level: ReasoningLevel,
+    onSelect: (ReasoningLevel) -> Unit
+) {
+    var menuOpen by androidx.compose.runtime.mutableStateOf(false)
+    Box {
+        LocalToggleChip(
+            label = "推理·${reasoningLevelLabel(level)}",
+            icon = Icons.Filled.Psychology,
+            checked = level.isEnabled,
+            onClick = { menuOpen = true }
+        )
+        androidx.compose.material3.DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false }
+        ) {
+            ReasoningLevel.entries.forEach { lvl ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = {
+                        Text(
+                            (if (lvl == level) "✓ " else "") + reasoningLevelLabel(lvl)
+                        )
+                    },
+                    onClick = {
+                        menuOpen = false
+                        onSelect(lvl)
+                    }
+                )
+            }
         }
     }
 }
@@ -299,23 +389,39 @@ private fun mcpStatusLabel(status: McpStatus?): String = when (status) {
 }
 
 /**
- * AI 扩展面板（Rikka 式 ModalBottomSheet）：
- * 推理等级 / MCP 服务器 / 技能 / 记忆 / 本地工具，改动即时持久化到当前智能体
+ * AI 扩展面板（会话级配置，Rikka 式 ModalBottomSheet）：
+ * 模型与生成参数 / 系统提示词 / 上下文策略 / 代码工作区 / 搜索·记忆·OCR·图片生成 /
+ * MCP / 技能 / 提示词·世界书·快捷指令关联 / 本地工具。
+ *
+ * 所有改动经 onUpdate 写入**会话覆盖**，只对当前会话生效，不影响原智能体；
+ * 顶部提供「恢复默认」一键清除覆盖。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun LocalExtensionSheet(
     agent: LlmAgent?,
     skills: List<LlmSkill>,
+    prompts: List<com.cjhsy.linkzone.data.model.LlmPrompt>,
+    lorebooks: List<com.cjhsy.linkzone.data.model.LlmLorebook>,
+    quickMessages: List<com.cjhsy.linkzone.data.model.LlmQuickMessage>,
     mcpServers: List<McpServerConfig>,
     mcpStatus: Map<String, McpStatus>,
-    workspaceName: String?,
-    onOpenWorkspace: () -> Unit,
+    agentOverridden: Boolean,
+    onResetOverride: () -> Unit,
+    onPickModel: () -> Unit,
+    onBindWorkspace: (String?) -> Unit,
+    onCreateWorkspace: (String) -> Unit,
+    onOpenWorkspaceManager: () -> Unit,
     onCompressNow: () -> Unit,
     onUpdate: ((LlmAgent) -> LlmAgent) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val workspaceManager = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.WorkspaceManager>()
+    var wsTick by androidx.compose.runtime.mutableStateOf(0)
+    val workspaces = androidx.compose.runtime.remember(wsTick, agent?.workspaceId) { workspaceManager.list() }
+    var newWsName by androidx.compose.runtime.mutableStateOf("")
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState
@@ -333,209 +439,564 @@ internal fun LocalExtensionSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = 24.dp)
+                .fillMaxHeight(0.9f)
         ) {
-            Text(
-                text = "AI 扩展",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
-            )
-
-            // ---------- 代码工作区 ----------
-            LocalSheetSectionTitle("代码工作区")
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onOpenWorkspace)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Terminal,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = workspaceName ?: "未绑定工作区",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = if (workspaceName != null) "已绑定 · 点击打开管理页（文件浏览 / 终端）"
-                            else "绑定后智能体可读写文件、执行命令",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        text = "↗",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-
-            // ---------- 联网搜索 ----------
-            LocalSheetSwitchRow(
-                title = "联网搜索",
-                subtitle = "为当前会话注入 search_web 工具",
-                checked = agent.enableWebSearch,
-                onToggle = { onUpdate { it.copy(enableWebSearch = !it.enableWebSearch) } }
-            )
-
-            // ---------- 推理等级 ----------
-            LocalSheetSectionTitle("推理等级")
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(ReasoningLevel.entries.size) { idx ->
-                    val level = ReasoningLevel.entries[idx]
-                    val selected = agent.reasoningLevel == level
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surface,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .clickable { onUpdate { it.copy(reasoningLevel = level) } }
-                    ) {
-                        Text(
-                            text = reasoningLevelLabel(level),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                        )
-                    }
-                }
-            }
-
-            // ---------- MCP 服务器 ----------
-            LocalSheetSectionTitle("MCP 服务器")
-            if (mcpServers.isEmpty()) {
-                LocalSheetEmptyHint("暂无 MCP 服务器，请在「设置 → MCP」中添加")
-            } else {
-                mcpServers.forEach { server ->
-                    val enabled = server.id in agent.mcpServers
-                    val statusText = mcpStatusLabel(mcpStatus[server.id]) +
-                        if (server.commonOptions.enable) "" else " · 已禁用"
-                    LocalSheetSwitchRow(
-                        title = server.commonOptions.name.ifBlank { "未命名服务器" },
-                        subtitle = statusText,
-                        checked = enabled,
-                        onToggle = {
-                            onUpdate { a ->
-                                val next = if (enabled) a.mcpServers - server.id
-                                else a.mcpServers + server.id
-                                a.copy(mcpServers = next)
-                            }
-                        }
-                    )
-                }
-            }
-
-            // ---------- 技能 ----------
-            LocalSheetSectionTitle("技能")
-            if (skills.isEmpty()) {
-                LocalSheetEmptyHint("暂无技能，请在「设置 → 技能」中添加")
-            } else {
-                skills.forEach { skill ->
-                    val enabled = skill.id in agent.enabledSkills
-                    LocalSheetSwitchRow(
-                        title = skill.name.ifBlank { "未命名技能" },
-                        subtitle = skill.description.take(40),
-                        checked = enabled,
-                        onToggle = {
-                            onUpdate { a ->
-                                val next = if (enabled) a.enabledSkills - skill.id
-                                else a.enabledSkills + skill.id
-                                a.copy(enabledSkills = next)
-                            }
-                        }
-                    )
-                }
-            }
-
-            // ---------- 记忆 ----------
-            LocalSheetSectionTitle("记忆")
-            LocalSheetSwitchRow(
-                title = "启用记忆",
-                subtitle = "注入已有记忆并允许模型增删改",
-                checked = agent.enableMemory,
-                onToggle = { onUpdate { it.copy(enableMemory = !it.enableMemory) } }
-            )
-            if (agent.enableMemory) {
-                LocalSheetSwitchRow(
-                    title = "使用全局共享记忆",
-                    subtitle = "关闭时使用本智能体隔离记忆",
-                    checked = agent.useGlobalMemory,
-                    onToggle = { onUpdate { it.copy(useGlobalMemory = !it.useGlobalMemory) } }
-                )
-            }
-
-            // ---------- 上下文 ----------
-            LocalSheetSectionTitle("上下文")
-            LocalSheetSwitchRow(
-                title = "自动压缩上下文",
-                subtitle = "超出上限时自动把旧消息总结为检查点",
-                checked = agent.enableContextCompression,
-                onToggle = { onUpdate { it.copy(enableContextCompression = !it.enableContextCompression) } }
-            )
-            LocalSheetSwitchRow(
-                title = "时间感知",
-                subtitle = "在长间隔消息前注入当前时间提醒，跨天对话不混淆时间",
-                checked = agent.enableTimeReminder,
-                onToggle = { onUpdate { it.copy(enableTimeReminder = !it.enableTimeReminder) } }
-            )
-            // 手动压缩入口：立即把较早消息总结为检查点
+            // 标题行 + 临时覆盖提示
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "立即压缩上下文",
-                        style = MaterialTheme.typography.bodyMedium
+                        text = "AI 扩展 · 仅本会话",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "手动总结较早消息为检查点，长对话立即瘦身",
+                        text = "改动只作用于当前对话，不影响原智能体",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                TextButton(onClick = onCompressNow) { Text("执行") }
+                if (agentOverridden) {
+                    TextButton(onClick = onResetOverride) { Text("恢复默认") }
+                }
             }
 
-            // ---------- 本地工具 ----------
-            LocalSheetSectionTitle("本地工具")
-            LocalToolSwitchList(
-                selected = agent.localTools,
-                onToggle = { option, enable ->
-                    onUpdate { a ->
-                        a.copy(
-                            localTools = if (enable) a.localTools + option
-                            else a.localTools.filter { it != option }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(bottom = 28.dp)
+            ) {
+                // ============ 模型与生成 ============
+                item { LocalSheetSectionTitle("模型与生成") }
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable(onClick = onPickModel)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Filled.SmartToy,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    agent.chatModelId?.substringAfterLast('/')?.ifBlank { null } ?: "默认模型",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "点击切换模型（可搜索）",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text("切换", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                // 推理等级
+                item {
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(ReasoningLevel.entries.size) { idx ->
+                            val level = ReasoningLevel.entries[idx]
+                            val selected = agent.reasoningLevel == level
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = if (selected) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surface,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable { onUpdate { it.copy(reasoningLevel = level) } }
+                            ) {
+                                Text(
+                                    text = reasoningLevelLabel(level),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                // 温度 / TopP / 最大 Token
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SessionFloatField(
+                            label = "温度",
+                            value = agent.temperature,
+                            placeholder = "默认",
+                            modifier = Modifier.weight(1f),
+                            onChange = { v -> onUpdate { it.copy(temperature = v) } }
+                        )
+                        SessionFloatField(
+                            label = "Top P",
+                            value = agent.topP,
+                            placeholder = "默认",
+                            modifier = Modifier.weight(1f),
+                            onChange = { v -> onUpdate { it.copy(topP = v) } }
+                        )
+                        SessionIntField(
+                            label = "最大 Token",
+                            value = agent.maxTokens,
+                            placeholder = "默认",
+                            modifier = Modifier.weight(1f),
+                            onChange = { v -> onUpdate { it.copy(maxTokens = v) } }
                         )
                     }
                 }
+                item {
+                    LocalSheetSwitchRow(
+                        title = "流式输出",
+                        subtitle = "逐字显示回复",
+                        checked = agent.streamOutput,
+                        onToggle = { onUpdate { it.copy(streamOutput = !it.streamOutput) } }
+                    )
+                }
+
+                // ============ 系统提示词 ============
+                item { SystemPromptEditor(agent.systemPrompt) { text -> onUpdate { it.copy(systemPrompt = text) } } }
+
+                // ============ 上下文 ============
+                item { LocalSheetSectionTitle("上下文策略") }
+                item {
+                    LocalSheetSwitchRow(
+                        title = "自动压缩上下文",
+                        subtitle = "超出上限时自动把旧消息总结为检查点",
+                        checked = agent.enableContextCompression,
+                        onToggle = { onUpdate { it.copy(enableContextCompression = !it.enableContextCompression) } }
+                    )
+                }
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "上下文上限（条）",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SessionIntField(
+                            label = "",
+                            value = agent.contextMessageLimit.takeIf { it > 0 },
+                            placeholder = "不限",
+                            modifier = Modifier.width(110.dp),
+                            onChange = { v -> onUpdate { it.copy(contextMessageLimit = v ?: 0) } }
+                        )
+                    }
+                }
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("立即压缩上下文", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "手动总结较早消息为检查点，长对话立即瘦身",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = onCompressNow) { Text("执行") }
+                    }
+                }
+                item {
+                    LocalSheetSwitchRow(
+                        title = "时间感知",
+                        subtitle = "长间隔消息前注入当前时间提醒",
+                        checked = agent.enableTimeReminder,
+                        onToggle = { onUpdate { it.copy(enableTimeReminder = !it.enableTimeReminder) } }
+                    )
+                }
+                if (agent.enableTimeReminder) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("触发间隔（分钟）", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            SessionIntField(
+                                label = "",
+                                value = agent.timeReminderIntervalMinutes.takeIf { it > 0 },
+                                placeholder = "60",
+                                modifier = Modifier.width(110.dp),
+                                onChange = { v -> onUpdate { it.copy(timeReminderIntervalMinutes = v ?: 60) } }
+                            )
+                        }
+                    }
+                }
+
+                // ============ 代码工作区 ============
+                item { LocalSheetSectionTitle("代码工作区") }
+                item {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                        // 未绑定
+                        WorkspaceRadioRow(
+                            title = "未绑定",
+                            subtitle = "不启用文件与命令能力",
+                            selected = agent.workspaceId == null,
+                            onSelect = { onBindWorkspace(null) }
+                        )
+                        workspaces.forEach { ws ->
+                            val root = workspaceManager.get(ws.id)?.root?.absolutePath
+                            WorkspaceRadioRow(
+                                title = ws.name,
+                                subtitle = root ?: "",
+                                selected = agent.workspaceId == ws.id,
+                                onSelect = { onBindWorkspace(ws.id) }
+                            )
+                        }
+                        // 新建并立即选中
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = newWsName,
+                                onValueChange = { newWsName = it },
+                                placeholder = { Text("新建工作区名称", style = MaterialTheme.typography.bodySmall) },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodySmall,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            TextButton(
+                                enabled = newWsName.isNotBlank(),
+                                onClick = {
+                                    onCreateWorkspace(newWsName.trim())
+                                    newWsName = ""
+                                    wsTick++
+                                }
+                            ) { Text("新建并绑定") }
+                        }
+                        Text(
+                            "工作区位于应用私有目录，可在完整管理页浏览文件、执行命令；" +
+                                "文件可随时导出到 Download 等任意目录。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(onClick = onOpenWorkspaceManager) {
+                            Text("打开完整管理页（文件浏览 / 终端）↗")
+                        }
+                    }
+                }
+
+                // ============ 能力开关 ============
+                item { LocalSheetSectionTitle("能力开关") }
+                item {
+                    LocalSheetSwitchRow(
+                        title = "联网搜索",
+                        subtitle = "注入 search_web 工具",
+                        checked = agent.enableWebSearch,
+                        onToggle = { onUpdate { it.copy(enableWebSearch = !it.enableWebSearch) } }
+                    )
+                }
+                item {
+                    LocalSheetSwitchRow(
+                        title = "启用记忆",
+                        subtitle = "注入已有记忆并允许模型增删改",
+                        checked = agent.enableMemory,
+                        onToggle = { onUpdate { it.copy(enableMemory = !it.enableMemory) } }
+                    )
+                }
+                if (agent.enableMemory) {
+                    item {
+                        LocalSheetSwitchRow(
+                            title = "使用全局共享记忆",
+                            subtitle = "关闭时使用本智能体隔离记忆",
+                            checked = agent.useGlobalMemory,
+                            onToggle = { onUpdate { it.copy(useGlobalMemory = !it.useGlobalMemory) } }
+                        )
+                    }
+                }
+                item {
+                    LocalSheetSwitchRow(
+                        title = "图片 OCR 兜底",
+                        subtitle = "非视觉模型处理图片时先识别为文字",
+                        checked = agent.enableOcr,
+                        onToggle = { onUpdate { it.copy(enableOcr = !it.enableOcr) } }
+                    )
+                }
+                item {
+                    LocalSheetSwitchRow(
+                        title = "图片生成",
+                        subtitle = "允许模型调用生图模型",
+                        checked = agent.enableImageGeneration,
+                        onToggle = { onUpdate { it.copy(enableImageGeneration = !it.enableImageGeneration) } }
+                    )
+                }
+
+                // ============ MCP ============
+                item { LocalSheetSectionTitle("MCP 服务器") }
+                if (mcpServers.isEmpty()) {
+                    item { LocalSheetEmptyHint("暂无 MCP 服务器，请在「AI 中心 → MCP」中添加") }
+                } else {
+                    items(mcpServers, key = { "mcp_${it.id}" }) { server ->
+                        val enabled = server.id in agent.mcpServers
+                        LocalSheetSwitchRow(
+                            title = server.commonOptions.name.ifBlank { "未命名服务器" },
+                            subtitle = mcpStatusLabel(mcpStatus[server.id]) +
+                                if (server.commonOptions.enable) "" else " · 已禁用",
+                            checked = enabled,
+                            onToggle = {
+                                onUpdate { a ->
+                                    a.copy(mcpServers = if (enabled) a.mcpServers - server.id else a.mcpServers + server.id)
+                                }
+                            }
+                        )
+                    }
+                }
+
+                // ============ 技能 ============
+                item { LocalSheetSectionTitle("技能") }
+                if (skills.isEmpty()) {
+                    item { LocalSheetEmptyHint("暂无技能，请在「AI 中心 → AI 扩展」中添加") }
+                } else {
+                    items(skills, key = { "skill_${it.id}" }) { skill ->
+                        val enabled = skill.id in agent.enabledSkills
+                        LocalSheetSwitchRow(
+                            title = skill.name.ifBlank { "未命名技能" },
+                            subtitle = skill.description.take(40),
+                            checked = enabled,
+                            onToggle = {
+                                onUpdate { a ->
+                                    a.copy(enabledSkills = if (enabled) a.enabledSkills - skill.id else a.enabledSkills + skill.id)
+                                }
+                            }
+                        )
+                    }
+                }
+
+                // ============ 提示词 / 世界书 / 快捷指令 ============
+                item { LocalSheetSectionTitle("提示词模式") }
+                if (prompts.isEmpty()) {
+                    item { LocalSheetEmptyHint("暂无提示词模式") }
+                } else {
+                    items(prompts, key = { "prompt_${it.id}" }) { p ->
+                        val enabled = p.id in agent.promptIds
+                        LocalSheetSwitchRow(
+                            title = p.name.ifBlank { "未命名提示词" },
+                            subtitle = p.content.take(40),
+                            checked = enabled,
+                            onToggle = {
+                                onUpdate { a ->
+                                    a.copy(promptIds = if (enabled) a.promptIds - p.id else a.promptIds + p.id)
+                                }
+                            }
+                        )
+                    }
+                }
+                item { LocalSheetSectionTitle("世界书") }
+                if (lorebooks.isEmpty()) {
+                    item { LocalSheetEmptyHint("暂无世界书") }
+                } else {
+                    items(lorebooks, key = { "lb_${it.id}" }) { lb ->
+                        val enabled = lb.id in agent.lorebookIds
+                        LocalSheetSwitchRow(
+                            title = lb.name.ifBlank { "未命名世界书" },
+                            subtitle = lb.description.take(40),
+                            checked = enabled,
+                            onToggle = {
+                                onUpdate { a ->
+                                    a.copy(lorebookIds = if (enabled) a.lorebookIds - lb.id else a.lorebookIds + lb.id)
+                                }
+                            }
+                        )
+                    }
+                }
+                item { LocalSheetSectionTitle("快捷指令") }
+                if (quickMessages.isEmpty()) {
+                    item { LocalSheetEmptyHint("暂无快捷指令") }
+                } else {
+                    items(quickMessages, key = { "qm_${it.id}" }) { qm ->
+                        val enabled = qm.id in agent.quickMessageIds
+                        LocalSheetSwitchRow(
+                            title = qm.title.ifBlank { qm.content.take(20).ifBlank { "未命名快捷指令" } },
+                            subtitle = qm.content.take(40),
+                            checked = enabled,
+                            onToggle = {
+                                onUpdate { a ->
+                                    a.copy(quickMessageIds = if (enabled) a.quickMessageIds - qm.id else a.quickMessageIds + qm.id)
+                                }
+                            }
+                        )
+                    }
+                }
+
+                // ============ 本地工具 ============
+                item { LocalSheetSectionTitle("本地工具（操作本机）") }
+                item {
+                    LocalToolSwitchList(
+                        selected = agent.localTools,
+                        onToggle = { option, enable ->
+                            onUpdate { a ->
+                                a.copy(localTools = if (enable) a.localTools + option else a.localTools.filter { it != option })
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 工作区单选行：名称 + 绝对路径 */
+@Composable
+private fun WorkspaceRadioRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onSelect: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onSelect)
+            .padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        androidx.compose.material3.RadioButton(selected = selected, onClick = onSelect, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            if (subtitle.isNotBlank()) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/** 可折叠系统提示词编辑区（会话覆盖） */
+@Composable
+private fun SystemPromptEditor(value: String, onChange: (String) -> Unit) {
+    var expanded by androidx.compose.runtime.mutableStateOf(false)
+    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "系统提示词",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                if (expanded) "收起 ▴" else if (value.isBlank()) "未设置 · 展开 ▾" else "已设置 · 展开 ▾",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        if (expanded) {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onChange,
+                placeholder = { Text("为本会话单独覆盖系统提示词", style = MaterialTheme.typography.bodySmall) },
+                shape = RoundedCornerShape(12.dp),
+                minLines = 3,
+                maxLines = 8,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }
+}
+
+/** 可空整数输入（空 = null/默认），本地文本态承接中间输入 */
+@Composable
+internal fun SessionIntField(
+    label: String,
+    value: Int?,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    onChange: (Int?) -> Unit
+) {
+    var text by androidx.compose.runtime.mutableStateOf(value?.toString() ?: "")
+    OutlinedTextField(
+        value = text,
+        onValueChange = { input ->
+            text = input.filter { it.isDigit() }.take(7)
+            onChange(text.toIntOrNull())
+        },
+        label = if (label.isNotBlank()) ({ Text(label, style = MaterialTheme.typography.labelMedium) }) else null,
+        placeholder = { Text(placeholder, style = MaterialTheme.typography.bodySmall) },
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodySmall,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+    )
+}
+
+/** 可空浮点输入（0..1 常用生成参数），空 = null/默认 */
+@Composable
+internal fun SessionFloatField(
+    label: String,
+    value: Float?,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    onChange: (Float?) -> Unit
+) {
+    var text by androidx.compose.runtime.mutableStateOf(value?.toString() ?: "")
+    OutlinedTextField(
+        value = text,
+        onValueChange = { input ->
+            text = input.filter { it.isDigit() || it == '.' }.take(6)
+            val v = text.toFloatOrNull()
+            onChange(if (v != null && v in 0f..2f) v else null)
+        },
+        label = if (label.isNotBlank()) ({ Text(label, style = MaterialTheme.typography.labelMedium) }) else null,
+        placeholder = { Text(placeholder, style = MaterialTheme.typography.bodySmall) },
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodySmall,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+    )
 }
 
 /**
@@ -548,7 +1009,7 @@ internal fun LocalToolSwitchList(
     onToggle: (com.cjhsy.linkzone.data.ai.LocalToolOption, Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val calendarPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+    val permLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { }
     val tools = listOf(
@@ -558,7 +1019,14 @@ internal fun LocalToolSwitchList(
         Triple("主动追问", "信息不足时暂停生成向你提问（可跳过）", LocalToolOption.AskUser),
         Triple("日历读写", "查询/创建系统日历日程", LocalToolOption.Calendar),
         Triple("语音播报", "朗读文本给用户听（系统 TTS）", LocalToolOption.Tts),
-        Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript)
+        Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript),
+        Triple(
+            "手机控制",
+            "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、查设备信息与定位",
+            LocalToolOption.SystemControl
+        ),
+        Triple("通讯录", "按姓名或号码查询手机联系人", LocalToolOption.Contacts),
+        Triple("短信与通话记录", "查询近期短信和通话记录（仅读取）", LocalToolOption.SmsCallLog)
     )
     Column(modifier = modifier) {
         tools.forEach { (title, subtitle, option) ->
@@ -569,13 +1037,25 @@ internal fun LocalToolSwitchList(
                 checked = enabled,
                 onToggle = {
                     onToggle(option, !enabled)
-                    if (option is LocalToolOption.Calendar && !enabled) {
-                        calendarPermLauncher.launch(
-                            arrayOf(
+                    // 开启时顺带申请该工具所需的运行时权限（拒绝不影响开关状态，调用时会再次提示）
+                    if (!enabled) {
+                        val perms = when (option) {
+                            is LocalToolOption.Calendar -> arrayOf(
                                 android.Manifest.permission.READ_CALENDAR,
                                 android.Manifest.permission.WRITE_CALENDAR
                             )
-                        )
+                            is LocalToolOption.SystemControl -> arrayOf(
+                                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+                                android.Manifest.permission.ACCESS_FINE_LOCATION
+                            )
+                            is LocalToolOption.Contacts -> arrayOf(android.Manifest.permission.READ_CONTACTS)
+                            is LocalToolOption.SmsCallLog -> arrayOf(
+                                android.Manifest.permission.READ_SMS,
+                                android.Manifest.permission.READ_CALL_LOG
+                            )
+                            else -> emptyArray()
+                        }
+                        if (perms.isNotEmpty()) permLauncher.launch(perms)
                     }
                 }
             )

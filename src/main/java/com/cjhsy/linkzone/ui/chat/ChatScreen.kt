@@ -175,6 +175,10 @@ fun ChatScreen(
     val skills by viewModel.skills.collectAsStateWithLifecycle()
     val mcpServers by viewModel.mcpServers.collectAsStateWithLifecycle()
     val mcpStatus by viewModel.mcpStatus.collectAsStateWithLifecycle()
+    val recentModelIds by viewModel.recentModelIds.collectAsStateWithLifecycle()
+    val allPrompts by viewModel.allPrompts.collectAsStateWithLifecycle()
+    val allLorebooks by viewModel.allLorebooks.collectAsStateWithLifecycle()
+    val allQuickMessages by viewModel.allQuickMessages.collectAsStateWithLifecycle()
 
     // 多模型重答选择器开关（本地）
     var showModelPicker by remember { mutableStateOf(false) }
@@ -368,10 +372,11 @@ fun ChatScreen(
                     {
                         LocalExtensionChips(
                             agent = state.currentAgent,
-                            currentModelLabel = agent?.chatModelId?.substringAfterLast('/')?.ifBlank { null },
-                            onOpenModels = { showModelSheet = true },
                             onToggleSearch = {
                                 viewModel.updateCurrentAgent { it.copy(enableWebSearch = !it.enableWebSearch) }
+                            },
+                            onReasoningChange = { level ->
+                                viewModel.updateCurrentAgent { it.copy(reasoningLevel = level) }
                             },
                             onOpenExtensions = { showExtensionSheet = true },
                             extensionsCount = agent?.let {
@@ -418,6 +423,7 @@ fun ChatScreen(
         LocalModelSheet(
             models = chatModels,
             currentModelId = state.currentAgent?.chatModelId.orEmpty(),
+            recentModelIds = recentModelIds,
             onPick = { modelId ->
                 val current = state.currentAgent
                 if (current != null) viewModel.setLocalAgentModel(current, modelId)
@@ -434,15 +440,25 @@ fun ChatScreen(
         )
     }
 
-    // ---------- AI 扩展面板（本地：工作区/推理/MCP/技能/记忆/压缩/本地工具） ----------
+    // ---------- AI 扩展面板（本地：会话级全功能配置，仅本会话生效） ----------
     if (showExtensionSheet) {
         LocalExtensionSheet(
             agent = state.currentAgent,
             skills = skills,
+            prompts = allPrompts,
+            lorebooks = allLorebooks,
+            quickMessages = allQuickMessages,
             mcpServers = mcpServers,
             mcpStatus = mcpStatus,
-            workspaceName = remember(state.currentAgent?.workspaceId) { viewModel.boundWorkspaceName() },
-            onOpenWorkspace = onOpenWorkspace,
+            agentOverridden = state.agentOverridden,
+            onResetOverride = viewModel::resetAgentOverride,
+            onPickModel = {
+                showExtensionSheet = false
+                showModelSheet = true
+            },
+            onBindWorkspace = viewModel::bindWorkspace,
+            onCreateWorkspace = viewModel::createAndBindWorkspace,
+            onOpenWorkspaceManager = onOpenWorkspace,
             onCompressNow = viewModel::compressContextNow,
             onUpdate = { transform -> viewModel.updateCurrentAgent(transform) },
             onDismiss = { showExtensionSheet = false }

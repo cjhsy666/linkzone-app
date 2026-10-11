@@ -30,6 +30,8 @@ import com.cjhsy.linkzone.ai.ui.UIMessagePart
 import com.cjhsy.linkzone.ai.ui.limitContext
 import com.cjhsy.linkzone.data.model.LlmAgent
 import com.cjhsy.linkzone.data.model.LlmPromptInjector
+import com.cjhsy.linkzone.data.model.LlmLorebook
+import com.cjhsy.linkzone.data.model.LlmPrompt
 import com.cjhsy.linkzone.data.model.LlmQuickMessage
 import com.cjhsy.linkzone.data.model.LlmSkill
 import com.cjhsy.linkzone.data.ai.buildMemoryPrompt
@@ -125,8 +127,10 @@ data class ChatUiState(
     val askUser: AskUserPrompt? = null,
     /** AI 生成的回复建议（首答后生成，点击直接发送） */
     val aiSuggestions: List<String> = emptyList(),
-    /** 当前会话绑定的本地智能体（非本地会话为 null） */
+    /** 当前会话绑定的本地智能体（非本地会话为 null）。本地会话中可能是会话级覆盖快照 */
     val currentAgent: LlmAgent? = null,
+    /** 当前本地会话存在临时覆盖配置（仅本会话生效，未回写智能体） */
+    val agentOverridden: Boolean = false,
     /** 正在编辑的消息（编辑重发：非空时聊天页弹出编辑对话框） */
     val editing: MessageItem? = null,
     /** 会话内搜索面板打开中 */
@@ -212,6 +216,14 @@ class ChatViewModel(
 
     /** 全部技能（扩展面板勾选 enabledSkills） */
     val skills: StateFlow<List<LlmSkill>> = llmRepository.observeSkills()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 全部提示词模式 / 世界书 / 快捷指令（扩展面板关联多选用全量清单） */
+    val allPrompts: StateFlow<List<LlmPrompt>> = llmRepository.observePrompts()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val allLorebooks: StateFlow<List<LlmLorebook>> = llmRepository.observeLorebooks()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val allQuickMessages: StateFlow<List<LlmQuickMessage>> = llmRepository.observeQuickMessages()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 全部 MCP 服务器（扩展面板勾选 mcpServers） */
@@ -422,13 +434,21 @@ class ChatViewModel(
     /** 打开会话：切换当前状态 + 加载历史 + 已读 + 刷新列表未读 */
     private suspend fun openConv(conv: ConvItem) {
         if (isLocalConvId(conv.id)) {
-            // 本地会话：加载绑定的 Agent，历史走本地库，不做任何服务器交互
+            // 本地会话：加载绑定的 Agent，并叠加会话级覆盖配置（仅本会话生效）
             val localAgent = llmRepository.getAgent(extractAgentId(conv.target_id))
+            val overrideAgent = localAgent?.let { base ->
+                localStore.getAgentOverrideJson(conv.id)?.let { raw ->
+                    runCatching {
+                        json.decodeFromString(LlmAgent.serializer(), raw).copy(id = base.id)
+                    }.getOrNull()
+                }
+            }
             _state.value = _state.value.copy(
                 currentConvId = conv.id,
                 currentBotId = conv.target_id,
                 currentName = conv.name.ifBlank { NEW_CONV_NAME },
-                currentAgent = localAgent,
+                currentAgent = overrideAgent ?: localAgent,
+                agentOverridden = overrideAgent != null,
                 messages = emptyList(),
                 loading = true,
                 ready = true,
@@ -2367,30 +2387,76 @@ class ChatViewModel(
         }
     }
 
-    /** 更新本地智能体默认模型（Rikka 式顶栏模型选择，持久化到 Room） */
+    /** 更新本地智能体默认模型：聊天页内改模型只写入本会话覆盖（不影响原智能体全局配置） */
     fun setLocalAgentModel(agent: LlmAgent, modelId: String) {
         if (agent.chatModelId == modelId) return
+        updateCurrentAgent { it.copy(chatModelId = modelId) }
+        recordRecentModel(modelId)
+    }
+
+    /**
+     * 更新当前会话的智能体配置（模型/参数/扩展开关/工具/工作区等全部字段）。
+     * 统一写入**会话级覆盖**（llm_local_conversation.agentOverrideJson），
+     * 只在本会话生效，不回写 llm_agent 表，不影响智能体本身和其他会话；云端会话忽略。
+     */
+    fun updateCurrentAgent(transform: (LlmAgent) -> LlmAgent) {
+        val current = _state.value.currentAgent ?: return
+        val convId = _state.value.currentConvId
+        if (!isLocalConvId(convId)) return
+        val updated = transform(current)
+        if (updated == current) return
+        _state.value = _state.value.copy(currentAgent = updated, agentOverridden = true)
         viewModelScope.launch {
-            llmRepository.upsertAgent(agent.copy(chatModelId = modelId))
-        }
-        // 同步 UI 上的当前智能体（顶栏副标题立即刷新，不等 Room 观察流回环）
-        if (_state.value.currentAgent?.id == agent.id) {
-            _state.value = _state.value.copy(
-                currentAgent = agent.copy(chatModelId = modelId)
+            localStore.setAgentOverrideJson(
+                convId,
+                json.encodeToString(LlmAgent.serializer(), updated)
             )
         }
     }
 
-    /**
-     * 更新当前本地智能体的扩展配置（联网搜索/推理/MCP/技能/记忆/本地工具），
-     * 持久化到 Room 并同步 UI 当前快照；云端会话忽略。
-     */
-    fun updateCurrentAgent(transform: (LlmAgent) -> LlmAgent) {
-        val current = _state.value.currentAgent ?: return
-        val updated = transform(current)
-        if (updated == current) return
-        _state.value = _state.value.copy(currentAgent = updated)
-        viewModelScope.launch { llmRepository.upsertAgent(updated) }
+    /** 清除本会话的全部临时配置，恢复为原智能体当前配置 */
+    fun resetAgentOverride() {
+        val convId = _state.value.currentConvId
+        val agentId = _state.value.currentAgent?.id ?: return
+        if (!isLocalConvId(convId)) return
+        viewModelScope.launch {
+            localStore.setAgentOverrideJson(convId, null)
+            val base = llmRepository.getAgent(agentId)
+            _state.value = _state.value.copy(currentAgent = base, agentOverridden = false)
+        }
+    }
+
+    /** 会话内绑定/解绑代码工作区（只写会话覆盖；工具执行时按 agent.workspaceId 实时解析） */
+    fun bindWorkspace(workspaceId: String?) {
+        updateCurrentAgent { it.copy(workspaceId = workspaceId) }
+    }
+
+    /** 会话内新建工作区并立即绑定到本会话 */
+    fun createAndBindWorkspace(name: String) {
+        val ws = workspaceManager.create(name)
+        updateCurrentAgent { it.copy(workspaceId = ws.id) }
+    }
+
+    // ---- 最近使用模型（SharedPreferences，模型选择器「最近使用」分组） ----
+    private val recentPrefs = appContext.getSharedPreferences("recent_models", android.content.Context.MODE_PRIVATE)
+
+    private val _recentModelIds = MutableStateFlow(loadRecentModelIds())
+    val recentModelIds: StateFlow<List<String>> = _recentModelIds.asStateFlow()
+
+    private fun loadRecentModelIds(): List<String> = runCatching {
+        json.parseToJsonElement(recentPrefs.getString(KEY_RECENT, null) ?: "[]")
+            .jsonArray.map { it.jsonPrimitive.content }
+    }.getOrDefault(emptyList())
+
+    private fun recordRecentModel(modelId: String) {
+        val list = recentModelIds.value.toMutableList().apply {
+            remove(modelId)
+            add(0, modelId)
+        }.take(8)
+        recentPrefs.edit()
+            .putString(KEY_RECENT, kotlinx.serialization.json.JsonArray(list.map { kotlinx.serialization.json.JsonPrimitive(it) }).toString())
+            .apply()
+        _recentModelIds.value = list
     }
 
     /**
@@ -2453,9 +2519,10 @@ class ChatViewModel(
     fun switchEngineToLocal(agent: LlmAgent) {
         val s = _state.value
         if (!s.ready) return
-        // 已在该智能体的会话中：也要刷新 currentAgent（防止编辑模型/名称后 state 滞留旧快照）
+        // 已在该智能体的会话中：无会话覆盖时刷新 currentAgent（防止编辑后 state 滞留旧快照）；
+        // 存在会话覆盖时保留本会话的临时配置，不被全局编辑冲掉
         if (isLocalConvId(s.currentConvId) && extractAgentId(s.currentBotId) == agent.id) {
-            _state.value = s.copy(currentAgent = agent)
+            if (!s.agentOverridden) _state.value = s.copy(currentAgent = agent)
             return
         }
         viewModelScope.launch {
@@ -2591,6 +2658,9 @@ class ChatViewModel(
 
     companion object {
         const val NEW_CONV_NAME = "新对话"
+
+        /** SharedPreferences 键：最近使用的聊天模型 id 列表 */
+        private const val KEY_RECENT = "recent_chat_model_ids"
 
         /** OCR 视觉模型的系统提示：要求逐字提取文字并描述画面（对齐 RikkaHub OcrPrompt） */
         private const val OCR_PROMPT =

@@ -44,4 +44,19 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("javascript")
     object Javascript : LocalToolOption()
+
+    /** 手机控制 phone_control（打开 App / 链接 / 拨号盘 / 设置 / 系统分享 / 设备信息 / 定位） */
+    @Serializable
+    @SerialName("system_control")
+    object SystemControl : LocalToolOption()
+
+    /** 通讯录读取 contacts_query（需 READ_CONTACTS 运行时权限） */
+    @Serializable
+    @SerialName("contacts")
+    object Contacts : LocalToolOption()
+
+    /** 短信与通话记录读取 sms_query / call_log_query（需 READ_SMS / READ_CALL_LOG） */
+    @Serializable
+    @SerialName("sms_call_log")
+    object SmsCallLog : LocalToolOption()
 }

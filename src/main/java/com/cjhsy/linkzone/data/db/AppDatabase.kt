@@ -26,7 +26,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LocalConversationEntity::class,
         LocalMessageEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -197,6 +197,15 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_llm_local_message_timestamp ON llm_local_message(timestamp)"
+                )
+            }
+        }
+
+        /** v6 → v7：本地会话新增会话级智能体覆盖配置（仅本会话生效，不影响原智能体） */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE llm_local_conversation ADD COLUMN agentOverrideJson TEXT"
                 )
             }
         }

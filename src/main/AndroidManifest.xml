@@ -20,6 +20,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 本地工具：通讯录 / 短信 / 通话记录读取（用户显式开启对应工具时才动态申请） -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+
     <application
         android:name=".LinkZoneApp"
         android:allowBackup="true"
@@ -55,6 +60,18 @@
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 工作区 SAF DocumentsProvider：系统文件管理器可直接浏览应用私有工作区 -->
+        <provider
+            android:name=".workspace.WorkspaceDocumentsProvider"
+            android:authorities="${applicationId}.workspace.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
         </provider>
     </application>
 

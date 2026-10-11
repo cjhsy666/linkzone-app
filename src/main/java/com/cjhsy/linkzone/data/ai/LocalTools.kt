@@ -55,6 +55,12 @@ fun createLocalTools(
         add(buildCalendarQueryTool(context))
         add(buildCalendarCreateTool(context))
     }
+    if (options.contains(LocalToolOption.SystemControl)) add(buildPhoneControlTool(context))
+    if (options.contains(LocalToolOption.Contacts)) add(buildContactsQueryTool(context))
+    if (options.contains(LocalToolOption.SmsCallLog)) {
+        add(buildSmsQueryTool(context))
+        add(buildCallLogQueryTool(context))
+    }
 }
 
 /** ask_user 的挂起桥：execute 内等待用户作答，返回 JSON（问题 id → 用户答案） */

@@ -102,6 +102,15 @@ class LocalChatStore(
         }
     }
 
+    /** 读取会话级智能体覆盖配置 JSON（null = 跟随原智能体） */
+    suspend fun getAgentOverrideJson(convId: String): String? =
+        dao.getConversation(convId)?.agentOverrideJson
+
+    /** 写入/清除会话级智能体覆盖配置 */
+    suspend fun setAgentOverrideJson(convId: String, json: String?) {
+        dao.setAgentOverride(convId, json)
+    }
+
     // ============ 消息 ============
 
     /** 正序一页历史（向上翻页传 before=最早时间戳），hasMore 按多取一条判断 */

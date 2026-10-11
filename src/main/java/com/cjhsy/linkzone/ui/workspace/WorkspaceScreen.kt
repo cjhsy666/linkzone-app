@@ -3,6 +3,7 @@ package com.cjhsy.linkzone.ui.workspace
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
@@ -383,6 +385,98 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
             ?: "application/octet-stream"
     }
 
+    // ---------------- SAF 导出到用户自选目录 ----------------
+
+    /** 当前打开工作区根目录的绝对路径（界面展示，让用户知道文件真实落盘位置） */
+    fun currentRootPath(): String? = rootOf()?.root?.absolutePath
+
+    /**
+     * 把单个文件保存到 SAF 用户选定的目录树（Download/U盘/自建文件夹均可）。
+     * treeUri 由 OpenDocumentTree 返回，调用方需先 takePersistableUriPermission。
+     */
+    fun exportEntryToTree(entry: FileEntry, treeUri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ws = rootOf() ?: return@launch
+            runCatching {
+                val src = File(ws.root, entry.relPath)
+                require(src.isFile) { "不是文件" }
+                val resolver = appContext.contentResolver
+                val parent = DocumentsContract.buildDocumentUriUsingTree(
+                    treeUri, DocumentsContract.getTreeDocumentId(treeUri)
+                )
+                val doc = DocumentsContract.createDocument(resolver, parent, guessMime(entry.name), entry.name)
+                    ?: error("无法在目标目录创建文件")
+                resolver.openOutputStream(doc)?.use { out -> src.inputStream().use { it.copyTo(out) } }
+                    ?: error("无法写入目标文件")
+                notify("已保存到所选目录：${entry.name}")
+            }.onFailure { e -> notify(null, "保存失败：${e.message ?: "未知错误"}") }
+        }
+    }
+
+    /**
+     * 把整个工作区（含子目录结构）导出到 SAF 选定目录下的同名文件夹。
+     * workspace.json 等内部文件同样保留，方便整体备份/迁移。
+     */
+    fun exportWholeWorkspaceToTree(treeUri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ws = rootOf() ?: return@launch
+            runCatching {
+                val resolver = appContext.contentResolver
+                val treeRoot = DocumentsContract.buildDocumentUriUsingTree(
+                    treeUri, DocumentsContract.getTreeDocumentId(treeUri)
+                )
+                // 目标目录：所选目录/<工作区名>
+                val folderUri = DocumentsContract.createDocument(
+                    resolver, treeRoot, DocumentsContract.Document.MIME_TYPE_DIR,
+                    uniqueChildName(resolver, treeUri, ws.name)
+                ) ?: error("无法创建目标文件夹")
+                var count = 0
+                fun copyDir(srcDir: File, dirUri: Uri) {
+                    srcDir.listFiles().orEmpty().sortedBy { it.name }.forEach { f ->
+                        if (f.isDirectory) {
+                            val sub = DocumentsContract.createDocument(
+                                resolver, dirUri, DocumentsContract.Document.MIME_TYPE_DIR, f.name
+                            ) ?: return@forEach
+                            copyDir(f, sub)
+                        } else {
+                            val doc = DocumentsContract.createDocument(
+                                resolver, dirUri, guessMime(f.name), f.name
+                            ) ?: return@forEach
+                            resolver.openOutputStream(doc)?.use { out ->
+                                f.inputStream().use { it.copyTo(out) }
+                            }
+                            count++
+                        }
+                    }
+                }
+                copyDir(ws.root, folderUri)
+                notify("已导出整个工作区（$count 个文件）到所选目录")
+            }.onFailure { e -> notify(null, "导出失败：${e.message ?: "未知错误"}") }
+        }
+    }
+
+    /** 目标目录重名时追加序号 */
+    private fun uniqueChildName(resolver: android.content.ContentResolver, parentTreeUri: Uri, name: String): String {
+        var candidate = name
+        var i = 1
+        while (true) {
+            val exists = runCatching {
+                resolver.query(
+                    DocumentsContract.buildChildDocumentsUriUsingTree(
+                        parentTreeUri, DocumentsContract.getTreeDocumentId(parentTreeUri)
+                    ),
+                    arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                    "${DocumentsContract.Document.COLUMN_DISPLAY_NAME}=?",
+                    arrayOf(candidate),
+                    null
+                )?.use { it.moveToFirst() } ?: false
+            }.getOrDefault(false)
+            if (!exists) return candidate
+            candidate = "$name($i)"
+            i++
+        }
+    }
+
     // ---------------- 终端 ----------------
 
     fun runCommand(command: String) {
@@ -668,6 +762,23 @@ private fun WorkspaceDetailPane(
     val stats = state.stats[ws.id]
     var showRenameWs by remember { mutableStateOf(false) }
     var showDeleteWs by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val rootPath = remember(ws.id) { viewModel.currentRootPath() }
+
+    // 导出整个工作区到用户自选目录（SAF OpenDocumentTree）
+    val exportAllLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            viewModel.exportWholeWorkspaceToTree(treeUri)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -697,6 +808,46 @@ private fun WorkspaceDetailPane(
                     "${stats?.fileCount ?: 0} 个文件 · ${formatBytes(stats?.totalBytes ?: 0)}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                // 真实落盘路径：让用户明确文件位置，点击复制
+                if (rootPath != null) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText("workspace_path", rootPath))
+                                Toast.makeText(context, "路径已复制", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(top = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Folder,
+                            contentDescription = null,
+                            modifier = Modifier.size(11.dp),
+                            tint = MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            rootPath,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 9.sp
+                            ),
+                            color = MaterialTheme.colorScheme.outline,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+            IconButton(onClick = { exportAllLauncher.launch(null) }) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = "导出整个工作区到所选文件夹",
+                    modifier = Modifier.size(20.dp)
                 )
             }
             IconButton(onClick = { showRenameWs = true }) {
@@ -807,9 +958,28 @@ private fun FilesPane(
     var renaming by remember { mutableStateOf<FileEntry?>(null) }
     var deleting by remember { mutableStateOf<FileEntry?>(null) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = LocalContext.current
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let(viewModel::importFile)
+    }
+
+    // 单文件导出：用户自选目标文件夹（Download/自建目录等）
+    var pendingSaveEntry by remember { mutableStateOf<FileEntry?>(null) }
+    val saveToTreeLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        val entry = pendingSaveEntry
+        pendingSaveEntry = null
+        if (treeUri != null && entry != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            viewModel.exportEntryToTree(entry, treeUri)
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -911,6 +1081,14 @@ private fun FilesPane(
                                     DropdownMenuItem(
                                         text = { Text("导出分享") },
                                         onClick = { menuOpen = false; viewModel.exportFile(entry) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("保存到文件夹…") },
+                                        onClick = {
+                                            menuOpen = false
+                                            pendingSaveEntry = entry
+                                            saveToTreeLauncher.launch(null)
+                                        }
                                     )
                                 }
                                 DropdownMenuItem(
