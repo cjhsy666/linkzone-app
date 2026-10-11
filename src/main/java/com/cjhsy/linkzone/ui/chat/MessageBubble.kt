@@ -138,6 +138,8 @@ fun MessageItemView(
     onEdit: () -> Unit,
     onRegenerate: () -> Unit,
     onRegenerateWithModel: () -> Unit,
+    /** 中断后「继续生成」回调；null 时不显示该按钮 */
+    onContinue: (() -> Unit)? = null,
     versionCount: Int = 1,
     versionIndex: Int = 0,
     onSelectVersion: ((Int) -> Unit)? = null,
@@ -363,19 +365,34 @@ fun MessageItemView(
                 )
             }
 
-            // AI 消息下方快捷操作行：复制常驻；重生成/换模型仅本地智能体
+            // AI 消息下方快捷操作行：复制常驻；重生成/换模型仅本地智能体；
+            // 中断标记（sys.stop 段）时在最前加「继续生成」按钮（Deepseek 式）
             if (!message.isSelf && !message.recalled && interactionsEnabled) {
-                MessageActionBar(
-                    hasText = hasText,
-                    canRegenerate = canRegenerate,
-                    versionCount = versionCount,
-                    versionIndex = versionIndex,
-                    onSelectVersion = onSelectVersion,
-                    timestamp = message.timestamp,
-                    onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
-                    onRegenerate = onRegenerate,
-                    onRegenerateWithModel = onRegenerateWithModel
-                )
+                val interrupted = message.segments?.any { it.type == "sys.stop" } == true
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (interrupted && onContinue != null) {
+                        Text(
+                            text = "⚡ 已中断 · 继续生成",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(onClick = onContinue)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    MessageActionBar(
+                        hasText = hasText,
+                        canRegenerate = canRegenerate,
+                        versionCount = versionCount,
+                        versionIndex = versionIndex,
+                        onSelectVersion = onSelectVersion,
+                        timestamp = message.timestamp,
+                        onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
+                        onRegenerate = onRegenerate,
+                        onRegenerateWithModel = onRegenerateWithModel
+                    )
+                }
             }
 
             // ---------- 长按操作菜单（能力显隐，与引擎解耦） ----------

@@ -393,6 +393,26 @@ class ChatViewModel(
     fun createLocalConversation(agent: LlmAgent) {
         viewModelScope.launch {
             val conv = localStore.createConversation(agent)
+            // 预设对话（RikkaHub presetMessages）：新建会话时注入为用户/助手消息
+            if (agent.presetMessages.isNotEmpty()) {
+                val baseTs = System.currentTimeMillis() * 1000
+                agent.presetMessages.forEachIndexed { i, preset ->
+                    val isUser = preset.role.equals("user", ignoreCase = true)
+                    localStore.insertMessage(
+                        MessageItem(
+                            id = UUID.randomUUID().toString(),
+                            convId = conv.id,
+                            senderId = if (isUser) "me" else conv.botId,
+                            senderName = if (isUser) "" else agent.name.ifBlank { "AI" },
+                            segments = listOf(Segments.markdown(preset.content)),
+                            content = preset.content,
+                            isSelf = isUser,
+                            timestamp = baseTs + i
+                        )
+                    )
+                }
+                localStore.touch(conv.id, agent.presetMessages.last().content.take(NAME_MAX_LEN), baseTs)
+            }
             openConv(conv)
         }
     }
@@ -1137,8 +1157,12 @@ class ChatViewModel(
 
     // ============ 本地智能体流式生成 ============
 
+    /** 中断标记：本轮由用户主动停止（而非异常），用于在气泡尾部标记"已中断"并提供继续生成 */
+    private var interruptedByUser = false
+
     /** 用户主动停止生成 */
     fun stopGenerating() {
+        interruptedByUser = true
         pendingDispatch = false
         generatingJob?.cancel()
         generatingJob = null
@@ -1172,6 +1196,8 @@ class ChatViewModel(
      *   保留原回复上屏为旧版本，但不参与本次上下文，避免模型对着旧答案复述）
      * @param versionAnchorId 非空时本次回复作为该节点的新版本（携带 sys.ver 段、
      *   时间戳 = 锚点 + versionIdx，版本聚集在锚点位置，‹ n/m › 可切换）
+     * @param continueMode 续写模式：在现有最后一条 bot 回复基础上继续生成（用户中断后点「继续生成」），
+     *   上下文末尾保留已有回复并提示模型接着写
      */
     private suspend fun runLocalGeneration(
         botId: String,
@@ -1179,7 +1205,8 @@ class ChatViewModel(
         trimTrailingAssistant: Boolean = false,
         versionAnchorId: String? = null,
         versionIdx: Int = 0,
-        versionAnchorTs: Long = 0L
+        versionAnchorTs: Long = 0L,
+        continueMode: Boolean = false
     ) {
         val convId = _state.value.currentConvId
         // 优先用当前会话的智能体快照（含会话级覆盖配置），保证 AI 扩展面板的
@@ -1202,7 +1229,13 @@ class ChatViewModel(
         com.cjhsy.linkzone.service.ChatGenerationForegroundService.acquire(appContext, convId)
 
         // 在插入占位气泡前组装上下文（此时消息流末尾是刚发送的用户消息）
-        val context = buildLocalContext(agent, model, trimTrailingAssistant)
+        val context = buildLocalContext(agent, model, trimTrailingAssistant || continueMode)
+            .let { ctx ->
+                if (continueMode) {
+                    // 续写：末尾附"请继续"提示，让模型接着上一条回复写
+                    ctx + UIMessage.user("（请从上一条回复中断处继续，接着写完，不要重复已有内容）")
+                } else ctx
+            }
 
         // 工具集：记忆（memory_tool）+ 联网搜索（search_web/scrape_web）+ 技能（use_skill）
         // + MCP 服务器工具（mcp__{服务器}__{工具}），按需注入工具循环
@@ -1284,39 +1317,58 @@ class ChatViewModel(
         // 版本化生成（重生成/多模型重答）携带 sys.ver 段并锚定时间戳
         val senderName = agent.name.ifBlank { "AI" } +
             if (overrideModelId != null) " · " + model.displayName.ifBlank { model.modelId } else ""
-        val botMsgId = "bot-local-msg-" + UUID.randomUUID()
-        val placeholderSegs = buildList {
-            if (versionAnchorId != null) {
-                // 版本化生成：继承锚点**当前选中版本**的分支约束（嵌套分支）+ sys.ver 段，
-                // 新版本属于锚点新分支，旧尾巴已钉到旧版本
-                _state.value.messages.toMessageNodes()
-                    .firstOrNull { it.anchorId == versionAnchorId }
-                    ?.selected?.branchConstraints()
-                    ?.forEach { add(branchSegment(it.first, it.second)) }
-                add(versionSegment(versionAnchorId, versionIdx, versionIdx))
-            } else {
-                // 普通追加：挂到当前可见分支（切上游版本时新尾巴随分支切换）
-                addAll(activeBranchConstraints())
-            }
-            add(Segments.markdown("…"))
-        }
-        appendMessage(
-            MessageItem(
-                id = botMsgId,
-                convId = convId,
-                senderId = botId,
-                senderName = senderName,
-                segments = placeholderSegs,
-                content = "…",
-                isSelf = false,
-                timestamp = if (versionAnchorId != null) versionAnchorTs + versionIdx
-                else System.currentTimeMillis() * 1000
+        // 续写模式：复用最后一条 bot 消息（清除中断标记），不新建占位气泡；
+        // 起始文本取已有正文，流式在其后追加
+        val continueFromMsg = if (continueMode) {
+            _state.value.messages.lastOrNull { !it.isSelf && it.senderId == botId }
+        } else null
+        val botMsgId: String
+        if (continueFromMsg != null) {
+            botMsgId = continueFromMsg.id
+            // 清掉中断标记段，保持纯正文继续追加
+            _state.value = _state.value.copy(
+                messages = _state.value.messages.map { m ->
+                    if (m.id == botMsgId) m.copy(
+                        segments = m.segments?.filter { it.type != "sys.stop" }
+                    ) else m
+                }
             )
-        )
+        } else {
+            botMsgId = "bot-local-msg-" + UUID.randomUUID()
+            val placeholderSegs = buildList {
+                if (versionAnchorId != null) {
+                    // 版本化生成：继承锚点**当前选中版本**的分支约束（嵌套分支）+ sys.ver 段，
+                    // 新版本属于锚点新分支，旧尾巴已钉到旧版本
+                    _state.value.messages.toMessageNodes()
+                        .firstOrNull { it.anchorId == versionAnchorId }
+                        ?.selected?.branchConstraints()
+                        ?.forEach { add(branchSegment(it.first, it.second)) }
+                    add(versionSegment(versionAnchorId, versionIdx, versionIdx))
+                } else {
+                    // 普通追加：挂到当前可见分支（切上游版本时新尾巴随分支切换）
+                    addAll(activeBranchConstraints())
+                }
+                add(Segments.markdown("…"))
+            }
+            appendMessage(
+                MessageItem(
+                    id = botMsgId,
+                    convId = convId,
+                    senderId = botId,
+                    senderName = senderName,
+                    segments = placeholderSegs,
+                    content = "…",
+                    isSelf = false,
+                    timestamp = if (versionAnchorId != null) versionAnchorTs + versionIdx
+                    else System.currentTimeMillis() * 1000
+                )
+            )
+        }
 
         val handler = StreamChunkHandler(model)
         var uiMessages = baseContext
-        var latestText = ""
+        // 续写模式从已有正文开始追加
+        var latestText = continueFromMsg?.content ?: ""
         var latestThinking = ""
         var lastEmitAt = 0L
         // 工具产出的图片（image_generate 等）：收尾时追加进回复气泡并落库
@@ -1348,7 +1400,10 @@ class ChatViewModel(
                     .collect { chunk ->
                         uiMessages = handler.handle(uiMessages, chunk)
                         if (uiMessages.last().role == MessageRole.ASSISTANT) {
-                            latestText = uiMessages.last().toText()
+                            val tail = uiMessages.last().toText()
+                            // 续写模式：handler 每轮从 baseContext 重新开始，新输出只含增量尾部，
+                            // 气泡显示 = 已有正文 + 新增量；避免被重置丢内容
+                            latestText = if (continueMode) (continueFromMsg?.content ?: "") + tail else tail
                             // 思考过程（reasoning part）随流式累积，气泡内折叠展示
                             latestThinking = uiMessages.last().parts
                                 .filterIsInstance<UIMessagePart.Reasoning>()
@@ -1427,8 +1482,42 @@ class ChatViewModel(
                     convId, botId, agent, model, botMsgId, senderName,
                     latestText, latestThinking, generatedImageUrls
                 )
+                // 用户主动中断：在气泡尾部追加"已中断"标记（正文保留不撤回），
+                // 消息行上会出现「继续生成」按钮，点击后 sendContinueGeneration 续写
+                if (interruptedByUser) {
+                    interruptedByUser = false
+                    _state.value = _state.value.copy(
+                        messages = _state.value.messages.map { m ->
+                            if (m.id == botMsgId && m.content.isNotBlank()) {
+                                val segs = (m.segments ?: emptyList()) +
+                                    MessageSegment(type = "sys.stop", data = mapOf("reason" to "user"))
+                                m.copy(segments = segs)
+                            } else m
+                        }
+                    )
+                    // 同步落库（本地会话），重启后仍能看到中断标记
+                    if (isLocalConvId(convId)) {
+                        runCatching {
+                            val msg = _state.value.messages.firstOrNull { it.id == botMsgId }
+                            if (msg != null) localStore.insertMessage(msg) // REPLACE 语义更新
+                        }
+                    }
+                }
                 _state.value = _state.value.copy(generating = false)
                 com.cjhsy.linkzone.service.ChatGenerationForegroundService.release(appContext)
+            }
+        }
+    }
+
+    /** 点击「继续生成」：在现有回复基础上续写（Deepseek 式） */
+    fun continueGeneration() {
+        if (!isLocalConv() || generatingJob?.isActive == true) return
+        val botId = _state.value.currentBotId
+        generatingJob = viewModelScope.launch {
+            runLocalGeneration(botId, continueMode = true)
+            while (pendingDispatch) {
+                pendingDispatch = false
+                runLocalGeneration(botId)
             }
         }
     }
@@ -1625,7 +1714,14 @@ class ChatViewModel(
         val history = buildList {
             for (msg in source) {
                 if (msg.recalled || msg.uploadFailed) continue
-                msg.toLlmUIMessage()?.let { add(it) }
+                msg.toLlmUIMessage()?.let { ui ->
+                    // 非视觉正则：修改真实消息文本（进上下文）；仅视觉的在渲染侧处理
+                    val scope = if (msg.isSelf) "user" else "assistant"
+                    val newText = applyAgentRegexes(agent, ui.toText(), scope, visual = false)
+                    if (newText != ui.toText()) {
+                        add(ui.copy(parts = listOf(com.cjhsy.linkzone.ai.ui.UIMessagePart.Text(newText))))
+                    } else add(ui)
+                }
             }
         }
         // 上下文压缩：手动检查点优先（用户从扩展面板主动触发），其次自动压缩
@@ -1958,14 +2054,44 @@ class ChatViewModel(
         )
     }
 
-    /** prompt 变量替换：{{model}} 模型名 / {{time}} 当前时间 / {{date}} 当前日期 */
+    /** 应用智能体 regexes（RikkaHub AssistantRegex）：对文本做正则查找替换
+     * @param scope "user" / "assistant"；visualOnly=true 只改显示不进上下文
+     */
+    private fun applyAgentRegexes(agent: LlmAgent, text: String, scope: String, visual: Boolean): String {
+        if (text.isBlank() || agent.regexes.isEmpty()) return text
+        return agent.regexes.fold(text) { acc, r ->
+            if (!r.enabled || r.visualOnly != visual || scope !in r.affectingScope) return@fold acc
+            if (r.findRegex.isBlank()) return@fold acc
+            runCatching { acc.replace(Regex(r.findRegex), r.replaceString) }.getOrElse { acc }
+        }
+    }
+
+    /** prompt 变量替换（对齐 RikkaHub PlaceholderTransformer）：
+     * {{model}} 模型显示名 / {{model_id}} 模型 ID / {{time}} 当前时间 / {{date}} 当前日期 /
+     * {{user}} 用户昵称（个人资料）/ {{char}} 智能体名 / {{locale}} 系统语言 /
+     * {{timezone}} 时区 / {{device_info}} 机型 / {{system_version}} 系统版本 / {{battery}} 电量
+     */
     private fun renderSystemPrompt(agent: LlmAgent, model: Model): String {
         if (agent.systemPrompt.isBlank()) return ""
         val now = LocalDateTime.now()
+        val nickname = userRepository.profile.value?.username?.ifBlank { "用户" } ?: "用户"
+        val battery = runCatching {
+            val bm = appContext.getSystemService(android.content.Context.BATTERY_SERVICE) as android.os.BatteryManager
+            bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        }.getOrDefault(-1)
         return agent.systemPrompt
             .replace("{{model}}", model.displayName.ifBlank { model.modelId })
+            .replace("{{model_id}}", model.modelId)
             .replace("{{time}}", now.format(DateTimeFormatter.ofPattern("HH:mm")))
             .replace("{{date}}", now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")))
+            .replace("{{weekday}}", now.format(DateTimeFormatter.ofPattern("EEEE", java.util.Locale.CHINESE)))
+            .replace("{{user}}", nickname)
+            .replace("{{char}}", agent.name.ifBlank { "智能体" })
+            .replace("{{locale}}", java.util.Locale.getDefault().displayName)
+            .replace("{{timezone}}", java.util.TimeZone.getDefault().id)
+            .replace("{{device_info}}", "${android.os.Build.BRAND} ${android.os.Build.MODEL}")
+            .replace("{{system_version}}", "Android ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
+            .replace("{{battery}}", if (battery >= 0) "$battery%" else "未知")
     }
 
     /** 长按消息 → 回复：记录引用并聚焦输入 */

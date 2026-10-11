@@ -282,6 +282,7 @@ fun ChatScreen(
                         viewModel.loadChatModels()
                         showModelPicker = true
                     },
+                    onContinue = viewModel::continueGeneration,
                     onSelectVersion = viewModel::selectVersion,
                     modifier = Modifier.weight(1f)
                 )
@@ -656,6 +657,7 @@ private fun MessageList(
     onEdit: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onRegenerate: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onRegenerateWithModel: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
+    onContinue: () -> Unit = {},
     onSelectVersion: (String, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -809,7 +811,8 @@ private fun MessageList(
                         onDelete = { onDelete(msg) },
                         onEdit = { onEdit(msg) },
                         onRegenerate = { onRegenerate(msg) },
-                        onRegenerateWithModel = { onRegenerateWithModel(msg) }
+                        onRegenerateWithModel = { onRegenerateWithModel(msg) },
+                        onContinue = onContinue.takeIf { isLocal && !streaming }
                     )
                 }
             }

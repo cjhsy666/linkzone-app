@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -562,7 +563,11 @@ private fun AgentEditor(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                listOf("{{model}}" to "当前模型名", "{{time}}" to "当前时间", "{{date}}" to "当前日期").forEach { (token, desc) ->
+                listOf(
+                    "{{model}}" to "模型名", "{{model_id}}" to "模型ID", "{{time}}" to "时间", "{{date}}" to "日期",
+                    "{{weekday}}" to "星期", "{{user}}" to "用户名", "{{char}}" to "智能体名", "{{locale}}" to "语言",
+                    "{{timezone}}" to "时区", "{{device_info}}" to "机型", "{{battery}}" to "电量"
+                ).forEach { (token, desc) ->
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
@@ -938,12 +943,226 @@ private fun AgentEditor(
             )
         }
 
+        // ===== 预设对话（RikkaHub presetMessages） =====
+        item { Text("预设对话", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        item {
+            Text(
+                "新建会话时自动注入的一组示例消息，作为开场白 / few-shot 示例。可指定角色为用户或助手。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            PresetMessagesEditor(
+                messages = agent.presetMessages,
+                onChange = { list -> viewModel.updateEditing { it.copy(presetMessages = list) } }
+            )
+        }
+
+        // ===== 输出正则处理（RikkaHub AssistantRegex） =====
+        item { Text("输出正则处理", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        item {
+            Text(
+                "对消息文本做正则查找替换，可作用于用户输入或助手输出；仅视觉替换不影响发给模型的上下文。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            AgentRegexEditor(
+                regexes = agent.regexes,
+                onChange = { list -> viewModel.updateEditing { it.copy(regexes = list) } }
+            )
+        }
+
         item {
             TextButton(onClick = { viewModel.delete(agent) }) {
                 Text("删除智能体", color = MaterialTheme.colorScheme.error)
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+/** 预设对话编辑：列表 + 每条可选角色（用户/助手）+ 内容多行输入 + 删除/追加 */
+@Composable
+private fun PresetMessagesEditor(
+    messages: List<com.cjhsy.linkzone.data.model.PresetMessage>,
+    onChange: (List<com.cjhsy.linkzone.data.model.PresetMessage>) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        messages.forEachIndexed { index, preset ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("user" to "用户", "assistant" to "助手").forEach { (role, label) ->
+                        val selected = preset.role == role
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                )
+                                .clickable {
+                                    onChange(messages.toMutableList().also {
+                                        it[index] = preset.copy(role = role)
+                                    })
+                                }
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "删除",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                onChange(messages.toMutableList().also { it.removeAt(index) })
+                            }
+                            .padding(6.dp)
+                    )
+                }
+                OutlinedTextField(
+                    value = preset.content,
+                    onValueChange = { v ->
+                        onChange(messages.toMutableList().also {
+                            it[index] = preset.copy(content = v)
+                        })
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("消息内容…") },
+                    minLines = 2
+                )
+            }
+        }
+        TextButton(onClick = {
+            onChange(messages + com.cjhsy.linkzone.data.model.PresetMessage())
+        }) { Text("+ 添加预设消息") }
+    }
+}
+
+/** 输出正则编辑：列表 + 每条名称/正则/替换/作用范围/仅视觉 + 开关/删除/追加 */
+@Composable
+private fun AgentRegexEditor(
+    regexes: List<com.cjhsy.linkzone.data.model.AgentRegex>,
+    onChange: (List<com.cjhsy.linkzone.data.model.AgentRegex>) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        regexes.forEachIndexed { index, regex ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = regex.name,
+                        onValueChange = { v ->
+                            onChange(regexes.toMutableList().also {
+                                it[index] = regex.copy(name = v)
+                            })
+                        },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("规则名") },
+                        singleLine = true
+                    )
+                    Switch(
+                        checked = regex.enabled,
+                        onCheckedChange = { v ->
+                            onChange(regexes.toMutableList().also {
+                                it[index] = regex.copy(enabled = v)
+                            })
+                        }
+                    )
+                    Text(
+                        "删除",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                onChange(regexes.toMutableList().also { it.removeAt(index) })
+                            }
+                            .padding(6.dp)
+                    )
+                }
+                OutlinedTextField(
+                    value = regex.findRegex,
+                    onValueChange = { v ->
+                        onChange(regexes.toMutableList().also {
+                            it[index] = regex.copy(findRegex = v)
+                        })
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("查找正则") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = regex.replaceString,
+                    onValueChange = { v ->
+                        onChange(regexes.toMutableList().also {
+                            it[index] = regex.copy(replaceString = v)
+                        })
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("替换为（支持 $1 分组）") },
+                    singleLine = true
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf("user" to "用户", "assistant" to "助手").forEach { (scope, label) ->
+                        val selected = scope in regex.affectingScope
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                val newScope = if (selected) regex.affectingScope - scope
+                                else regex.affectingScope + scope
+                                onChange(regexes.toMutableList().also {
+                                    it[index] = regex.copy(affectingScope = newScope)
+                                })
+                            },
+                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                    FilterChip(
+                        selected = regex.visualOnly,
+                        onClick = {
+                            onChange(regexes.toMutableList().also {
+                                it[index] = regex.copy(visualOnly = !regex.visualOnly)
+                            })
+                        },
+                        label = { Text("仅视觉", style = MaterialTheme.typography.labelSmall) }
+                    )
+                }
+            }
+        }
+        TextButton(onClick = {
+            onChange(regexes + com.cjhsy.linkzone.data.model.AgentRegex())
+        }) { Text("+ 添加正则") }
     }
 }
 

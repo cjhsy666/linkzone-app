@@ -67,6 +67,31 @@ data class LlmAgent(
     val customHeaders: List<CustomHeader> = emptyList(),
     /** 请求级自定义 body 字段 */
     val customBodies: List<CustomBody> = emptyList(),
+    /** 预设对话（RikkaHub presetMessages）：新建会话时注入为用户/助手消息，作为开场示例 */
+    val presetMessages: List<PresetMessage> = emptyList(),
+    /** 输出正则处理（RikkaHub AssistantRegex）：对用户/助手文本做查找替换 */
+    val regexes: List<AgentRegex> = emptyList(),
     /** 创建时间（排序用） */
     val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** 预设对话条目：role "user"/"assistant"，content 为消息文本 */
+@Serializable
+data class PresetMessage(
+    val role: String = "user",
+    val content: String = ""
+)
+
+/** 输出正则处理条目（对齐 RikkaHub AssistantRegex） */
+@Serializable
+data class AgentRegex(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String = "",
+    val enabled: Boolean = true,
+    val findRegex: String = "",
+    val replaceString: String = "",
+    /** 作用范围："user" / "assistant"，多选 */
+    val affectingScope: Set<String> = setOf("assistant"),
+    /** 仅视觉上替换（不进上下文），false 则修改真实消息 */
+    val visualOnly: Boolean = true
 )
