@@ -90,9 +90,8 @@ fun MarkdownContent(
     // 排版主题用到的像素值（一次性算好，remember 捕获）
     val hairlinePx = with(density) { 1.dp.toPx().toInt() }
     val quoteBarPx = with(density) { 3.dp.toPx().toInt() }
-    val quotePadPx = with(density) { 10.dp.toPx().toInt() }
 
-    val markwon = remember(linkColor, textColor, hairlinePx, quoteBarPx, quotePadPx) {
+    val markwon = remember(linkColor, textColor, hairlinePx, quoteBarPx) {
         // 代码块 / 行内代码配色（随气泡文字色派生，无新依赖）
         val inlineCodeBg = linkColor.copy(alpha = 0.12f).toArgb()
         val blockCodeBg = textColor.copy(alpha = 0.06f).toArgb()
@@ -125,8 +124,6 @@ fun MarkdownContent(
                         .headingBreakHeight(hairlinePx)
                         .blockQuoteColor(quoteBar)
                         .blockQuoteWidth(quoteBarPx)
-                        .blockQuoteLeftPadding(quotePadPx)
-                        .blockQuoteRightPadding(quotePadPx)
                         .thematicBreakColor(dimLine)
                         .thematicBreakHeight(hairlinePx)
                         .bulletColor(bullet)
