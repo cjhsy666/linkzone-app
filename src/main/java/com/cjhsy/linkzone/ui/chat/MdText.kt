@@ -414,46 +414,66 @@ private val DARK_CODE = CodePalette(
     operator = Color(0xFF89DDFF)
 )
 
-/** prism4j token 类型映射到配色类别（未命中不着色，保持正文色） */
-private fun CodePalette.colorFor(type: String): Color? = when {
-    type.contains("comment") -> comment
-    type.contains("string") || type == "char" -> string
-    type.contains("number") || type == "boolean" -> number
-    type.contains("keyword") || type == "control" || type == "statement" -> keyword
-    type.contains("function") || type == "method" -> function
-    type.contains("class") || type.contains("type") || type == "annotation" || type == "builtin" -> type
-    type == "operator" -> operator
-    else -> null
+/** prism4j 零依赖替代：轻量正则高亮（注释/字符串/数字/关键字/注解/函数调用） */
+private val CODE_KEYWORDS = setOf(
+    "abstract", "as", "assert", "async", "await", "begin", "bool", "boolean", "break",
+    "byte", "case", "catch", "char", "class", "const", "constructor", "continue",
+    "debugger", "def", "default", "del", "delete", "do", "double", "echo", "elif", "else",
+    "end", "enum", "except", "extends", "false", "final", "finally", "float", "fn", "for",
+    "foreach", "from", "func", "function", "global", "go", "if", "impl", "implements",
+    "import", "in", "instanceof", "int", "interface", "internal", "is", "lambda", "let",
+    "local", "long", "match", "module", "mut", "namespace", "new", "nil", "none", "nonlocal",
+    "not", "null", "open", "operator", "or", "override", "package", "pass", "private",
+    "protected", "pub", "public", "raise", "readonly", "record", "require", "return",
+    "sealed", "self", "short", "signed", "static", "string", "struct", "super", "switch",
+    "synchronized", "template", "then", "this", "throw", "throws", "trait", "transient",
+    "true", "try", "type", "typedef", "typeof", "union", "unsigned", "use", "using",
+    "val", "var", "virtual", "void", "when", "where", "while", "with", "yield"
+)
+
+private val HASH_COMMENT_LANGS = setOf(
+    "python", "py", "bash", "sh", "shell", "zsh", "yaml", "yml", "ruby", "rb",
+    "makefile", "dockerfile", "toml", "r", "perl", "conf", "ini"
+)
+
+/** 分词正则：注释 | 字符串 | 数字 | 注解 | 关键字 | 函数调用（命名组判定类别） */
+private fun buildCodeTokenRegex(hashComment: Boolean): Regex {
+    val commentBranch = buildString {
+        append("(?<!:)//[^\\n]*|/\\*[\\s\\S]*?\\*/")
+        if (hashComment) append("|#[^\\n]*")
+    }
+    return Regex(
+        "(?<comment>$commentBranch)" +
+            "|(?<string>\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|\"(?:\\\\.|[^\"\\\\\\n])*\"|" +
+            "'(?:\\\\.|[^'\\\\\\n])*'|`(?:\\\\.|[^`\\\\])*`)" +
+            "|(?<number>\\b(?:0[xXbBoO][0-9a-fA-F_]+|\\d[\\d_]*(?:\\.[\\d_]+)?(?:[eE][+-]?\\d+)?)[fFlLdDuU]*\\b)" +
+            "|(?<annotation>@[A-Za-z_]\\w*)" +
+            "|(?<keyword>\\b(?:${CODE_KEYWORDS.sorted().joinToString("|")})\\b)" +
+            "|(?<func>\\b[A-Za-z_]\\w*(?=\\s*\\())"
+    )
 }
 
-/** prism4j 高亮为 AnnotatedString；语言未知/解析失败时返回纯文本 */
+private val CODE_TOKENS_PLAIN = buildCodeTokenRegex(false)
+private val CODE_TOKENS_HASH = buildCodeTokenRegex(true)
+
+/** 正则高亮为 AnnotatedString；无命中保持正文色 */
 private fun highlightCode(code: String, lang: String, dark: Boolean): AnnotatedString {
-    if (lang.isBlank()) return AnnotatedString(code)
-    val nodes = runCatching {
-        io.noties.prism4j.Prism4j(io.noties.prism4j.bundle.Prism4jGrammarLocator())
-            .highlight(lang.lowercase(), code)
-    }.getOrNull() ?: return AnnotatedString(code)
     val palette = if (dark) DARK_CODE else LIGHT_CODE
+    val regex = if (lang.lowercase() in HASH_COMMENT_LANGS) CODE_TOKENS_HASH else CODE_TOKENS_PLAIN
     return buildAnnotatedString {
-        var idx = 0
-        fun walk(node: io.noties.prism4j.Prism4j.Node) {
-            when (node) {
-                is io.noties.prism4j.Prism4j.Text -> {
-                    append(node.text())
-                    idx += node.text().length
-                }
-                is io.noties.prism4j.Prism4j.Syntax -> {
-                    val start = idx
-                    node.children().forEach { walk(it) }
-                    if (idx > start) {
-                        palette.colorFor(node.type())?.let {
-                            addStyle(SpanStyle(color = it), start, idx)
-                        }
-                    }
-                }
+        append(code)
+        for (m in regex.findAll(code)) {
+            val color = when {
+                m.groups["comment"] != null -> palette.comment
+                m.groups["string"] != null -> palette.string
+                m.groups["number"] != null -> palette.number
+                m.groups["annotation"] != null -> palette.type
+                m.groups["keyword"] != null -> palette.keyword
+                m.groups["func"] != null -> palette.function
+                else -> null
             }
+            if (color != null) addStyle(SpanStyle(color = color), m.range.first, m.range.last + 1)
         }
-        nodes.forEach { walk(it) }
     }
 }
 
