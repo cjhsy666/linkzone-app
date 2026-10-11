@@ -119,8 +119,8 @@ fun MarkdownContent(
                         .codeBackgroundColor(inlineCodeBg)
                         .codeBlockTextColor(textColor.toArgb())
                         .codeBlockBackgroundColor(blockCodeBg)
-                        // 现代排版：标题层级、标题/段落分割线、引用竖条、列表圆点均随气泡色派生
-                        .headingTextSize(floatArrayOf(20f, 17.5f, 16f, 15f, 14.5f, 14f))
+                        // 现代排版：标题/段落分割线、引用竖条、列表圆点均随气泡色派生
+                        // （标题字号沿用 Markwon 默认分级缩放）
                         .headingBreakColor(dimLine)
                         .headingBreakHeight(hairlinePx)
                         .blockquoteColor(quoteBar)
