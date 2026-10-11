@@ -87,17 +87,11 @@ fun MarkdownContent(
     val context = LocalContext.current
     val density = androidx.compose.ui.platform.LocalDensity.current
     val latexTextSize = with(density) { 14.sp.toPx() }
-    // 排版主题用到的像素值（一次性算好，remember 捕获）
-    val hairlinePx = with(density) { 1.dp.toPx().toInt() }
-    val quoteBarPx = with(density) { 3.dp.toPx().toInt() }
 
-    val markwon = remember(linkColor, textColor, hairlinePx, quoteBarPx) {
+    val markwon = remember(linkColor, textColor) {
         // 代码块 / 行内代码配色（随气泡文字色派生，无新依赖）
         val inlineCodeBg = linkColor.copy(alpha = 0.12f).toArgb()
         val blockCodeBg = textColor.copy(alpha = 0.06f).toArgb()
-        val dimLine = textColor.copy(alpha = 0.28f).toArgb()
-        val quoteBar = textColor.copy(alpha = 0.3f).toArgb()
-        val bullet = textColor.copy(alpha = 0.55f).toArgb()
         Markwon.builder(context)
             .usePlugin(TaskListPlugin.create(context))
             .usePlugin(StrikethroughPlugin.create())
@@ -118,15 +112,6 @@ fun MarkdownContent(
                         .codeBackgroundColor(inlineCodeBg)
                         .codeBlockTextColor(textColor.toArgb())
                         .codeBlockBackgroundColor(blockCodeBg)
-                        // 现代排版：标题/段落分割线、引用竖条、列表圆点均随气泡色派生
-                        // （标题字号沿用 Markwon 默认分级缩放）
-                        .headingBreakColor(dimLine)
-                        .headingBreakHeight(hairlinePx)
-                        .blockQuoteColor(quoteBar)
-                        .blockQuoteWidth(quoteBarPx)
-                        .thematicBreakColor(dimLine)
-                        .thematicBreakHeight(hairlinePx)
-                        .bulletColor(bullet)
                 }
             })
             .build()
