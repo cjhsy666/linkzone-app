@@ -156,6 +156,11 @@ object CharacterCardParser {
         val scenario = card.str("scenario").orEmpty().trim()
         val firstMes = card.str("first_mes").orEmpty().trim()
         val explicitSystem = card.str("system_prompt").orEmpty().trim()
+        // 作者备注：角色设计意图 / 扮演要点，对角色扮演质量影响很大
+        val creatorNotes = card.str("creator_notes").orEmpty().trim()
+        // 历史后指令：SillyTavern 中注入在对话历史之后，LinkZone 为单系统提示词，
+        // 追加到末尾以尽量还原其语义
+        val postHistory = card.str("post_history_instructions").orEmpty().trim()
 
         val prompt = buildString {
             if (explicitSystem.isNotEmpty()) {
@@ -171,9 +176,17 @@ object CharacterCardParser {
                 if (isNotEmpty()) append("\n\n")
                 append("## 场景\n").append(scenario)
             }
+            if (creatorNotes.isNotEmpty()) {
+                if (isNotEmpty()) append("\n\n")
+                append("## 作者备注\n").append(creatorNotes)
+            }
             if (firstMes.isNotEmpty()) {
                 if (isNotEmpty()) append("\n\n")
                 append("## 开场白\n（首次回复时请先使用以下开场白：）\n").append(firstMes)
+            }
+            if (postHistory.isNotEmpty()) {
+                if (isNotEmpty()) append("\n\n")
+                append("## 历史后指令\n（请在每轮回复前遵循以下要求：）\n").append(postHistory)
             }
         }.trim()
 
@@ -265,12 +278,13 @@ object CharacterCardParser {
         return content.toIntOrNull()
     }
 
-    private fun JsonObject.str(vararg keys: String): String? {
+    private fun JsonObject?.str(vararg keys: String): String? {
+        if (this == null) return null
         keys.forEach { key -> this[key].asStringOrNull()?.let { return it } }
         return null
     }
 
-    private fun JsonObject.bool(key: String): Boolean? = this[key].asBoolOrNull()
+    private fun JsonObject?.bool(key: String): Boolean? = this?.get(key).asBoolOrNull()
 
-    private fun JsonObject.int(key: String): Int? = this[key].asIntOrNull()
+    private fun JsonObject?.int(key: String): Int? = this?.get(key).asIntOrNull()
 }
