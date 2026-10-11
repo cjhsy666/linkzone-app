@@ -747,7 +747,7 @@ private fun WorkspaceManageDialog(
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                                 Text(
-                                    "${stats.fileCount} 个文件 · ${stats.totalBytes / 1024} KB",
+                                    "${stats?.fileCount ?: 0} 个文件 · ${(stats?.totalBytes ?: 0) / 1024} KB",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

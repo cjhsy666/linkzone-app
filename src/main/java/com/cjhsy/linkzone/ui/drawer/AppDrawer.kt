@@ -126,7 +126,9 @@ fun AppDrawer(
                 placeholder = { Text("搜索会话", style = MaterialTheme.typography.bodySmall) },
                 singleLine = true,
                 colors = androidx.compose.material3.TextFieldDefaults.colors(
-                    containerColor = Color.Transparent,
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,
                     disabledIndicatorColor = Color.Transparent
