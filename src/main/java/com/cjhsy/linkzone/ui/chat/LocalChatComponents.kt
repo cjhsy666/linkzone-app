@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -123,7 +124,7 @@ internal fun LocalModelSheet(
                 singleLine = true,
                 leadingIcon = {
                     Icon(
-                        androidx.compose.material.icons.Icons.Filled.Search,
+                        Icons.Filled.Search,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
