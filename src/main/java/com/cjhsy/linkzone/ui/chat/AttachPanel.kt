@@ -95,7 +95,9 @@ fun AttachPanel(
     }
 
     val fileLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
+        // OpenDocument：系统「文件」应用完整页面（可浏览全部目录、最近文件、各云盘），
+        // 与 RikkaHub 上传文件一致的体验
+        ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             val cached = runCatching { uri.copyToCache(context) }.getOrNull()
@@ -182,7 +184,7 @@ fun AttachPanel(
             icon = Icons.Filled.InsertDriveFile,
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         ) {
-            fileLauncher.launch("*/*")
+            fileLauncher.launch(arrayOf("*/*"))
         }
     )
 

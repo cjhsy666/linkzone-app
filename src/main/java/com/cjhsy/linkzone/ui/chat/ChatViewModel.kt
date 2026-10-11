@@ -1182,7 +1182,11 @@ class ChatViewModel(
         versionAnchorTs: Long = 0L
     ) {
         val convId = _state.value.currentConvId
-        val agent = llmRepository.getAgent(extractAgentId(botId))
+        // 优先用当前会话的智能体快照（含会话级覆盖配置），保证 AI 扩展面板的
+        // 改动（模型/参数/提示词/开关/工具）**即时生效**；无快照时回退数据库
+        val baseAgentId = extractAgentId(botId)
+        val agent = _state.value.currentAgent?.takeIf { it.id == baseAgentId }
+            ?: llmRepository.getAgent(baseAgentId)
         if (agent == null) {
             _state.value = _state.value.copy(error = "智能体不存在或已被删除")
             return
@@ -1387,9 +1391,14 @@ class ChatViewModel(
                     .orEmpty()
                 if (pendingCalls.isEmpty() || tools.isEmpty()) break
 
-                // 执行工具（技能加载等），气泡显示执行状态
-                pendingCalls.forEach { call ->
-                    updateLocalBotBubble(botMsgId, "⚙ 正在调用 ${call.toolName} …", latestThinking)
+                // 执行工具（技能加载等），气泡在**保留正文**的前提下于尾部追加执行状态，
+                // 而不是整段替换（否则已生成的回复在工具执行期间会"消失"）
+                if (pendingCalls.isNotEmpty()) {
+                    val hint = pendingCalls.joinToString("、") { it.toolName }
+                    updateLocalBotBubble(
+                        botMsgId, latestText, latestThinking,
+                        statusHint = "⚙ 正在调用 $hint …"
+                    )
                 }
                 val executedTools = executeToolCalls(tools, pendingCalls)
                 // 收集工具输出中的图片（image_generate），收尾时渲染进回复气泡
@@ -1511,10 +1520,16 @@ class ChatViewModel(
     }
 
     /** 刷新本地生成中的 bot 气泡文本（空文本显示 …）；thinking 非空时前置思考过程段；保留 sys.ver 版本段 */
-    private fun updateLocalBotBubble(msgId: String, text: String, thinking: String = "") {
+    private fun updateLocalBotBubble(
+        msgId: String,
+        text: String,
+        thinking: String = "",
+        /** 非空时在正文尾部追加工具执行状态行（不覆盖正文），流式恢复后自动消失 */
+        statusHint: String? = null,
+    ) {
         val (thinkFromText, clean) = extractThinkTags(text)
         val mergedThinking = (thinking + thinkFromText).trim()
-        val md = clean.ifBlank { "…" }
+        val md = clean.ifBlank { if (statusHint != null) "" else "…" }
         _state.value = _state.value.copy(
             messages = _state.value.messages.map { m ->
                 if (m.id == msgId) {
@@ -1524,9 +1539,10 @@ class ChatViewModel(
                             it.type == VERSION_SEG || it.type == BRANCH_SEG
                         }.orEmpty())
                         if (mergedThinking.isNotBlank()) add(Segments.thinking(mergedThinking))
-                        add(Segments.markdown(md))
+                        if (md.isNotBlank()) add(Segments.markdown(md))
+                        if (!statusHint.isNullOrBlank()) add(Segments.markdown(statusHint))
                     }
-                    m.copy(segments = segments, content = md)
+                    m.copy(segments = segments, content = (listOf(md, statusHint).filterNotNull().filter { it.isNotBlank() }.joinToString(" ")))
                 } else m
             }
         )

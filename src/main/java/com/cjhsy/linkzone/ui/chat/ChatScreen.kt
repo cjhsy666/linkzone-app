@@ -238,7 +238,9 @@ fun ChatScreen(
                 cloudTitle = state.currentName.let {
                     if (it.isBlank() || it == ChatViewModel.NEW_CONV_NAME) "LinkZone" else it
                 },
-                agentName = agent?.name?.ifBlank { "智能体" } ?: "智能体",
+                agentName = state.currentName.let {
+                    if (it.isBlank() || it == ChatViewModel.NEW_CONV_NAME) "新对话" else it
+                },
                 avatarEmoji = agent?.avatarEmoji.orEmpty(),
                 modelLabel = agent?.chatModelId?.substringAfterLast('/')?.ifBlank { null }
                     ?: "默认模型",
@@ -428,10 +430,6 @@ fun ChatScreen(
                 val current = state.currentAgent
                 if (current != null) viewModel.setLocalAgentModel(current, modelId)
             },
-            onSwitchAgent = {
-                showModelSheet = false
-                onOpenEnginePicker()
-            },
             onManageAgents = {
                 showModelSheet = false
                 onManageAgents()
@@ -455,6 +453,10 @@ fun ChatScreen(
             onPickModel = {
                 showExtensionSheet = false
                 showModelSheet = true
+            },
+            onSwitchAgent = {
+                showExtensionSheet = false
+                onOpenEnginePicker()
             },
             onBindWorkspace = viewModel::bindWorkspace,
             onCreateWorkspace = viewModel::createAndBindWorkspace,
@@ -1193,32 +1195,6 @@ internal fun ChatInputBar(
             replyTo?.let { ReplyPreviewBar(it, onCancelReply) }
         }
 
-        // 功能面板（拍照/相册/录像/位置/文件，悬浮卡片，选中→加入待发送）
-        AnimatedVisibility(
-            visible = panelOpen,
-            enter = expandVertically(tween(220)) + fadeIn(tween(220)),
-            exit = shrinkVertically(tween(180)) + fadeOut(tween(180))
-        ) {
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                shadowElevation = 10.dp,
-                border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp)
-            ) {
-                AttachPanel(
-                    enabled = enabled && !sending,
-                    onSendMedia = { file, forcedType ->
-                        pendingAttachments = pendingAttachments + PendingMedia(file, forcedType)
-                    },
-                    onSendLocation = onSendLocation
-                )
-            }
-        }
-
         // 待发送附件预览条（悬浮缩略卡 + X 移除）
         AnimatedVisibility(
             visible = pendingAttachments.isNotEmpty(),
@@ -1518,6 +1494,32 @@ internal fun ChatInputBar(
                             modifier = Modifier.size(20.dp)
                         )
                     }
+                }
+            }
+
+            // 功能面板（拍照/相册/录像/位置/文件）：展开在输入胶囊**下方**，贴屏幕底边
+            AnimatedVisibility(
+                visible = panelOpen,
+                enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                exit = shrinkVertically(tween(180)) + fadeOut(tween(180))
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    shadowElevation = 10.dp,
+                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                ) {
+                    AttachPanel(
+                        enabled = enabled && !sending,
+                        onSendMedia = { file, forcedType ->
+                            pendingAttachments = pendingAttachments + PendingMedia(file, forcedType)
+                        },
+                        onSendLocation = onSendLocation
+                    )
                 }
             }
         }

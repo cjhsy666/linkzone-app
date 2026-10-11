@@ -149,6 +149,55 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         _state.value = _state.value.copy(message = message, error = error)
     }
 
+    // ---------------- Linux 运行环境（PRoot）安装 ----------------
+
+    /** 环境安装进度（非空 = 安装中，值为提示文本）；完成/失败时回 null 并发 notify */
+    private val _envInstalling = MutableStateFlow<String?>(null)
+    val envInstalling: StateFlow<String?> = _envInstalling.asStateFlow()
+
+    /** 当前环境状态（proot/rootfs 是否就绪） */
+    fun envStatus(): com.cjhsy.linkzone.workspace.LinuxEnvInstaller.EnvStatus =
+        com.cjhsy.linkzone.workspace.LinuxEnvInstaller.status(appContext.filesDir)
+
+    /** 导入 proot 静态二进制（SAF） */
+    fun importProotBinary(uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _envInstalling.value = "正在导入 proot …"
+            runCatching {
+                com.cjhsy.linkzone.workspace.LinuxEnvInstaller.importProot(appContext, uri)
+            }.onSuccess {
+                _envInstalling.value = null
+                notify("proot 导入成功")
+            }.onFailure { e ->
+                _envInstalling.value = null
+                notify(null, "proot 导入失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    /** 导入 rootfs 压缩包（SAF）并解压 */
+    fun importRootfsTar(uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _envInstalling.value = "正在解压 rootfs（可能需要 1-3 分钟）…"
+            var lastTick = 0L
+            runCatching {
+                com.cjhsy.linkzone.workspace.LinuxEnvInstaller.importRootfs(appContext, uri) { count, name ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastTick > 800) { // 节流刷新进度
+                        lastTick = now
+                        _envInstalling.value = "正在解压 rootfs… 已处理 $count 项（$name）"
+                    }
+                }
+            }.onSuccess {
+                _envInstalling.value = null
+                notify("Linux 环境安装完成，已切换为完整环境")
+            }.onFailure { e ->
+                _envInstalling.value = null
+                notify(null, "rootfs 安装失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
     // ---------------- 工作区列表 ----------------
 
     fun refreshList() {
@@ -548,9 +597,13 @@ fun WorkspaceScreen(
     }
 
     if (state.opened == null) {
+        val envInstalling by viewModel.envInstalling.collectAsStateWithLifecycle()
         WorkspaceListPane(
             state = state,
             shellMode = viewModel.shellMode,
+            envInstalling = envInstalling,
+            onImportProot = { uri -> viewModel.importProotBinary(uri) },
+            onImportRootfs = { uri -> viewModel.importRootfsTar(uri) },
             onBack = onBack,
             onOpen = viewModel::openWorkspace,
             onCreate = viewModel::createWorkspace,
@@ -571,6 +624,9 @@ fun WorkspaceScreen(
 private fun WorkspaceListPane(
     state: WorkspaceUiState,
     shellMode: String,
+    envInstalling: String?,
+    onImportProot: (android.net.Uri) -> Unit,
+    onImportRootfs: (android.net.Uri) -> Unit,
     onBack: () -> Unit,
     onOpen: (String) -> Unit,
     onCreate: (String) -> Unit,
@@ -580,6 +636,14 @@ private fun WorkspaceListPane(
     var showCreate by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<WorkspaceMeta?>(null) }
     var deleting by remember { mutableStateOf<WorkspaceMeta?>(null) }
+
+    // 环境安装文件选择器（SAF）：proot 二进制 / rootfs 压缩包
+    val prootLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(onImportProot)
+    }
+    val rootfsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(onImportRootfs)
+    }
 
     Column(
         modifier = Modifier
@@ -615,6 +679,80 @@ private fun WorkspaceListPane(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 24.dp)
         )
+
+        // Linux 运行环境卡：展示当前环境 + 安装完整环境入口
+        val env = viewModel.envStatus()
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Terminal,
+                        contentDescription = null,
+                        tint = if (env.usingProot) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (env.usingProot) "运行环境：完整 Linux（PRoot）"
+                        else "运行环境：精简模式（系统 toybox）",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = if (env.usingProot)
+                        "已就绪：apt/python/node 等 rootfs 内工具均可在终端使用"
+                    else
+                        "精简模式仅含 ls/cat/sed 等基础命令。导入 proot 与发行版 rootfs（推荐 Alpine minirootfs ≈3MB）即可获得完整 Linux 环境",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!env.usingProot) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = { prootLauncher.launch(arrayOf("*/*")) },
+                            enabled = envInstalling == null
+                        ) {
+                            Text(
+                                if (env.prootReady) "✓ proot 已装 · 重选" else "① 导入 proot",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                        TextButton(
+                            onClick = { rootfsLauncher.launch(arrayOf("*/*")) },
+                            enabled = envInstalling == null
+                        ) {
+                            Text(
+                                if (env.rootfsReady) "✓ rootfs 已装 · 重选" else "② 导入 rootfs 压缩包",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+                if (envInstalling != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            envInstalling,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
 
         Spacer(Modifier.height(8.dp))
 

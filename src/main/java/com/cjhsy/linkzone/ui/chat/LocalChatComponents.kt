@@ -24,6 +24,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
@@ -40,7 +42,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -64,8 +68,9 @@ import com.cjhsy.linkzone.data.model.LlmSkill
 /**
  * 顶栏模型选择底部菜单：
  * - 顶部搜索框（按模型名 / id / 服务商过滤，渠道与模型多时快速定位）
- * - 无搜索词时：「最近使用」分组置顶，其余按服务商分组
- * - 底部附切换智能体 / 管理智能体入口
+ * - 无搜索词时：「最近使用」分组置顶（与下方分组重复展示，不占位），其余按服务商折叠分组，
+ *   点服务商展开/收起；当前选中模型所在的服务商默认展开
+ * - 底部附管理智能体入口（切换智能体在 AI 扩展面板中）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -74,12 +79,11 @@ internal fun LocalModelSheet(
     currentModelId: String,
     recentModelIds: List<String>,
     onPick: (String) -> Unit,
-    onSwitchAgent: () -> Unit,
     onManageAgents: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var query by androidx.compose.runtime.mutableStateOf("")
+    var query by remember { mutableStateOf("") }
     val keyword = query.trim().lowercase()
 
     // 搜索结果：label / modelId / providerName 任一中即命中，保持 provider 分组顺序
@@ -96,10 +100,15 @@ internal fun LocalModelSheet(
         if (keyword.isNotBlank()) emptyList()
         else recentModelIds.mapNotNull { id -> models.firstOrNull { it.modelId == id } }.take(6)
     }
-    val recentIds = remember(recent) { recent.map { it.modelId }.toSet() }
-    val grouped = remember(filtered, recentIds) {
-        if (keyword.isNotBlank()) listOf("搜索结果" to filtered)
-        else filtered.filter { it.modelId !in recentIds }.groupBy { it.providerName }.toList()
+    // 服务商折叠状态：搜索时全部展开；默认展开当前模型所在服务商
+    val searching = keyword.isNotBlank()
+    var expandedProviders by remember { mutableStateOf(setOf<String?>()) }
+    val currentProvider = models.firstOrNull { it.modelId == currentModelId }?.providerName
+    LaunchedEffect(searching, currentProvider) {
+        if (searching) expandedProviders = null // null = 全部展开
+        else if (expandedProviders.isEmpty() && currentProvider != null) {
+            expandedProviders = setOf(currentProvider)
+        }
     }
 
     ModalBottomSheet(
@@ -147,7 +156,7 @@ internal fun LocalModelSheet(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 420.dp)
+                        .heightIn(max = 430.dp)
                         .padding(top = 6.dp)
                 ) {
                     if (recent.isNotEmpty()) {
@@ -156,10 +165,25 @@ internal fun LocalModelSheet(
                             ModelRow(model, model.modelId == currentModelId, onPick)
                         }
                     }
-                    grouped.forEach { (provider, list) ->
-                        if (list.isNotEmpty()) {
-                            item(key = "prov_$provider") { GroupHeader(provider) }
-                            items(list, key = { "m_${it.modelId}" }) { model ->
+                    // 服务商分组（模型仍完整保留在所属服务商下，与最近使用重复展示）
+                    filtered.groupBy { it.providerName }.toList().forEach { (provider, list) ->
+                        if (list.isEmpty()) return@forEach
+                        val expanded = searching || expandedProviders == null ||
+                            provider in expandedProviders
+                        item(key = "prov_$provider") {
+                            CollapsibleGroupHeader(
+                                title = provider,
+                                count = list.size,
+                                expanded = expanded,
+                                onToggle = {
+                                    val current = expandedProviders ?: emptySet()
+                                    expandedProviders = if (expanded) current - provider
+                                    else current + provider
+                                }
+                            )
+                        }
+                        if (expanded) {
+                            items(list, key = { "m_${provider}_${it.modelId}" }) { model ->
                                 ModelRow(model, model.modelId == currentModelId, onPick)
                             }
                         }
@@ -168,22 +192,58 @@ internal fun LocalModelSheet(
                 }
             }
 
-            // 底部入口：切换智能体 / 管理智能体
+            // 底部入口：管理智能体（切换智能体在 AI 扩展面板中）
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                TextButton(onClick = onSwitchAgent, modifier = Modifier.weight(1f)) {
-                    Text("切换智能体")
-                }
                 TextButton(onClick = onManageAgents, modifier = Modifier.weight(1f)) {
                     Text("管理智能体")
                 }
             }
             Spacer(Modifier.height(10.dp))
         }
+    }
+}
+
+/** 可折叠服务商分组头：名称 + 模型数 + 展开箭头 */
+@Composable
+private fun CollapsibleGroupHeader(
+    title: String,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onToggle)
+            .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(6.dp))
+        Icon(
+            imageVector = if (expanded) Icons.Filled.KeyboardArrowUp
+            else Icons.Filled.KeyboardArrowDown,
+            contentDescription = if (expanded) "收起" else "展开",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp)
+        )
     }
 }
 
@@ -291,7 +351,7 @@ private fun ReasoningChip(
     level: ReasoningLevel,
     onSelect: (ReasoningLevel) -> Unit
 ) {
-    var menuOpen by androidx.compose.runtime.mutableStateOf(false)
+    var menuOpen by remember { mutableStateOf(false) }
     Box {
         LocalToggleChip(
             label = "推理·${reasoningLevelLabel(level)}",
@@ -412,6 +472,7 @@ internal fun LocalExtensionSheet(
     agentOverridden: Boolean,
     onResetOverride: () -> Unit,
     onPickModel: () -> Unit,
+    onSwitchAgent: () -> Unit,
     onBindWorkspace: (String?) -> Unit,
     onCreateWorkspace: (String) -> Unit,
     onOpenWorkspaceManager: () -> Unit,
@@ -421,9 +482,9 @@ internal fun LocalExtensionSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val workspaceManager = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.WorkspaceManager>()
-    var wsTick by androidx.compose.runtime.mutableStateOf(0)
-    val workspaces = androidx.compose.runtime.remember(wsTick, agent?.workspaceId) { workspaceManager.list() }
-    var newWsName by androidx.compose.runtime.mutableStateOf("")
+    var wsTick by remember { mutableStateOf(0) }
+    val workspaces = remember(wsTick, agent?.workspaceId) { workspaceManager.list() }
+    var newWsName by remember { mutableStateOf("") }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -463,6 +524,7 @@ internal fun LocalExtensionSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                TextButton(onClick = onSwitchAgent) { Text("切换智能体") }
                 if (agentOverridden) {
                     TextButton(onClick = onResetOverride) { Text("恢复默认") }
                 }
@@ -915,7 +977,7 @@ private fun WorkspaceRadioRow(
 /** 可折叠系统提示词编辑区（会话覆盖） */
 @Composable
 private fun SystemPromptEditor(value: String, onChange: (String) -> Unit) {
-    var expanded by androidx.compose.runtime.mutableStateOf(false)
+    var expanded by remember { mutableStateOf(false) }
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
         Row(
             modifier = Modifier
@@ -960,7 +1022,9 @@ internal fun SessionIntField(
     modifier: Modifier = Modifier,
     onChange: (Int?) -> Unit
 ) {
-    var text by androidx.compose.runtime.mutableStateOf(value?.toString() ?: "")
+    // remember(value)：外部值变化（含自己 onChange 触发的回写）时同步；
+    // 但不会因面板其他项重组而丢失用户输入
+    var text by remember(value) { mutableStateOf(value?.toString() ?: "") }
     OutlinedTextField(
         value = text,
         onValueChange = { input ->
@@ -985,7 +1049,7 @@ internal fun SessionFloatField(
     modifier: Modifier = Modifier,
     onChange: (Float?) -> Unit
 ) {
-    var text by androidx.compose.runtime.mutableStateOf(value?.toString() ?: "")
+    var text by remember(value) { mutableStateOf(value?.toString() ?: "") }
     OutlinedTextField(
         value = text,
         onValueChange = { input ->
