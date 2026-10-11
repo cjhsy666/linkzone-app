@@ -120,7 +120,7 @@ object LinuxEnvInstaller {
             // 两块全零 = 结束
             if (name.isBlank() && sizeStr.isBlank()) break
             val size = sizeStr.trim().toLongOrNull(8) ?: 0L
-            val dataBlocks = ((size + BLOCK - 1) / BLOCK).toInt()
+            val dataBlocks = (size + BLOCK - 1) / BLOCK  // Long：避免大文件溢出
             // 兼容部分打包器缺 magic 的情况：size 解析失败即认为流损坏
             if (magic.isBlank() && typeFlag.toInt() == 0 && size == 0L && name.isBlank()) break
 

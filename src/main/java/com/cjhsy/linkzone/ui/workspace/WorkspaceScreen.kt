@@ -598,9 +598,11 @@ fun WorkspaceScreen(
 
     if (state.opened == null) {
         val envInstalling by viewModel.envInstalling.collectAsStateWithLifecycle()
+        val env = viewModel.envStatus()
         WorkspaceListPane(
             state = state,
             shellMode = viewModel.shellMode,
+            env = env,
             envInstalling = envInstalling,
             onImportProot = { uri -> viewModel.importProotBinary(uri) },
             onImportRootfs = { uri -> viewModel.importRootfsTar(uri) },
@@ -624,6 +626,7 @@ fun WorkspaceScreen(
 private fun WorkspaceListPane(
     state: WorkspaceUiState,
     shellMode: String,
+    env: com.cjhsy.linkzone.workspace.LinuxEnvInstaller.EnvStatus,
     envInstalling: String?,
     onImportProot: (android.net.Uri) -> Unit,
     onImportRootfs: (android.net.Uri) -> Unit,
@@ -681,7 +684,6 @@ private fun WorkspaceListPane(
         )
 
         // Linux 运行环境卡：展示当前环境 + 安装完整环境入口
-        val env = viewModel.envStatus()
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surface,

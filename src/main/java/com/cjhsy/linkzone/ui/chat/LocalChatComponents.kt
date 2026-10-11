@@ -100,13 +100,13 @@ internal fun LocalModelSheet(
         if (keyword.isNotBlank()) emptyList()
         else recentModelIds.mapNotNull { id -> models.firstOrNull { it.modelId == id } }.take(6)
     }
-    // 服务商折叠状态：搜索时全部展开；默认展开当前模型所在服务商
+    // 服务商折叠状态：null = 全部展开（搜索时强制展开）；非空 = 仅展开集合内的服务商
     val searching = keyword.isNotBlank()
-    var expandedProviders by remember { mutableStateOf(setOf<String?>()) }
+    var expandedProviders by remember { mutableStateOf<Set<String>?>(null) }
     val currentProvider = models.firstOrNull { it.modelId == currentModelId }?.providerName
-    LaunchedEffect(searching, currentProvider) {
-        if (searching) expandedProviders = null // null = 全部展开
-        else if (expandedProviders.isEmpty() && currentProvider != null) {
+    LaunchedEffect(currentProvider) {
+        // 首次打开：默认只展开当前模型所在的服务商
+        if (expandedProviders == null && currentProvider != null) {
             expandedProviders = setOf(currentProvider)
         }
     }
@@ -168,8 +168,8 @@ internal fun LocalModelSheet(
                     // 服务商分组（模型仍完整保留在所属服务商下，与最近使用重复展示）
                     filtered.groupBy { it.providerName }.toList().forEach { (provider, list) ->
                         if (list.isEmpty()) return@forEach
-                        val expanded = searching || expandedProviders == null ||
-                            provider in expandedProviders
+                        val expandedSet = expandedProviders
+                        val expanded = searching || expandedSet == null || provider in expandedSet
                         item(key = "prov_$provider") {
                             CollapsibleGroupHeader(
                                 title = provider,
