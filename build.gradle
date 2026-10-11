@@ -23,9 +23,9 @@ apply plugin: 'com.google.devtools.ksp'
 
 android {
     namespace 'com.cjhsy.linkzone'
-    // compileSdk 36：仅编译期 API 级别（quickjs-kt 等新库要求），targetSdk 保持 34 → 运行时行为不变
-    compileSdk 36
-    buildToolsVersion "36.0.0"
+    // compileSdk 37：新版 androidx（Compose 1.9/lifecycle 2.11/core-ktx 1.19 等）要求；targetSdk 保持 34 → 运行时行为不变
+    compileSdk 37
+    buildToolsVersion "37.0.0"
 
     defaultConfig {
         applicationId "com.cjhsy.linkzone"
@@ -59,9 +59,9 @@ android {
         }
     }
 
-    // 本地设备环境复用已安装的 build-tools 36.0.0 的 aapt2；
+    // 本地设备环境复用已安装的 build-tools 37.0.0 的 aapt2；
     // CI/其他环境该路径不存在时自动用 AGP 自带的 aapt2（从 Maven 下载）
-    def localAapt2 = '/root/android-sdk/build-tools/36.0.0/aapt2'
+    def localAapt2 = '/root/android-sdk/build-tools/37.0.0/aapt2'
     if (file(localAapt2).exists()) {
         aapt2FromMavenOverride = localAapt2
     }
