@@ -1,0 +1,2560 @@
+package com.cjhsy.linkzone.ui.chat
+
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.cjhsy.linkzone.data.model.ConvItem
+import com.cjhsy.linkzone.data.model.MessageItem
+import com.cjhsy.linkzone.data.model.MessageSegment
+import com.cjhsy.linkzone.data.model.Segments
+import com.cjhsy.linkzone.data.model.displayText
+import com.cjhsy.linkzone.data.remote.ChatSocketManager
+import com.cjhsy.linkzone.data.repository.ChatRepository
+import com.cjhsy.linkzone.data.repository.LocalChatStore
+import com.cjhsy.linkzone.data.repository.UserRepository
+import com.cjhsy.linkzone.ai.core.MessageRole
+import com.cjhsy.linkzone.ai.core.Tool
+import com.cjhsy.linkzone.ai.provider.Model
+import com.cjhsy.linkzone.ai.provider.ModelType
+import com.cjhsy.linkzone.ai.provider.Modality
+import com.cjhsy.linkzone.ai.provider.ProviderManager
+import com.cjhsy.linkzone.ai.provider.ProviderSetting
+import com.cjhsy.linkzone.ai.provider.TextGenerationParams
+import com.cjhsy.linkzone.ai.ui.StreamChunk
+import com.cjhsy.linkzone.ai.ui.StreamChunkHandler
+import com.cjhsy.linkzone.ai.ui.UIMessage
+import com.cjhsy.linkzone.ai.document.DocumentParser
+import com.cjhsy.linkzone.ai.ui.UIMessagePart
+import com.cjhsy.linkzone.ai.ui.limitContext
+import com.cjhsy.linkzone.data.model.LlmAgent
+import com.cjhsy.linkzone.data.model.LlmPromptInjector
+import com.cjhsy.linkzone.data.model.LlmQuickMessage
+import com.cjhsy.linkzone.data.model.LlmSkill
+import com.cjhsy.linkzone.data.ai.buildMemoryPrompt
+import com.cjhsy.linkzone.data.ai.buildMemoryTools
+import com.cjhsy.linkzone.data.ai.createLocalTools
+import com.cjhsy.linkzone.data.ai.createSearchTools
+import com.cjhsy.linkzone.data.ai.createSkillTools
+import com.cjhsy.linkzone.data.ai.createConversationTools
+import com.cjhsy.linkzone.data.ai.ConvSummary
+import com.cjhsy.linkzone.data.ai.buildImageGenerateTool
+import com.cjhsy.linkzone.data.ai.createWorkspaceTools
+import com.cjhsy.linkzone.data.ai.applyTimeReminder
+import com.cjhsy.linkzone.data.ai.mcp.McpManager
+import com.cjhsy.linkzone.data.remote.UpsertMsgRequest
+import com.cjhsy.linkzone.data.repository.LlmRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import android.content.Context
+import java.io.File
+import java.util.UUID
+
+/** 待发送附件（UI 层 → ViewModel 层传递用） */
+data class PendingMediaItem(
+    val file: File,
+    val type: String?
+)
+
+/** ask_user 追问中的一道问题（模型 ask_user 工具入参的 UI 形态） */
+data class AskUserQuestion(
+    val id: String,
+    val question: String,
+    val options: List<String> = emptyList(),
+    /** text=自由输入 / single=单选 / multi=多选（均可附自定义文本） */
+    val selectionType: String = "text"
+)
+
+/** 一次 ask_user 追问（生成挂起中，等待用户作答） */
+data class AskUserPrompt(
+    val toolCallId: String,
+    val questions: List<AskUserQuestion>
+)
+
+/** 乐观（未确认）消息 ID 前缀，确认后由服务端同 id 正式消息替换 */
+const val LOCAL_PREFIX = "local-"
+
+/** 本地智能体单次回复的最大工具调用轮数（防失控循环） */
+private const val MAX_TOOL_STEPS = 32
+
+data class ChatUiState(
+    val currentConvId: String = "",
+    /** 当前会话的 bot_id（= 会话 target_id），发送消息时携带 */
+    val currentBotId: String = "",
+    val currentName: String = "",
+    val messages: List<MessageItem> = emptyList(),
+    val loading: Boolean = false,
+    val sending: Boolean = false,
+    val connected: Boolean = false,
+    val hasMore: Boolean = false,
+    /** 当前会话是否已打开（可发送消息） */
+    val ready: Boolean = false,
+    /** 待发送的回复引用（长按消息→回复），发送后自动清除 */
+    val replyTo: MessageItem? = null,
+    /** 本地智能体会话正在流式生成中（显示停止按钮） */
+    val generating: Boolean = false,
+    /** ask_user 追问挂起中（非空时聊天页显示作答卡，提交后生成继续） */
+    val askUser: AskUserPrompt? = null,
+    /** AI 生成的回复建议（首答后生成，点击直接发送） */
+    val aiSuggestions: List<String> = emptyList(),
+    /** 当前会话绑定的本地智能体（非本地会话为 null） */
+    val currentAgent: LlmAgent? = null,
+    /** 正在编辑的消息（编辑重发：非空时聊天页弹出编辑对话框） */
+    val editing: MessageItem? = null,
+    /** 会话内搜索面板打开中 */
+    val searchOpen: Boolean = false,
+    val searchQuery: String = "",
+    /** 搜索结果（按时间倒序，最新的在前） */
+    val searchResults: List<MessageItem> = emptyList(),
+    /** 正在全量拉取历史以供搜索 */
+    val searching: Boolean = false,
+    /** 定位高亮的消息 id（搜索结果点击跳转） */
+    val highlightMessageId: String? = null,
+    val error: String? = null
+)
+
+/** 可选模型项（多模型重答选择器用） */
+data class ChatModelOption(
+    val modelId: String,
+    val label: String,
+    /** provider 显示名（副标题） */
+    val providerName: String
+)
+
+/**
+ * 聊天 ViewModel —— 与 LinkZone 适配器直连的多会话模型。
+ *
+ * 会话用 bot_id 区分：每个会话对应一个独立虚拟 bot（sess-<uuid>），
+ * conv_id 规则为 conv-{myId}-{botId}。
+ * - 发送：经 [ChatSocketManager] WS 发给适配器（receiver_id = 本人），
+ *   框架内部如何处理（智能体/插件/不回复）由框架决定，本层不关心
+ * - 接收：按 WS payload 的 conv_id 路由——属于当前会话则展示并已读，
+ *   属于其他会话只更新列表未读；框架 AI 上下文按 bot_id 天然隔离
+ * - 历史/已读/撤回/删除/重命名走 REST（[ChatRepository]）
+ *
+ * 本地智能体会话（[LocalChatStore.CONV_PREFIX] 前缀）完全脱离服务器：
+ * 会话与消息只存本机 Room（[LocalChatStore]），不经 WS/REST，媒体不上传。
+ *
+ * 本层不包含任何智能体概念；智能体偏好由智能体页面管理。
+ */
+class ChatViewModel(
+    private val chatRepository: ChatRepository,
+    private val localStore: LocalChatStore,
+    private val userRepository: UserRepository,
+    private val socketManager: ChatSocketManager,
+    private val llmRepository: LlmRepository,
+    private val providerManager: ProviderManager,
+    private val mcpManager: McpManager,
+    private val workspaceManager: com.cjhsy.linkzone.workspace.WorkspaceManager,
+    private val json: Json,
+    /** 应用级 Context：本地工具（剪贴板/日历）与权限查询使用，不持 UI 引用 */
+    private val appContext: Context
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(ChatUiState())
+    val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    /** 服务器会话列表（本地会话由 [localStore] 独立供流，两者合并为 [conversations]） */
+    private val serverConvs = MutableStateFlow<List<ConvItem>>(emptyList())
+
+    /** 会话列表 = 服务器会话 + 本地会话（抽屉展示，置顶优先按最近时间倒序） */
+    val conversations: StateFlow<List<ConvItem>> =
+        combine(serverConvs, localStore.observeConversations()) { srv, loc ->
+            sortConvs(srv + loc)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 本地智能体列表（抽屉「新建本地对话」选择器用） */
+    val localAgents: StateFlow<List<LlmAgent>> = llmRepository.observeAgents()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 当前智能体关联的快捷指令（输入区上方一键填入 chips） */
+    val quickMessages: StateFlow<List<LlmQuickMessage>> = combine(
+        _state,
+        llmRepository.observeQuickMessages()
+    ) { s, all ->
+        val ids = s.currentAgent?.quickMessageIds ?: emptySet()
+        if (ids.isEmpty()) emptyList() else all.filter { it.id in ids }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 可选模型列表（多模型重答选择器，打开选择器时加载） */
+    private val _chatModels = MutableStateFlow<List<ChatModelOption>>(emptyList())
+    val chatModels: StateFlow<List<ChatModelOption>> = _chatModels.asStateFlow()
+
+    /** 全部技能（扩展面板勾选 enabledSkills） */
+    val skills: StateFlow<List<LlmSkill>> = llmRepository.observeSkills()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 全部 MCP 服务器（扩展面板勾选 mcpServers） */
+    val mcpServers: StateFlow<List<com.cjhsy.linkzone.data.ai.mcp.McpServerConfig>> =
+        llmRepository.observeMcpServers()
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** MCP 连接状态（配置 id → 状态） */
+    val mcpStatus: StateFlow<Map<String, com.cjhsy.linkzone.data.ai.mcp.McpStatus>> =
+        mcpManager.syncingStatus
+
+    /** 本地智能体流式生成任务（stopGenerating 取消） */
+    private var generatingJob: Job? = null
+
+    /** 生成中用户又发了消息：当前生成结束后再跑一轮（排队，不阻塞发送） */
+    @Volatile
+    private var pendingDispatch = false
+
+    /** ask_user 挂起中的应答通道；工具 execute 内 await，提交后 complete 继续 */
+    private var pendingAskUser: CompletableDeferred<JsonElement>? = null
+
+    /**
+     * ask_user 桥：置入 UI 状态并挂起等待用户作答。
+     * 用户停止生成时协程被取消，await 抛 CancellationException 随工具链路向上传播。
+     */
+    private val askUserBridge = com.cjhsy.linkzone.data.ai.AskUserBridge { questions ->
+        val deferred = CompletableDeferred<JsonElement>()
+        pendingAskUser = deferred
+        _state.value = _state.value.copy(askUser = parseAskUserQuestions(questions))
+        try {
+            deferred.await()
+        } finally {
+            pendingAskUser = null
+            _state.value = _state.value.copy(askUser = null)
+        }
+    }
+
+    /** 解析 ask_user 工具入参为 UI 模型（宽松解析：缺 id 自动补序号） */
+    private fun parseAskUserQuestions(args: JsonElement): AskUserPrompt? {
+        val items = runCatching { args.jsonObject["questions"]?.jsonArray }.getOrNull()
+            ?: return null
+        val questions = items.mapIndexedNotNull { idx, el ->
+            runCatching {
+                val obj = el.jsonObject
+                val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: "q$idx"
+                val question = obj["question"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: return@runCatching null
+                AskUserQuestion(
+                    id = id,
+                    question = question,
+                    options = obj["options"]?.jsonArray
+                        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                        .orEmpty(),
+                    selectionType = obj["selection_type"]?.jsonPrimitive?.contentOrNull ?: "text"
+                )
+            }.getOrNull()
+        }
+        if (questions.isEmpty()) return null
+        return AskUserPrompt(toolCallId = "", questions = questions)
+    }
+
+    /** 提交追问答案：{问题id: 答案}（多选/自定义文本以「、」拼接） */
+    fun submitAskUser(answers: Map<String, String>) {
+        val payload = buildJsonObject {
+            answers.forEach { (id, answer) -> put(id, answer) }
+        }
+        pendingAskUser?.complete(payload)
+    }
+
+    /** 跳过追问：以提示语作答，模型可据此继续或改述 */
+    fun skipAskUser() {
+        pendingAskUser?.complete(buildJsonObject {
+            put("_skipped", "The user skipped these questions. Continue with reasonable assumptions.")
+        })
+    }
+
+    /**
+     * 导出当前会话为 Markdown 或 JSON 文件，写入 app 外部文件目录，返回文件 URI（供分享）。
+     * 仅本地会话；云端会话历史不在本地完整持有，暂不支持。
+     */
+    suspend fun exportConversation(format: String): java.io.File? {
+        val convId = _state.value.currentConvId
+        if (!isLocalConvId(convId)) return null
+        val conv = localStore.getConversation(convId) ?: return null
+        val msgs = localStore.loadAllMessages(convId).sortedBy { it.timestamp }
+        val dir = appContext.getExternalFilesDir(null) ?: return null
+        val safeName = conv.name.ifBlank { "conversation" }
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .take(40)
+        val file = java.io.File(dir, "${safeName}_${System.currentTimeMillis()}.${if (format == "json") "json" else "md"}")
+        val content = if (format == "json") {
+            json.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(MessageItem.serializer()),
+                msgs
+            )
+        } else {
+            buildString {
+                appendLine("# ${conv.name.ifBlank { "对话" }}")
+                appendLine()
+                msgs.forEach { m ->
+                    val role = if (m.isSelf) "我" else m.senderName.ifBlank { "AI" }
+                    appendLine("**$role**")
+                    appendLine(m.content)
+                    appendLine()
+                }
+            }
+        }
+        file.writeText(content)
+        return file
+    }
+
+    /** 上传中被用户删除的媒体消息 clientId（不含 local- 前缀），上传完成后放弃发送 */
+    private val cancelledUploads = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** 本人 linkzone_id（判定消息归属 + 生成会话 id） */
+    private var myId: String = ""
+
+    /**
+     * App 前后台监听：回前台时探活 WS + HTTP 增量同步。
+     * 后台期间系统会挂起网络/CPU，WS 必断或假死——
+     * 消息不会丢（回复已落库），回前台这里把断连期间的消息/未读补回来。
+     */
+    private val appLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+            socketManager.resume()
+            syncAfterReconnect()
+        }
+    }
+
+    init {
+        ProcessLifecycleOwner.get().lifecycle.addObserver(appLifecycleObserver)
+        viewModelScope.launch {
+            socketManager.events.collect { handleSocketEvent(it) }
+        }
+        viewModelScope.launch {
+            // 优先用其他页面已拉取的 profile 缓存，避免启动重复请求
+            val profile = userRepository.profile.value ?: userRepository.loadProfile().getOrNull()
+            myId = profile?.linkzoneId ?: ""
+            if (myId.isBlank()) {
+                _state.value = _state.value.copy(error = "未能获取用户信息")
+                return@launch
+            }
+            llmRepository.ensureDefaultAgent()
+            bootstrapConversations()
+            socketManager.connect()
+        }
+    }
+
+    // ============ 会话管理 ============
+
+    /** 启动：加载会话列表，有则打开最近会话，无则创建首个会话 */
+    private suspend fun bootstrapConversations() {
+        _state.value = _state.value.copy(loading = true, error = null)
+        val server = chatRepository.loadConversations().getOrNull()
+            ?.filter { it.type == "private" }
+            ?: emptyList()
+        serverConvs.value = sortConvs(server)
+
+        val merged = sortConvs(server + localStore.getConversations())
+        if (merged.isNotEmpty()) {
+            openConv(merged.first())
+        } else {
+            createConversation()
+        }
+    }
+
+    /** 会话列表排序：置顶优先，其余按最近时间倒序 */
+    private fun sortConvs(convs: List<ConvItem>): List<ConvItem> =
+        convs.sortedWith(compareByDescending<ConvItem> { it.pinned }.thenByDescending { it.lastTime })
+
+    /**
+     * 新建会话：生成新 bot_id（sess-<uuid>）并切换。
+     * 若当前已经是一个没有任何消息的空会话，则不重复创建。
+     */
+    fun newConversation() {
+        if (myId.isBlank()) return
+        val s = _state.value
+        if (s.ready && s.currentName == NEW_CONV_NAME && s.messages.isEmpty()) return
+        viewModelScope.launch { createConversation() }
+    }
+
+    private suspend fun createConversation() {
+        val botId = SESSION_BOT_PREFIX + UUID.randomUUID()
+        val result = chatRepository.ensureConversation(myId, botId, NEW_CONV_NAME)
+        result.onSuccess { conv ->
+            refreshConvList()
+            openConv(conv)
+        }.onFailure {
+            _state.value = _state.value.copy(
+                loading = false,
+                error = it.message ?: "创建会话失败"
+            )
+        }
+    }
+
+    /**
+     * 新建本地智能体会话（引擎选择器「本地智能体」）：
+     * 完全脱离服务器——会话/消息只存本机 Room（[LocalChatStore]），
+     * 智能体回复由本机流式生成后直接落本地库。
+     */
+    fun createLocalConversation(agent: LlmAgent) {
+        viewModelScope.launch {
+            val conv = localStore.createConversation(agent)
+            openConv(conv)
+        }
+    }
+
+    /** bot-local-{agentId}（或旧格式 bot-local-{agentId}:{suffix}）→ agentId */
+    private fun extractAgentId(botId: String): String =
+        botId.removePrefix(LOCAL_BOT_PREFIX).substringBefore(':')
+
+    /** 切换到指定会话 */
+    fun switchConversation(convId: String) {
+        val conv = conversations.value.firstOrNull { it.id == convId } ?: return
+        if (conv.id == _state.value.currentConvId) return
+        viewModelScope.launch { openConv(conv) }
+    }
+
+    /**
+     * 删除会话（长按抽屉会话项）：
+     * 本地会话删本地库；服务器会话走 REST 连同消息一起删除。
+     * 删的是当前会话时，自动切换到列表中下一个会话（没有则新建云端会话）。
+     */
+    fun deleteConversation(convId: String) {
+        viewModelScope.launch {
+            val wasCurrent = _state.value.currentConvId == convId
+            if (isLocalConvId(convId)) {
+                localStore.deleteConversation(convId)
+            } else {
+                chatRepository.deleteConversation(convId).onFailure { e ->
+                    _state.value = _state.value.copy(error = e.message ?: "删除会话失败")
+                    return@launch
+                }
+            }
+            if (wasCurrent) {
+                val remaining = conversations.value.filter { it.id != convId }
+                remaining.firstOrNull()?.let { openConv(it) } ?: createConversation()
+            }
+        }
+    }
+
+    /** 打开会话：切换当前状态 + 加载历史 + 已读 + 刷新列表未读 */
+    private suspend fun openConv(conv: ConvItem) {
+        if (isLocalConvId(conv.id)) {
+            // 本地会话：加载绑定的 Agent，历史走本地库，不做任何服务器交互
+            val localAgent = llmRepository.getAgent(extractAgentId(conv.target_id))
+            _state.value = _state.value.copy(
+                currentConvId = conv.id,
+                currentBotId = conv.target_id,
+                currentName = conv.name.ifBlank { NEW_CONV_NAME },
+                currentAgent = localAgent,
+                messages = emptyList(),
+                loading = true,
+                ready = true,
+                hasMore = false,
+                generating = false,
+                error = null
+            )
+            loadHistory()
+            localStore.clearUnread(conv.id)
+            return
+        }
+        _state.value = _state.value.copy(
+            currentConvId = conv.id,
+            currentBotId = conv.target_id,
+            currentName = conv.name.ifBlank { NEW_CONV_NAME },
+            currentAgent = null,
+            messages = emptyList(),
+            loading = true,
+            ready = true,
+            hasMore = false,
+            generating = false,
+            error = null
+        )
+        loadHistory()
+        chatRepository.markRead(conv.id)
+        // 本地列表立即清未读，后台再同步一次
+        updateConvInList(conv.id) { it.copy(unread = 0) }
+        refreshConvList()
+    }
+
+    private suspend fun refreshConvList() {
+        chatRepository.loadConversations().onSuccess { convs ->
+            serverConvs.value = sortConvs(convs.filter { it.type == "private" })
+        }
+    }
+
+    // ============ WS 事件 ============
+
+    private fun handleSocketEvent(event: ChatSocketManager.Event) {
+        when (event) {
+            is ChatSocketManager.Event.Connected -> {
+                _state.value = _state.value.copy(connected = true)
+                syncAfterReconnect()
+            }
+
+            is ChatSocketManager.Event.Disconnected -> {
+                _state.value = _state.value.copy(connected = false)
+            }
+
+            is ChatSocketManager.Event.ChatMessage -> {
+                if (event.senderId.isEmpty()) return
+                if (event.receiverId != myId) return
+                // 自己消息的服务端回显：用于替换 local- 乐观气泡（确认送达），
+                // 不做未读累加
+                val isSelfEcho = event.senderId == myId
+
+                val convId = event.convId.ifEmpty { _state.value.currentConvId }
+                // 本地会话不产生服务器事件：防御性跳过
+                if (isLocalConvId(convId)) return
+                val preview = event.text.ifBlank {
+                    extractPreview(event.segments)
+                }
+
+                if (convId != _state.value.currentConvId) {
+                    // 自己消息的回显不属于当前会话：说明本地气泡在别的会话，
+                    // 跳过即可（切过去时全量历史会拿到正式消息）
+                    if (isSelfEcho) return
+                    // 其他会话的回复：仅累加未读/预览，不插入消息流
+                    val known = serverConvs.value.any { it.id == convId }
+                    updateConvInList(convId) { c ->
+                        c.copy(
+                            unread = c.unread + 1,
+                            last_msg = preview.ifBlank { c.last_msg },
+                            lastTime = event.timestamp.takeIf { it > 0 } ?: c.lastTime
+                        )
+                    }
+                    // 列表里没有该会话（可能在其他设备创建）：刷新列表而不是丢消息
+                    if (!known && convId.isNotBlank()) {
+                        viewModelScope.launch { refreshConvList() }
+                    }
+                    return
+                }
+
+                appendMessage(
+                    MessageItem(
+                        id = event.messageId,
+                        convId = convId,
+                        senderId = event.senderId,
+                        senderName = event.senderName,
+                        segments = event.segments,
+                        content = event.text,
+                        isSelf = isSelfEcho,
+                        timestamp = event.timestamp
+                    )
+                )
+                if (!isSelfEcho) markRead()
+                updateConvInList(convId) { c ->
+                    c.copy(
+                        unread = 0,
+                        last_msg = preview.ifBlank { c.last_msg },
+                        lastTime = event.timestamp.takeIf { it > 0 } ?: c.lastTime
+                    )
+                }
+            }
+
+            is ChatSocketManager.Event.Recalled -> {
+                // 本地会话不产生服务器事件：防御性跳过
+                if (isLocalConvId(_state.value.currentConvId)) return@handleSocketEvent
+                // 服务端定向投递且携带 conv_id：只标记本会话；
+                // convId 为空兼容旧服务端（退化为按 message_id 全局标记）
+                if (event.convId.isNotEmpty() && event.convId != _state.value.currentConvId) return@handleSocketEvent
+                _state.value = _state.value.copy(
+                    messages = _state.value.messages.map {
+                        if (it.id == event.messageId) it.copy(recalled = true) else it
+                    }
+                )
+            }
+        }
+    }
+
+    /** 上次增量同步时间（elapsedRealtime），Connected 与回前台可能同时触发，节流 1s */
+    @Volatile
+    private var lastSyncAt = 0L
+
+    /**
+     * 重连 / 回前台后的增量同步。
+     *
+     * 后台期间 WS 必断或假死，但智能体回复在服务端已落库（数据库即持久消息队列，
+     * 不丢消息、不怕服务端重启），所以这里走 HTTP 把断连期间的数据补回来：
+     * 1. 刷新会话列表：各会话 unread / last_msg / last_time 全部补回（红点 + 最新预览）
+     * 2. 当前打开的会话以「本地最新已确认消息时间戳」为锚点 after 增量补拉，
+     *    只追加缺失消息——不做全量替换，保留用户已向上翻页加载的历史。
+     *    锚点只取服务端消息（非 local-），不受手机时钟偏差影响。
+     */
+    private fun syncAfterReconnect() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastSyncAt < 1_000L) return
+        lastSyncAt = now
+
+        viewModelScope.launch {
+            refreshConvList()
+
+            val convId = _state.value.currentConvId
+            if (!_state.value.ready || convId.isBlank()) return@launch
+            // 本地会话不经服务器：消息只存本机，重连无需补拉
+            if (isLocalConvId(convId)) return@launch
+
+            // 锚点只取服务端消息：排除 local- 乐观气泡，也排除本地生成中的
+            // bot 占位气泡（bot-local-msg-，时间戳是“现在”，会把锚点推到未来，
+            // 导致最后一条真实消息与占位之间的服务端消息被跳过）
+            val anchor = _state.value.messages
+                .filter { !it.id.startsWith(LOCAL_PREFIX) && !it.id.startsWith(BOT_LOCAL_MSG_PREFIX) }
+                .maxOfOrNull { it.timestamp }
+                ?: return@launch // 本地没有任何已确认消息：首次 openConv/bootstrap 已全量拉过
+
+            // 断连很久可能积压多页，逐页补拉（每页 100，最多 3 页防极端流量）
+            var after = anchor
+            var fetched = emptyList<MessageItem>()
+            var pages = 0
+            while (pages < 3) {
+                val resp = chatRepository.loadSince(convId, after = after, limit = 100).getOrNull()
+                    ?: break
+                if (resp.items.isEmpty()) break
+                fetched = fetched + resp.items
+                after = resp.items.maxOf { it.timestamp }
+                pages++
+                if (!resp.hasMore) break
+            }
+            if (fetched.isEmpty()) return@launch
+            if (_state.value.currentConvId != convId) return@launch
+
+            // fetched 在前：同一条消息若本地有 local- 乐观版、服务端有正式版，
+            // distinctBy 保留先出现者——优先采用服务端正式版（含远端 URL）
+            val merged = (fetched + _state.value.messages)
+                .distinctBy { cleanId(it.id) }
+                .sortedBy { it.timestamp }
+            _state.value = _state.value.copy(messages = merged)
+
+            // 正在看该会话：补拉回来的回复视为已读，清掉红点
+            chatRepository.markRead(convId)
+            updateConvInList(convId) { it.copy(unread = 0) }
+            refreshConvList()
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(appLifecycleObserver)
+    }
+
+    // ============ 历史消息 ============
+
+    private fun loadHistory() {
+        val convId = _state.value.currentConvId
+        if (convId.isBlank()) return
+        viewModelScope.launch {
+            if (isLocalConvId(convId)) {
+                val (items, hasMore) = localStore.loadMessagesPage(convId, before = null)
+                // 响应返回期间用户已切走，丢弃过期结果，防止覆盖新会话
+                if (_state.value.currentConvId != convId) return@launch
+                _state.value = _state.value.copy(
+                    loading = false,
+                    messages = items,
+                    hasMore = hasMore
+                )
+                return@launch
+            }
+            val result = chatRepository.loadHistory(convId)
+            // 响应返回期间用户已切走，丢弃过期结果，防止覆盖新会话
+            if (_state.value.currentConvId != convId) return@launch
+            result.onSuccess { resp ->
+                _state.value = _state.value.copy(
+                    loading = false,
+                    messages = resp.items.sortedBy { it.timestamp },
+                    hasMore = resp.hasMore
+                )
+            }.onFailure {
+                _state.value = _state.value.copy(
+                    loading = false,
+                    error = it.message ?: "加载消息失败"
+                )
+            }
+        }
+    }
+
+    /** 向上翻页加载更早的消息 */
+    fun loadMore() {
+        val s = _state.value
+        if (!s.ready || !s.hasMore || s.loading) return
+        val oldest = s.messages.firstOrNull()?.timestamp ?: return
+        _state.value = s.copy(loading = true)
+        viewModelScope.launch {
+            if (isLocalConvId(s.currentConvId)) {
+                val (items, hasMore) = localStore.loadMessagesPage(s.currentConvId, before = oldest)
+                if (_state.value.currentConvId != s.currentConvId) {
+                    _state.value = _state.value.copy(loading = false)
+                    return@launch
+                }
+                val merged = (items + _state.value.messages).sortedBy { it.timestamp }
+                _state.value = _state.value.copy(messages = merged, hasMore = hasMore, loading = false)
+                return@launch
+            }
+            val result = chatRepository.loadHistory(s.currentConvId, before = oldest)
+            if (_state.value.currentConvId != s.currentConvId) {
+                // 用户已切走，恢复 loading 防止下次进不来
+                _state.value = _state.value.copy(loading = false)
+                return@launch
+            }
+            result.onSuccess { resp ->
+                val merged = (resp.items + _state.value.messages)
+                    .distinctBy { cleanId(it.id) }
+                    .sortedBy { it.timestamp }
+                _state.value = _state.value.copy(messages = merged, hasMore = resp.hasMore, loading = false)
+            }.onFailure {
+                _state.value = _state.value.copy(loading = false, error = it.message ?: "加载失败")
+            }
+        }
+    }
+
+    // ============ 发送 ============
+
+    /**
+     * 发送文本到 LinkZone 适配器（消息发给框架，框架内部决定如何响应）。
+     * @return 是否已进入发送通道；false 时 UI 应保留输入内容供用户重试
+     */
+    fun sendMessage(text: String): Boolean {
+        val s = _state.value
+        if (!s.ready || s.currentConvId.isBlank()) return false
+        val content = text.trim()
+        if (content.isEmpty()) return false
+        return dispatch(listOf(Segments.text(content)), content)
+    }
+
+    /**
+     * 组合发送（豆包式）：文字 + 多个附件合并为**单条多段消息**。
+     * 先乐观上屏（本地 file:// 地址立即可见），后台逐个上传，
+     * 全部上传完成后经 WS 发送完整段列表，服务端确认后回显替换。
+     */
+    fun sendCombined(text: String, attachments: List<PendingMediaItem>) {
+        val s = _state.value
+        if (!s.ready || s.currentConvId.isBlank()) return
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() && attachments.isEmpty()) return
+        // 用户开始输入新消息：清掉上一轮的回复建议
+        _state.value = s.copy(aiSuggestions = emptyList())
+
+        val clientId = UUID.randomUUID().toString()
+
+        // 构建本地段（file:// 直接可预览）
+        val localSegs = mutableListOf<MessageSegment>()
+        if (trimmed.isNotEmpty()) localSegs.add(Segments.text(trimmed))
+        for (att in attachments) {
+            val type = att.type ?: guessSegType(att.file)
+            localSegs.add(buildMediaSeg(type, "file://" + att.file.absolutePath, att.file.name, att.file.length(), 0L))
+        }
+
+        // 回复引用
+        val replySeg = s.replyTo?.let {
+            Segments.reply(messageId = it.id, senderId = it.senderId, senderName = it.senderName, preview = it.displayText.take(40))
+        }
+        val allLocal = if (replySeg != null) listOf(replySeg) + localSegs else localSegs
+        val preview = extractPreview(allLocal)
+
+        // 本地会话：不上传、不经 WS，file:// 段直接落本地库
+        if (isLocalConvId(s.currentConvId)) {
+            val isFirst = s.messages.none { it.isSelf }
+            val msg = MessageItem(
+                id = UUID.randomUUID().toString(),
+                convId = s.currentConvId,
+                senderId = myId,
+                senderName = "我",
+                segments = activeBranchConstraints() + allLocal,
+                content = preview,
+                isSelf = true,
+                timestamp = System.currentTimeMillis() * 1000
+            )
+            appendMessage(msg)
+            if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
+            viewModelScope.launch {
+                localStore.insertMessage(msg)
+                localStore.touch(s.currentConvId, preview, msg.timestamp)
+            }
+            if (replySeg != null) _state.value = _state.value.copy(replyTo = null)
+            maybeDispatchLocal()
+            return
+        }
+
+        // 乐观上屏
+        val isFirst = s.messages.none { it.isSelf }
+        appendMessage(MessageItem(
+            id = LOCAL_PREFIX + clientId,
+            convId = s.currentConvId,
+            senderId = myId,
+            senderName = "我",
+            segments = allLocal,
+            content = preview,
+            isSelf = true,
+            timestamp = System.currentTimeMillis() * 1000,
+            uploading = attachments.isNotEmpty()
+        ))
+        if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
+        updateConvInList(s.currentConvId) { c -> c.copy(last_msg = preview, lastTime = System.currentTimeMillis() * 1000) }
+        if (replySeg != null) _state.value = _state.value.copy(replyTo = null)
+
+        // 无附件时直接发文字
+        if (attachments.isEmpty()) {
+            val ok = socketManager.sendSegments(allLocal, s.currentConvId, myId, myId, s.currentBotId, clientId)
+            if (!ok) {
+                _state.value = _state.value.copy(error = "连接已断开，消息未发送")
+                socketManager.connect()
+                return
+            }
+            return
+        }
+
+        // 有附件：后台上传，全部完成后替换本地段为服务端 URL 并发送
+        viewModelScope.launch {
+            val remoteSegs = mutableListOf<MessageSegment>()
+            if (replySeg != null) remoteSegs.add(replySeg)
+            if (trimmed.isNotEmpty()) remoteSegs.add(Segments.text(trimmed))
+
+            var allOk = true
+            for (att in attachments) {
+                if (clientId in cancelledUploads) {
+                    cancelledUploads.remove(clientId)
+                    return@launch
+                }
+                val result = chatRepository.uploadFile(att.file)
+                if (result.isFailure) {
+                    allOk = false
+                    markMediaStatus(clientId, failed = true)
+                    _state.value = _state.value.copy(error = result.exceptionOrNull()?.message ?: "上传失败")
+                    break
+                }
+                val upload = result.getOrThrow()
+                val segType = att.type ?: upload.segType.ifBlank { guessSegType(att.file) }
+                remoteSegs.add(buildMediaSeg(segType, upload.url, upload.name, upload.size, 0L))
+            }
+            if (!allOk) return@launch
+
+            val ok = socketManager.sendSegments(remoteSegs, s.currentConvId, myId, myId, s.currentBotId, clientId)
+            if (!ok) {
+                markMediaStatus(clientId, failed = true)
+                _state.value = _state.value.copy(error = "连接已断开，消息未发送")
+                socketManager.connect()
+                return@launch
+            }
+            // 上传完成：本地段替换为服务端 URL
+            replaceLocalSegments(clientId, remoteSegs)
+        }
+    }
+
+    /**
+     * 发送图片 / 视频 / 语音 / 音频 / 文件（QQ 式）：
+     * 1. 立即把本地文件以 file:// 地址插入消息流，界面马上可见可播；
+     * 2. 后台上传，上传成功后替换为服务端 URL 并经 WS 发送（clientId 与乐观消息一致，
+     *    服务端确认后走原有 local- 替换流程）；
+     * 3. 上传失败消息保留并标红，可删除重发。
+     *
+     * @param file 已选中的本地文件
+     * @param forcedType 强制段类型（"image"|"video"|"voice"|"file"），null 时按扩展名预判
+     * @param durationSec 语音/视频时长（秒），无时长信息传 0
+     */
+    fun sendMedia(file: File, forcedType: String? = null, durationSec: Long = 0L) {
+        val s = _state.value
+        if (!s.ready || s.currentConvId.isBlank()) return
+
+        // 本地会话：不上传、无 20MB 限制，file:// 直接落本地库
+        if (isLocalConvId(s.currentConvId)) {
+            val localType = forcedType ?: guessSegType(file)
+            val localSeg = buildMediaSeg(localType, "file://" + file.absolutePath, file.name, file.length(), durationSec)
+            val replySeg = s.replyTo?.let {
+                Segments.reply(
+                    messageId = it.id,
+                    senderId = it.senderId,
+                    senderName = it.senderName,
+                    preview = it.displayText.take(40)
+                )
+            }
+            val localSegs = if (replySeg != null) listOf(replySeg, localSeg) else listOf(localSeg)
+            val preview = localSeg.display
+            val isFirst = s.messages.none { it.isSelf }
+            val msg = MessageItem(
+                id = UUID.randomUUID().toString(),
+                convId = s.currentConvId,
+                senderId = myId,
+                senderName = "我",
+                segments = activeBranchConstraints() + localSegs,
+                content = preview,
+                isSelf = true,
+                timestamp = System.currentTimeMillis() * 1000
+            )
+            appendMessage(msg)
+            if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
+            viewModelScope.launch {
+                localStore.insertMessage(msg)
+                localStore.touch(s.currentConvId, preview, msg.timestamp)
+            }
+            if (replySeg != null) {
+                _state.value = _state.value.copy(replyTo = null)
+            }
+            maybeDispatchLocal()
+            return
+        }
+
+        // 客户端预检：超过服务端 20MB 限制就不必白传一遍
+        if (file.length() > MAX_UPLOAD_BYTES) {
+            _state.value = _state.value.copy(error = "文件过大，限制 20MB")
+            return
+        }
+
+        val clientId = UUID.randomUUID().toString()
+        val localType = forcedType ?: guessSegType(file)
+        val localUrl = "file://" + file.absolutePath
+        val localSeg = buildMediaSeg(localType, localUrl, file.name, file.length(), durationSec)
+
+        val replySeg = s.replyTo?.let {
+            Segments.reply(
+                messageId = it.id,
+                senderId = it.senderId,
+                senderName = it.senderName,
+                preview = it.displayText.take(40)
+            )
+        }
+        val localSegs = if (replySeg != null) listOf(replySeg, localSeg) else listOf(localSeg)
+        val preview = localSeg.display
+
+        // ① 立即上屏：本地文件直接渲染（Coil / ExoPlayer / MediaPlayer 均支持 file://）
+        val isFirst = s.messages.none { it.isSelf }
+        appendMessage(
+            MessageItem(
+                id = LOCAL_PREFIX + clientId,
+                convId = s.currentConvId,
+                senderId = myId,
+                senderName = "我",
+                segments = localSegs,
+                content = preview,
+                isSelf = true,
+                timestamp = System.currentTimeMillis() * 1000,
+                uploading = true
+            )
+        )
+        if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
+        updateConvInList(s.currentConvId) { c ->
+            c.copy(last_msg = preview, lastTime = System.currentTimeMillis() * 1000)
+        }
+        if (replySeg != null) {
+            _state.value = _state.value.copy(replyTo = null)
+        }
+
+        // ② 后台上传 + WS 发送；不阻塞继续发其他消息
+        viewModelScope.launch {
+            val result = chatRepository.uploadFile(file)
+            // 上传期间用户已删除该消息：放弃后续发送
+            if (clientId in cancelledUploads) {
+                cancelledUploads.remove(clientId)
+                return@launch
+            }
+            if (result.isFailure) {
+                markMediaStatus(clientId, failed = true)
+                _state.value = _state.value.copy(
+                    error = result.exceptionOrNull()?.message ?: "上传失败"
+                )
+                return@launch
+            }
+            val upload = result.getOrThrow()
+            val segType = forcedType ?: upload.segType.ifBlank { localType }
+            val remoteSeg = buildMediaSeg(segType, upload.url, upload.name, upload.size, durationSec)
+            val remoteSegs = if (replySeg != null) listOf(replySeg, remoteSeg) else listOf(remoteSeg)
+
+            val ok = socketManager.sendSegments(
+                segments = remoteSegs,
+                convId = s.currentConvId,
+                senderId = myId,
+                receiverId = myId,
+                botId = s.currentBotId,
+                messageId = clientId
+            )
+            if (!ok) {
+                markMediaStatus(clientId, failed = true)
+                _state.value = _state.value.copy(error = "连接已断开，消息未发送")
+                socketManager.connect()
+                return@launch
+            }
+            // ③ 已进入发送通道：本地消息替换为服务端 URL（防止缓存文件被清理后裂图），
+            //    保持 local- id 直到服务端确认消息到达
+            replaceLocalSegments(clientId, remoteSegs)
+        }
+    }
+
+    /** 按扩展名预判媒体段类型（与服务端上传归类保持一致） */
+    private fun guessSegType(file: File): String {
+        val ext = file.extension.lowercase()
+        return when (ext) {
+            "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif" -> "image"
+            "mp4", "mov", "mkv", "avi", "3gp", "webm", "m4v" -> "video"
+            "mp3", "aac", "wav", "flac", "ogg", "m4a" -> "audio"
+            else -> "file"
+        }
+    }
+
+    /** 构造媒体消息段（本地预览与远端发送共用同一套字段） */
+    private fun buildMediaSeg(
+        segType: String,
+        url: String,
+        name: String,
+        size: Long,
+        durationSec: Long
+    ): MessageSegment = when (segType) {
+        "image" -> Segments.image(url, name, size = size)
+        "flash" -> Segments.flash(url, name)
+        "video" -> Segments.video(url, durationSec)
+        "voice" -> Segments.voice(url, durationSec)
+        "audio" -> Segments.audio(url, title = name)
+        else -> Segments.file(url, name, size)
+    }
+
+    /** 更新上传中媒体消息的状态（找不到对应消息时忽略，可能已切换会话） */
+    private fun markMediaStatus(clientId: String, failed: Boolean) {
+        val localId = LOCAL_PREFIX + clientId
+        _state.value = _state.value.copy(
+            messages = _state.value.messages.map { m ->
+                if (m.id == localId) {
+                    m.copy(uploading = !failed, uploadFailed = failed)
+                } else m
+            }
+        )
+    }
+
+    /** 上传完成后用服务端段替换本地段 */
+    private fun replaceLocalSegments(clientId: String, segments: List<MessageSegment>) {
+        val localId = LOCAL_PREFIX + clientId
+        _state.value = _state.value.copy(
+            messages = _state.value.messages.map { m ->
+                if (m.id == localId) {
+                    m.copy(segments = segments, content = segments.displayText(), uploading = false)
+                } else m
+            }
+        )
+    }
+
+    /**
+ * 发送面板构造的任意消息段（位置/名片/音乐/投票/骰子等）。
+     */
+    fun sendSegments(segments: List<MessageSegment>, preview: String = "") {
+        val s = _state.value
+        if (!s.ready || s.currentConvId.isBlank() || segments.isEmpty()) return
+        dispatch(segments, preview.ifBlank { segments.joinToString("") { it.display } })
+    }
+
+    /**
+     * 统一发送通道：
+     * - 若处于回复状态，自动前置 reply 段（发送后清除引用）
+     * - WS 发送 → 乐观追加 → 首消息命名 → 会话预览更新
+     */
+    private fun dispatch(segments: List<MessageSegment>, preview: String): Boolean {
+        val s = _state.value
+        // 用户发送新消息：清掉上一轮的 AI 回复建议
+        if (s.aiSuggestions.isNotEmpty()) {
+            _state.value = s.copy(aiSuggestions = emptyList())
+        }
+        val isLocalConv = isLocalConvId(s.currentConvId)
+        val replySeg = s.replyTo?.let {
+            Segments.reply(
+                messageId = it.id,
+                senderId = it.senderId,
+                senderName = it.senderName,
+                preview = it.displayText.take(40)
+            )
+        }
+        val all = if (replySeg != null) listOf(replySeg) + segments else segments
+
+        // 客户端生成消息 ID：云端乐观气泡与服务端落库共用同一 ID，
+        // 重连对齐时按 id 去重，不会出现「本地一条 + 服务端一条」的重复消息；
+        // 本地会话无确认流程，该 ID 即最终 ID
+        val clientId = UUID.randomUUID().toString()
+
+        if (isLocalConv) {
+            // 本地会话：不经 WS/服务器，直接落本地库；
+            // 挂上当前分支约束（sys.br），切上游版本时新尾巴随分支切换
+            val isFirst = s.messages.none { it.isSelf }
+            val msg = MessageItem(
+                id = clientId,
+                convId = s.currentConvId,
+                senderId = myId,
+                senderName = "我",
+                segments = activeBranchConstraints() + all,
+                content = preview,
+                isSelf = true,
+                timestamp = System.currentTimeMillis() * 1000
+            )
+            appendMessage(msg)
+            if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
+            viewModelScope.launch {
+                localStore.insertMessage(msg)
+                localStore.touch(s.currentConvId, preview, msg.timestamp)
+            }
+            if (replySeg != null) {
+                _state.value = _state.value.copy(replyTo = null)
+            }
+            maybeDispatchLocal()
+            return true
+        }
+
+        val ok = socketManager.sendSegments(
+            segments = all,
+            convId = s.currentConvId,
+            senderId = myId,
+            receiverId = myId,
+            botId = s.currentBotId,
+            messageId = clientId
+        )
+        if (!ok) {
+            // 基于最新状态写错误（不能复用入口快照 s，期间状态可能已变化）
+            _state.value = _state.value.copy(
+                sending = false,
+                error = "连接已断开，消息未发送"
+            )
+            socketManager.connect()
+            return false
+        }
+
+        val isFirst = s.messages.none { it.isSelf }
+        appendMessage(
+            MessageItem(
+                id = LOCAL_PREFIX + clientId,
+                convId = s.currentConvId,
+                senderId = myId,
+                senderName = "我",
+                segments = all,
+                content = preview,
+                isSelf = true,
+                timestamp = System.currentTimeMillis() * 1000
+            )
+        )
+        // 当前仍是默认名就重命名（首条消息，或历史遗留的未命名会话）
+        if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
+        updateConvInList(s.currentConvId) { c ->
+            c.copy(last_msg = preview, lastTime = System.currentTimeMillis() * 1000)
+        }
+        if (replySeg != null) {
+            _state.value = _state.value.copy(replyTo = null)
+        }
+        return true
+    }
+
+    // ============ 本地智能体流式生成 ============
+
+    /** 用户主动停止生成 */
+    fun stopGenerating() {
+        pendingDispatch = false
+        generatingJob?.cancel()
+        generatingJob = null
+    }
+
+    /** 用户消息已入会话后触发本地生成；同一会话正在生成时排队，结束后续跑 */
+    private fun maybeDispatchLocal() {
+        if (!isLocalConv()) return
+        val botId = _state.value.currentBotId
+        if (generatingJob?.isActive == true) {
+            pendingDispatch = true
+            return
+        }
+        generatingJob = viewModelScope.launch {
+            runLocalGeneration(botId)
+            // 当前轮结束：若期间有新消息入队，再跑一轮（直到队列清空）
+            while (pendingDispatch) {
+                pendingDispatch = false
+                runLocalGeneration(botId)
+            }
+        }
+    }
+
+    /**
+     * 本地智能体回复生成：
+     * 组装 system + 上下文 → ProviderManager 流式请求 → 80ms 节流刷新气泡 →
+     * 结束后（正常/停止/异常）把已生成文本以 markdown 段经 REST upsert 落库同步。
+     *
+     * @param overrideModelId 非空时用指定模型生成（多模型重答），忽略 Agent 绑定模型
+     * @param trimTrailingAssistant 生成前从上下文末尾剔除 bot 回复（重生成/换模型重答
+     *   保留原回复上屏为旧版本，但不参与本次上下文，避免模型对着旧答案复述）
+     * @param versionAnchorId 非空时本次回复作为该节点的新版本（携带 sys.ver 段、
+     *   时间戳 = 锚点 + versionIdx，版本聚集在锚点位置，‹ n/m › 可切换）
+     */
+    private suspend fun runLocalGeneration(
+        botId: String,
+        overrideModelId: String? = null,
+        trimTrailingAssistant: Boolean = false,
+        versionAnchorId: String? = null,
+        versionIdx: Int = 0,
+        versionAnchorTs: Long = 0L
+    ) {
+        val convId = _state.value.currentConvId
+        val agent = llmRepository.getAgent(extractAgentId(botId))
+        if (agent == null) {
+            _state.value = _state.value.copy(error = "智能体不存在或已被删除")
+            return
+        }
+        val resolved = if (overrideModelId != null) resolveChatModelById(overrideModelId) else null
+        val (setting, model) = resolved ?: (resolveChatModel(agent) ?: run {
+            _state.value = _state.value.copy(error = "尚未配置可用模型，请到「设置 → AI 模型服务」添加")
+            return
+        })
+
+        _state.value = _state.value.copy(generating = true)
+        // 前台服务保活：退到后台/锁屏时生成不被系统杀死
+        com.cjhsy.linkzone.service.ChatGenerationForegroundService.acquire(appContext, convId)
+
+        // 在插入占位气泡前组装上下文（此时消息流末尾是刚发送的用户消息）
+        val context = buildLocalContext(agent, model, trimTrailingAssistant)
+
+        // 工具集：记忆（memory_tool）+ 联网搜索（search_web/scrape_web）+ 技能（use_skill）
+        // + MCP 服务器工具（mcp__{服务器}__{工具}），按需注入工具循环
+        val memoryAgentId = if (agent.useGlobalMemory) {
+            LlmRepository.MEMORY_GLOBAL_ID
+        } else {
+            agent.id
+        }
+        val memories = if (agent.enableMemory) {
+            llmRepository.getMemoriesOfAgent(memoryAgentId)
+        } else {
+            emptyList()
+        }
+        val searchOptions = if (agent.enableWebSearch) llmRepository.getSelectedSearchOptions() else null
+        val tools = buildList {
+            if (agent.enableMemory) {
+                addAll(
+                    buildMemoryTools(
+                        json = json,
+                        onCreation = { content -> llmRepository.addMemory(memoryAgentId, content) },
+                        onUpdate = { id, content -> llmRepository.updateMemoryContent(id, content) },
+                        onDelete = { id -> llmRepository.deleteMemory(id) },
+                    )
+                )
+            }
+            addAll(createSearchTools(searchOptions))
+            addAll(createSkillTools(agent.enabledSkills, llmRepository.getSkills()))
+            // 本地工具：时间感知/剪贴板/追问/日历/TTS，按智能体开关启用
+            addAll(createLocalTools(appContext, agent.localTools, askUserBridge))
+            // 会话查询工具：让模型按需检索历史会话（仅本地会话可见）
+            addAll(createConversationTools(
+                loadConversations = {
+                    localStore.getConversations().map {
+                        ConvSummary(it.id, it.name, it.last_msg, it.lastTime)
+                    }
+                },
+                loadAllMessages = { convId -> localStore.loadAllMessages(convId) }
+            ))
+            // 图片生成：模型按用户要求主动出图，结果直接渲染进回复气泡
+            if (agent.enableImageGeneration) {
+                resolveImageModel(agent)?.let { (imgSetting, imgModel) ->
+                    add(buildImageGenerateTool(appContext, providerManager, imgSetting, imgModel))
+                }
+            }
+            // 代码工作区：绑定工作区后注入 read_file/write_file/edit_file/shell
+            agent.workspaceId?.let { wsId ->
+                workspaceManager.get(wsId)?.let { ws ->
+                    addAll(
+                        createWorkspaceTools(
+                            workspace = ws,
+                            runner = com.cjhsy.linkzone.workspace.WorkspaceShellRunner
+                                .select(appContext.filesDir)
+                        )
+                    )
+                }
+            }
+            mcpManager.getAllAvailableTools(agent.mcpServers).forEach { (serverId, serverName, tool) ->
+                add(
+                    Tool(
+                        name = "mcp__${serverName}__${tool.name}",
+                        description = tool.description ?: "",
+                        parameters = { tool.inputSchema },
+                        needsApproval = { tool.needsApproval },
+                        execute = { args -> mcpManager.callTool(serverId, tool.name, args.jsonObject) },
+                    )
+                )
+            }
+        }
+        // 记忆与工具索引拼进系统提示（顺序对齐 RikkaHub：记忆块在前、工具索引在后）
+        val memoryPrompt = if (agent.enableMemory) buildMemoryPrompt(memories) else ""
+        val toolPrompt = tools.joinToString("\n") { it.systemPrompt(model, context) }.trim()
+        val extraPrompt = listOf(memoryPrompt.trim(), toolPrompt)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+        val baseContext = if (extraPrompt.isNotBlank()) mergeSystemPrompt(context, extraPrompt) else context
+
+        // 占位气泡：首个 delta 到达前显示 …
+        // 换模型重答的回复带模型名署名，便于区分同问多答；
+        // 版本化生成（重生成/多模型重答）携带 sys.ver 段并锚定时间戳
+        val senderName = agent.name.ifBlank { "AI" } +
+            if (overrideModelId != null) " · " + model.displayName.ifBlank { model.modelId } else ""
+        val botMsgId = "bot-local-msg-" + UUID.randomUUID()
+        val placeholderSegs = buildList {
+            if (versionAnchorId != null) {
+                // 版本化生成：继承锚点**当前选中版本**的分支约束（嵌套分支）+ sys.ver 段，
+                // 新版本属于锚点新分支，旧尾巴已钉到旧版本
+                _state.value.messages.toMessageNodes()
+                    .firstOrNull { it.anchorId == versionAnchorId }
+                    ?.selected?.branchConstraints()
+                    ?.forEach { add(branchSegment(it.first, it.second)) }
+                add(versionSegment(versionAnchorId, versionIdx, versionIdx))
+            } else {
+                // 普通追加：挂到当前可见分支（切上游版本时新尾巴随分支切换）
+                addAll(activeBranchConstraints())
+            }
+            add(Segments.markdown("…"))
+        }
+        appendMessage(
+            MessageItem(
+                id = botMsgId,
+                convId = convId,
+                senderId = botId,
+                senderName = senderName,
+                segments = placeholderSegs,
+                content = "…",
+                isSelf = false,
+                timestamp = if (versionAnchorId != null) versionAnchorTs + versionIdx
+                else System.currentTimeMillis() * 1000
+            )
+        )
+
+        val handler = StreamChunkHandler(model)
+        var uiMessages = baseContext
+        var latestText = ""
+        var latestThinking = ""
+        var lastEmitAt = 0L
+        // 工具产出的图片（image_generate 等）：收尾时追加进回复气泡并落库
+        val generatedImageUrls = mutableListOf<String>()
+
+        try {
+            var step = 0
+            while (true) {
+                if (++step > MAX_TOOL_STEPS) {
+                    _state.value = _state.value.copy(error = "工具调用步数超过 $MAX_TOOL_STEPS，已中止")
+                    break
+                }
+                providerManager.getProviderByType(setting)
+                    .streamText(
+                        providerSetting = setting,
+                        messages = uiMessages,
+                        params = TextGenerationParams(
+                            model = model,
+                            temperature = agent.temperature,
+                            topP = agent.topP,
+                            maxTokens = agent.maxTokens,
+                            tools = tools,
+                            reasoningLevel = agent.reasoningLevel,
+                            customHeaders = setting.customHeaders + agent.customHeaders,
+                            customBody = agent.customBodies,
+                        )
+                    )
+                    .collect { chunk ->
+                        uiMessages = handler.handle(uiMessages, chunk)
+                        if (uiMessages.last().role == MessageRole.ASSISTANT) {
+                            latestText = uiMessages.last().toText()
+                            // 思考过程（reasoning part）随流式累积，气泡内折叠展示
+                            latestThinking = uiMessages.last().parts
+                                .filterIsInstance<UIMessagePart.Reasoning>()
+                                .joinToString("") { it.reasoning }
+                        }
+                        val now = System.currentTimeMillis()
+                        if (chunk is StreamChunk.Finish || now - lastEmitAt >= THROTTLE_MS) {
+                            lastEmitAt = now
+                            updateLocalBotBubble(botMsgId, latestText, latestThinking)
+                        }
+                    }
+
+                // 本轮回复是否携带未执行的工具调用；没有则生成结束
+                val lastMessage = uiMessages.lastOrNull() ?: break
+                val pendingCalls = lastMessage
+                    .takeIf { it.role == MessageRole.ASSISTANT }
+                    ?.getTools()
+                    ?.filter { !it.isExecuted }
+                    .orEmpty()
+                if (pendingCalls.isEmpty() || tools.isEmpty()) break
+
+                // 执行工具（技能加载等），气泡显示执行状态
+                pendingCalls.forEach { call ->
+                    updateLocalBotBubble(botMsgId, "⚙ 正在调用 ${call.toolName} …", latestThinking)
+                }
+                val executedTools = executeToolCalls(tools, pendingCalls)
+                // 收集工具输出中的图片（image_generate），收尾时渲染进回复气泡
+                executedTools.flatMap { it.output }
+                    .filterIsInstance<UIMessagePart.Image>()
+                    .map { it.url }
+                    .filter { it.startsWith("file://") && it !in generatedImageUrls }
+                    .let { generatedImageUrls.addAll(it) }
+                uiMessages = uiMessages.dropLast(1) + lastMessage.copy(
+                    parts = lastMessage.parts.map { part ->
+                        if (part is UIMessagePart.Tool) {
+                            executedTools.firstOrNull { it.toolCallId == part.toolCallId } ?: part
+                        } else part
+                    }
+                )
+                // 工具结果回传后继续下一轮生成（同一助手消息继续追加文本）
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(error = e.message ?: "生成失败")
+        } finally {
+            // 停止/异常/正常结束统一收尾；NonCancellable 保证取消后仍能落库
+            withContext(NonCancellable) {
+                finalizeLocalBotMessage(
+                    convId, botId, agent, model, botMsgId, senderName,
+                    latestText, latestThinking, generatedImageUrls
+                )
+                _state.value = _state.value.copy(generating = false)
+                com.cjhsy.linkzone.service.ChatGenerationForegroundService.release(appContext)
+            }
+        }
+    }
+
+    /** 生成结束：无内容移除占位，有内容刷新气泡并落库（本地 Room / 云端 upsert） */
+    private suspend fun finalizeLocalBotMessage(
+        convId: String,
+        botId: String,
+        agent: LlmAgent,
+        model: Model,
+        botMsgId: String,
+        senderName: String,
+        text: String,
+        thinking: String = "",
+        imageUrls: List<String> = emptyList()
+    ) {
+        val trimmed = text.trim()
+        // 剥离正文中的 <think> 标签（部分模型把思考过程写进正文而非 reasoning 通道）
+        val (thinkFromText, cleanText) = extractThinkTags(trimmed)
+        val finalText = cleanText.trim()
+        val finalThinking = (thinking + thinkFromText).trim()
+        if (finalText.isEmpty() && imageUrls.isEmpty()) {
+            _state.value = _state.value.copy(
+                messages = _state.value.messages.filterNot { it.id == botMsgId }
+            )
+            return
+        }
+        // 版本化生成的消息：保留占位气泡携带的版本/分支元数据段（sys.ver / sys.br）
+        val sysSegs = _state.value.messages.firstOrNull { it.id == botMsgId }
+            ?.segments?.filter { it.type == VERSION_SEG || it.type == BRANCH_SEG }.orEmpty()
+        val segments = buildList {
+            addAll(sysSegs)
+            if (finalThinking.isNotBlank()) add(Segments.thinking(finalThinking))
+            if (finalText.isNotBlank()) add(Segments.markdown(finalText))
+            imageUrls.forEach { url -> add(Segments.image(url = url)) }
+        }
+        _state.value = _state.value.copy(
+            messages = _state.value.messages.map { m ->
+                if (m.id == botMsgId) m.copy(segments = segments, content = finalText) else m
+            }
+        )
+        // 占位气泡已被用户删除/重新生成清掉：本地都不在了，不再落库陈旧内容
+        if (_state.value.messages.none { it.id == botMsgId }) return
+        if (isLocalConvId(convId)) {
+            // 本地会话：占位气泡即最终消息（同 id），直接落本地库；
+            // 版本化生成的消息沿用占位气泡的锚点时间戳，保证版本聚集
+            val placeholder = _state.value.messages.firstOrNull { it.id == botMsgId }
+            val timestamp = placeholder?.timestamp ?: System.currentTimeMillis() * 1000
+            localStore.insertMessage(
+                MessageItem(
+                    id = botMsgId,
+                    convId = convId,
+                    senderId = botId,
+                    senderName = senderName,
+                    segments = segments,
+                    content = finalText,
+                    isSelf = false,
+                    timestamp = timestamp
+                )
+            )
+            localStore.touch(convId, finalText.ifBlank { "[图片]" }.take(NAME_MAX_LEN), timestamp)
+            // 首答完成：LLM 总结会话标题 + 生成回复建议
+            maybeGenerateLlmTitle(
+                convId = convId,
+                agent = agent,
+                userText = _state.value.messages.firstOrNull { it.isSelf }?.content.orEmpty(),
+                aiText = finalText
+            )
+            maybeGenerateSuggestions(agent, model, finalText)
+            return
+        }
+        chatRepository.upsertMessage(
+            convId,
+            UpsertMsgRequest(
+                id = UUID.randomUUID().toString(),
+                segments = json.encodeToJsonElement(ListSerializer(MessageSegment.serializer()), segments),
+                content = finalText,
+                senderId = botId,
+                senderName = senderName,
+                isSelf = false,
+                timestamp = System.currentTimeMillis() * 1000
+            )
+        ).onSuccess { saved ->
+            // 服务端正式消息（其他设备可经增量同步拿到）替换本地占位
+            _state.value = _state.value.copy(
+                messages = _state.value.messages.map { if (it.id == botMsgId) saved else it }
+            )
+        }
+    }
+
+    /** 刷新本地生成中的 bot 气泡文本（空文本显示 …）；thinking 非空时前置思考过程段；保留 sys.ver 版本段 */
+    private fun updateLocalBotBubble(msgId: String, text: String, thinking: String = "") {
+        val (thinkFromText, clean) = extractThinkTags(text)
+        val mergedThinking = (thinking + thinkFromText).trim()
+        val md = clean.ifBlank { "…" }
+        _state.value = _state.value.copy(
+            messages = _state.value.messages.map { m ->
+                if (m.id == msgId) {
+                    val segments = buildList {
+                        // 保留版本/分支元数据段（sys.ver / sys.br），流式刷新不丢失
+                        addAll(m.segments?.filter {
+                            it.type == VERSION_SEG || it.type == BRANCH_SEG
+                        }.orEmpty())
+                        if (mergedThinking.isNotBlank()) add(Segments.thinking(mergedThinking))
+                        add(Segments.markdown(md))
+                    }
+                    m.copy(segments = segments, content = md)
+                } else m
+            }
+        )
+    }
+
+    /** 解析 Agent 绑定的模型；未绑定时回退第一个可用 Provider 的首个 CHAT 模型 */
+    private suspend fun resolveChatModel(agent: LlmAgent): Pair<ProviderSetting, Model>? {
+        val providers = llmRepository.getProviders().filter { it.enabled }
+        agent.chatModelId?.let { modelId ->
+            providers.forEach { p ->
+                p.models.firstOrNull { it.modelId == modelId }?.let { return p to it }
+            }
+        }
+        providers.forEach { p ->
+            p.models.firstOrNull { it.type == ModelType.CHAT }?.let { return p to it }
+        }
+        return null
+    }
+
+    /** 按 modelId 精确解析模型（多模型重答用）；找不到返回 null 回退默认解析 */
+    private suspend fun resolveChatModelById(modelId: String): Pair<ProviderSetting, Model>? {
+        llmRepository.getProviders().filter { it.enabled }.forEach { p ->
+            p.models.firstOrNull { it.modelId == modelId }?.let { return p to it }
+        }
+        return null
+    }
+
+    /**
+     * 解析图片生成模型：优先智能体指定的 imageModelId，否则取第一个 IMAGE 类型模型。
+     * 指定的 id 匹配时不限制模型类型（用户可能把图像接口模型标成 CHAT）。
+     */
+    private suspend fun resolveImageModel(agent: LlmAgent): Pair<ProviderSetting, Model>? {
+        val providers = llmRepository.getProviders().filter { it.enabled }
+        agent.imageModelId?.let { id ->
+            providers.forEach { p ->
+                p.models.firstOrNull { it.modelId == id }?.let { return p to it }
+            }
+        }
+        providers.forEach { p ->
+            p.models.firstOrNull { it.type == ModelType.IMAGE }?.let { return p to it }
+        }
+        return null
+    }
+
+    /** 解析 OCR 视觉模型：优先 ocrModelId，否则取第一个支持 IMAGE 输入的 CHAT 模型 */
+    private suspend fun resolveVisionChatModel(preferredId: String?): Pair<ProviderSetting, Model>? {
+        val providers = llmRepository.getProviders().filter { it.enabled }
+        preferredId?.let { id ->
+            providers.forEach { p ->
+                p.models.firstOrNull { it.modelId == id }?.let { return p to it }
+            }
+        }
+        providers.forEach { p ->
+            p.models.firstOrNull {
+                it.type == ModelType.CHAT && Modality.IMAGE in it.inputModalities
+            }?.let { return p to it }
+        }
+        return null
+    }
+
+    /** 组装 LLM 请求消息：system（prompt 变量替换）+ 历史上下文（阶梯式截断）+ 提示词注入 */
+    private suspend fun buildLocalContext(
+        agent: LlmAgent,
+        model: Model,
+        trimTrailingAssistant: Boolean = false
+    ): List<UIMessage> {
+        val messages = mutableListOf<UIMessage>()
+        val systemPrompt = renderSystemPrompt(agent, model)
+        if (systemPrompt.isNotBlank()) {
+            messages += UIMessage.system(systemPrompt)
+        }
+        // 上下文源：按版本节点取每个节点当前选中的版本（旧版本不进上下文）
+        val selected = _state.value.messages.toMessageNodes().selectedMessages()
+        val source = if (trimTrailingAssistant) {
+            // 重生成/换模型重答：剔除末尾的 bot 回复（保留在界面为旧版本，但不进本次上下文）
+            selected.dropLastWhile { !it.isSelf }.ifEmpty { selected }
+        } else {
+            selected
+        }
+        val history = source
+            .asSequence()
+            .filter { !it.recalled && !it.uploadFailed }
+            .mapNotNull { it.toLlmUIMessage() }
+            .toList()
+        // 上下文压缩：超过上限时把将被截断的旧消息总结为检查点，保留近期消息（RikkaHub CompressPrompt 思路）
+        val compressed = if (agent.enableContextCompression && agent.contextMessageLimit > 0 &&
+            history.size > agent.contextMessageLimit
+        ) {
+            compressContext(history, agent.contextMessageLimit, agent, model)
+        } else {
+            history.limitContext(agent.contextMessageLimit)
+        }
+        messages += compressed
+            .let { if (agent.enableTimeReminder) applyTimeReminder(it) else it }
+            // 非视觉模型：图片必须转文本（启用 OCR 时用视觉模型识别，否则降级占位）
+            .let { applyOcrTransform(agent, model, it) }
+
+        // 提示词注入：模式注入 + 世界书（Lorebook）关键词触发
+        val hasPromptRefs = agent.promptIds.isNotEmpty() || agent.lorebookIds.isNotEmpty()
+        return if (!hasPromptRefs) {
+            messages
+        } else {
+            val prompts = llmRepository.getPrompts()
+            val lorebooks = llmRepository.getLorebooks()
+            LlmPromptInjector.apply(messages, prompts, lorebooks, agent.promptIds, agent.lorebookIds)
+        }
+    }
+
+    /**
+     * 上下文压缩：把超过 [limit] 的旧消息用 LLM 总结为一条检查点 SYSTEM 消息，
+     * 保留近期 [limit] 条。总结失败时退化为纯截断（limitContext）。
+     */
+    private suspend fun compressContext(
+        history: List<UIMessage>,
+        limit: Int,
+        agent: LlmAgent,
+        model: Model
+    ): List<UIMessage> {
+        if (history.size <= limit) return history
+        val dropCount = history.size - limit
+        val toSummarize = history.take(dropCount)
+        val summary = runCatching {
+            val (setting, _) = resolveChatModel(agent) ?: return@runCatching null
+            val content = toSummarize.joinToString("\n") { msg ->
+                val role = when (msg.role) {
+                    MessageRole.USER -> "用户"
+                    MessageRole.ASSISTANT -> "助手"
+                    MessageRole.SYSTEM -> "系统"
+                    else -> "未知"
+                }
+                "$role：${msg.toText().take(400)}"
+            }
+            val result = providerManager.getProviderByType(setting).generateText(
+                providerSetting = setting,
+                messages = listOf(
+                    UIMessage.user(
+                        """
+                        Below is an earlier part of a conversation. Summarize it concisely,
+                        preserving key facts, decisions, user preferences, and any unfinished tasks.
+                        Write the summary in the same language as the conversation.
+                        Do not add commentary.
+
+                        $content
+                        """.trimIndent()
+                    )
+                ),
+                params = TextGenerationParams(
+                    model = model,
+                    temperature = 0.2f,
+                    maxTokens = 400
+                )
+            )
+            result.message.parts
+                .filterIsInstance<UIMessagePart.Text>()
+                .joinToString("") { it.text }
+                .trim()
+        }.getOrNull().orEmpty()
+
+        if (summary.isBlank()) return history.limitContext(limit)
+        val checkpoint = UIMessage.system(
+            "<context_summary>\n$summary\n</context_summary>"
+        ).copy(isContextCheckpoint = true)
+        return listOf(checkpoint) + history.drop(dropCount)
+    }
+
+    /** OCR 结果进程内缓存（图片 URL → 识别文本），同图多轮对话只识别一次 */
+    private val ocrCache = android.util.LruCache<String, String>(50)
+
+    /**
+     * OCR 输入变换器（移植 RikkaHub OcrTransformer）：
+     * 当前对话模型不支持图片输入时，把消息中的本地图片 part 替换为文本——
+     * 智能体启用 OCR 且存在视觉模型时，用视觉模型识别/描述图片；否则降级为 "[图片]" 占位，
+     * 避免把 image part 发给纯文本模型导致接口报错。
+     */
+    private suspend fun applyOcrTransform(
+        agent: LlmAgent,
+        chatModel: Model,
+        messages: List<UIMessage>
+    ): List<UIMessage> {
+        if (Modality.IMAGE in chatModel.inputModalities) return messages
+        val hasImages = messages.any { m ->
+            m.parts.any { it is UIMessagePart.Image && it.url.startsWith("file://") }
+        }
+        if (!hasImages) return messages
+        val vision = if (agent.enableOcr) resolveVisionChatModel(agent.ocrModelId) else null
+        return messages.map { m ->
+            m.copy(
+                parts = m.parts.map { part ->
+                    if (part is UIMessagePart.Image && part.url.startsWith("file://")) {
+                        val text = if (vision != null) {
+                            performOcr(part.url, vision.first, vision.second)
+                        } else {
+                            "[图片]"
+                        }
+                        UIMessagePart.Text(text)
+                    } else part
+                }
+            )
+        }
+    }
+
+    /** 调视觉模型识别单张图片，带缓存；失败返回错误占位文本 */
+    private suspend fun performOcr(
+        imageUrl: String,
+        setting: ProviderSetting,
+        visionModel: Model
+    ): String {
+        ocrCache.get(imageUrl)?.let { return it }
+        val result = runCatching {
+            providerManager.getProviderByType(setting).generateText(
+                providerSetting = setting,
+                messages = listOf(
+                    UIMessage.system(OCR_PROMPT),
+                    UIMessage(
+                        role = MessageRole.USER,
+                        parts = listOf(UIMessagePart.Image(imageUrl))
+                    )
+                ),
+                params = TextGenerationParams(
+                    model = visionModel,
+                    temperature = 0.2f,
+                    maxTokens = 800
+                )
+            )
+        }.getOrElse { return "[ERROR, OCR failed: ${it.message ?: "未知错误"}]" }
+        val content = result.message.parts
+            .filterIsInstance<UIMessagePart.Text>()
+            .joinToString("") { it.text }
+            .trim()
+            .ifBlank { return "[ERROR, OCR failed]" }
+        val wrapped = """
+            <image_file_ocr>
+            $content
+            </image_file_ocr>
+            * The image_file_ocr tag contains a description of an image that the user uploaded to you, not the user's prompt.
+        """.trimIndent()
+        ocrCache.put(imageUrl, wrapped)
+        return wrapped
+    }
+
+    /** 把工具系统提示（技能索引等）追加进首条 SYSTEM 消息 */
+    private fun mergeSystemPrompt(
+        messages: List<UIMessage>,
+        extra: String
+    ): List<UIMessage> {
+        if (messages.isEmpty()) return listOf(UIMessage.system(extra).copy(isSynthetic = true))
+        val first = messages.first()
+        if (first.role != MessageRole.SYSTEM) {
+            return listOf(UIMessage.system(extra).copy(isSynthetic = true)) + messages
+        }
+        val original = first.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text }
+        return listOf(first.copy(parts = listOf(UIMessagePart.Text("$original\n$extra")))) + messages.drop(1)
+    }
+
+    /** 执行工具调用并回填输出；单个工具失败以 error JSON 作为输出继续（对齐 RikkaHub） */
+    private suspend fun executeToolCalls(
+        tools: List<Tool>,
+        calls: List<UIMessagePart.Tool>
+    ): List<UIMessagePart.Tool> = calls.map { call ->
+        val def = tools.firstOrNull { it.name == call.toolName }
+        val output = if (def == null) {
+            listOf(UIMessagePart.Text(errorJson("Tool '${call.toolName}' not found")))
+        } else {
+            runCatching {
+                val args = json.parseToJsonElement(call.input.ifBlank { "{}" })
+                def.execute(args)
+            }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                listOf(UIMessagePart.Text(errorJson("[${e.javaClass.simpleName}] ${e.message ?: "tool error"}")))
+            }
+        }
+        call.copy(output = output)
+    }
+
+    private fun errorJson(message: String): String =
+        json.encodeToString(
+            kotlinx.serialization.json.JsonObject.serializer(),
+            buildJsonObject { put("error", message) }
+        )
+
+    /**
+     * 剥离正文中的 `<think>...</think>` 块，把思考内容合并进 thinking 段。
+     * 兼容流式输出中 `<think>` 未闭合的情况（末尾残缺标签当思考处理）。
+     * 返回 (思考文本, 清理后的正文)。
+     */
+    private val thinkTagRegex = Regex("(?s)<think>(.*?)</think>")
+    private fun extractThinkTags(text: String): Pair<String, String> {
+        if (!text.contains("<think>", ignoreCase = true)) return "" to text
+        val think = StringBuilder()
+        val clean = thinkTagRegex.replace(text) { m ->
+            think.append(m.groupValues[1].trim()).append('\n')
+            ""
+        }
+        // 处理未闭合的 <think>（流式半截）：把其后所有内容归为思考
+        val openIdx = clean.indexOf("<think>", ignoreCase = true)
+        val finalClean = if (openIdx >= 0) {
+            think.append(clean.substring(openIdx + "<think>".length).trim()).append('\n')
+            clean.substring(0, openIdx)
+        } else clean
+        return think.toString().trim() to finalClean.trim()
+    }
+
+    /** 提取 UIMessage 纯文本（拼接所有 Text part） */
+    private fun UIMessage.toText(): String =
+        parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text }
+
+    /**
+     * 消息段 → UIMessage（借鉴 RikkaHub 输入变换器思路）：
+     * - text/markdown → 文本 part
+     * - image（http/file://）→ 视觉 part
+     * - file（本地 file:// 文档）→ 解析 PDF/DOCX/PPTX/XLSX/EPUB/文本/HTML，
+     *   包装为 <UploadFile> prompt 块插到 parts 最前面（进程内缓存，多轮对话只解析一次）
+     */
+    private suspend fun MessageItem.toLlmUIMessage(): UIMessage? {
+        val parts = mutableListOf<UIMessagePart>()
+        val docs = StringBuilder()
+        segments?.forEach { seg ->
+            when (seg.type) {
+                "text" -> seg.get("text").takeIf { it.isNotBlank() }
+                    ?.let { parts += UIMessagePart.Text(it) }
+                "markdown" -> seg.get("content").takeIf { it.isNotBlank() }
+                    ?.let { parts += UIMessagePart.Text(it) }
+                "image" -> seg.mediaUrl.takeIf { it.startsWith("http") || it.startsWith("file://") }
+                    ?.let { parts += UIMessagePart.Image(it) }
+                "file" -> {
+                    val url = seg.mediaUrl
+                    val name = seg.get("name", "title").ifBlank { "attachment" }
+                    if (url.startsWith("file://")) {
+                        val docFile = File(url.removePrefix("file://"))
+                        if (docFile.exists()) {
+                            val text = DocumentParser.parse(docFile, name)
+                            docs.append(DocumentParser.wrapAsPrompt(name, text)).append('\n')
+                        }
+                    }
+                }
+            }
+        }
+        if (docs.isNotEmpty()) parts.add(0, UIMessagePart.Text(docs.toString()))
+        if (parts.isEmpty() && content.isNotBlank()) parts += UIMessagePart.Text(content)
+        if (parts.isEmpty()) return null
+        return UIMessage(
+            role = if (senderId == myId) MessageRole.USER else MessageRole.ASSISTANT,
+            parts = parts,
+            // 携带原始时间戳：applyTimeReminder 按消息间隔注入时间提醒
+            createdAt = Instant.ofEpochMilli(timestamp / 1000)
+                .atZone(ZoneId.systemDefault()).toLocalDateTime()
+        )
+    }
+
+    /** prompt 变量替换：{{model}} 模型名 / {{time}} 当前时间 / {{date}} 当前日期 */
+    private fun renderSystemPrompt(agent: LlmAgent, model: Model): String {
+        if (agent.systemPrompt.isBlank()) return ""
+        val now = LocalDateTime.now()
+        return agent.systemPrompt
+            .replace("{{model}}", model.displayName.ifBlank { model.modelId })
+            .replace("{{time}}", now.format(DateTimeFormatter.ofPattern("HH:mm")))
+            .replace("{{date}}", now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")))
+    }
+
+    /** 长按消息 → 回复：记录引用并聚焦输入 */
+    fun setReplyTo(message: MessageItem) {
+        _state.value = _state.value.copy(replyTo = message)
+    }
+
+    fun clearReplyTo() {
+        _state.value = _state.value.copy(replyTo = null)
+    }
+
+    /** 首条消息后用消息摘要重命名会话（豆包式）：云端走 REST；本地会话改由首答完成后 LLM 总结标题 */
+    private fun maybeNameConversation(firstText: String) {
+        val s = _state.value
+        if (s.currentName != NEW_CONV_NAME) return
+        if (isLocalConvId(s.currentConvId)) return
+        val name = firstText.take(NAME_MAX_LEN)
+        viewModelScope.launch {
+            chatRepository.updateConversation(s.currentConvId, name = name)
+            _state.value = _state.value.copy(currentName = name)
+            updateConvInList(s.currentConvId) { it.copy(name = name) }
+        }
+    }
+
+    /**
+     * 本地会话首答完成后用 LLM 总结会话标题（RikkaHub TitleSummary 式），
+     * 失败/无模型时回退用首条用户消息截断。仅当会话名仍是默认「新对话」时执行一次。
+     */
+    private fun maybeGenerateLlmTitle(
+        convId: String,
+        agent: LlmAgent,
+        userText: String,
+        aiText: String
+    ) {
+        viewModelScope.launch {
+            val conv = localStore.getConversation(convId)
+            if (conv == null || (conv.name.isNotBlank() && conv.name != NEW_CONV_NAME)) return@launch
+            val fallback = userText.take(NAME_MAX_LEN).ifBlank { aiText.take(NAME_MAX_LEN) }
+            if (fallback.isBlank()) return@launch
+            val title = runCatching {
+                val (setting, model) = resolveChatModel(agent) ?: return@runCatching null
+                val content = buildString {
+                    append("用户：").appendLine(userText.take(600))
+                    append("助手：").append(aiText.take(600))
+                }
+                val result = providerManager.getProviderByType(setting).generateText(
+                    providerSetting = setting,
+                    messages = listOf(
+                        UIMessage.user(
+                            """
+                            I will give you some dialogue content in the `<content>` block.
+                            You need to summarize the conversation between user and assistant into a short title.
+                            1. The title language should be consistent with the user's primary language
+                            2. Do not use punctuation or other special symbols
+                            3. Reply directly with the title
+                            4. The title should not exceed 10 characters
+
+                            <content>
+                            $content
+                            </content>
+                            """.trimIndent()
+                        )
+                    ),
+                    params = TextGenerationParams(
+                        model = model,
+                        temperature = 0.3f,
+                        maxTokens = 100
+                    )
+                )
+                result.message.parts
+                    .filterIsInstance<UIMessagePart.Text>()
+                    .joinToString("") { it.text }
+                    .trim()
+            }.getOrNull().orEmpty()
+                .trim('"', '\'', '「', '」', '『', '』', '。', '.', ' ', '\n')
+            val finalTitle = title.take(NAME_MAX_LEN).ifBlank { fallback }
+            localStore.rename(convId, finalTitle)
+            // 本地会话不进 serverConvs；抽屉列表经 observeConversations 流自动刷新
+            if (_state.value.currentConvId == convId) {
+                _state.value = _state.value.copy(currentName = finalTitle)
+            }
+        }
+    }
+
+    /**
+     * 根据刚生成的助手回复，调用 LLM 产出 2~3 条建议追问（RikkaHub Suggestion 思路），
+     * 显示在输入区上方供用户一键发送。失败/超时则不显示建议。
+     */
+    private fun maybeGenerateSuggestions(agent: LlmAgent, model: Model, aiText: String) {
+        if (aiText.isBlank()) return
+        viewModelScope.launch {
+            val suggestions = runCatching {
+                val (setting, _) = resolveChatModel(agent) ?: return@runCatching emptyList()
+                val result = providerManager.getProviderByType(setting).generateText(
+                    providerSetting = setting,
+                    messages = listOf(
+                        UIMessage.user(
+                            """
+                            Based on the assistant's reply below, generate 3 short suggested
+                            follow-up questions the user might want to ask next.
+                            Each suggestion must be on its own line, no numbering, no quotes, no punctuation at the end.
+                            Use the same language as the reply. Keep each under 20 characters.
+
+                            Assistant reply:
+                            ${aiText.take(1000)}
+                            """.trimIndent()
+                        )
+                    ),
+                    params = TextGenerationParams(
+                        model = model,
+                        temperature = 0.7f,
+                        maxTokens = 120
+                    )
+                )
+                result.message.parts
+                    .filterIsInstance<UIMessagePart.Text>()
+                    .joinToString("") { it.text }
+                    .lineSequence()
+                    .map { it.trim().trimStart { c -> c.isDigit() || c in ".、)\"'「」『』" }.trim() }
+                    .filter { it.length in 2..30 }
+                    .take(3)
+                    .toList()
+            }.getOrNull().orEmpty()
+            if (suggestions.isNotEmpty()) {
+                _state.value = _state.value.copy(aiSuggestions = suggestions)
+            }
+        }
+    }
+
+    /** 去掉乐观前缀，用于同一条消息的 local- 版与服务端版去重 */
+    private fun cleanId(id: String): String = id.removePrefix(LOCAL_PREFIX)
+
+    /**
+     * 追加消息；自动处理 local- 乐观消息与服务端确认消息的替换：
+     * - 若收到服务端版（无 local-）且本地存在对应乐观版 → 替换
+     * - 若 id 已存在（含乐观/正式） → 忽略
+     */
+    private fun appendMessage(msg: MessageItem) {
+        val s = _state.value
+        if (msg.id.isNotBlank()) {
+            val clean = cleanId(msg.id)
+            val existingLocal = s.messages.firstOrNull { cleanId(it.id) == clean && it.id.startsWith(LOCAL_PREFIX) }
+            if (existingLocal != null && !msg.id.startsWith(LOCAL_PREFIX)) {
+                // 服务端确认到达：替换乐观气泡，保留其他状态（recalled 等由后续事件处理）
+                _state.value = s.copy(
+                    messages = s.messages.map { if (it.id == existingLocal.id) msg else it }
+                        .sortedBy { it.timestamp },
+                    sending = false,
+                    error = null
+                )
+                return
+            }
+            if (s.messages.any { it.id == msg.id }) return
+        }
+        _state.value = s.copy(
+            messages = (s.messages + msg).sortedBy { it.timestamp },
+            sending = false,
+            error = null
+        )
+    }
+
+    /** 更新服务器会话列表项并重排；会话不存在/本地会话时忽略（本地走 localStore） */
+    private fun updateConvInList(convId: String, transform: (ConvItem) -> ConvItem) {
+        if (convId.isBlank() || isLocalConvId(convId)) return
+        val list = serverConvs.value
+        if (list.none { it.id == convId }) return
+        serverConvs.value = sortConvs(list.map { if (it.id == convId) transform(it) else it })
+    }
+
+    private fun extractPreview(segments: List<MessageSegment>): String =
+        segments.firstOrNull()?.display ?: ""
+
+    // ============ 消息操作 ============
+
+    fun markRead() {
+        val convId = _state.value.currentConvId
+        if (convId.isBlank()) return
+        if (isLocalConvId(convId)) {
+            viewModelScope.launch { localStore.clearUnread(convId) }
+            return
+        }
+        viewModelScope.launch { chatRepository.markRead(convId) }
+    }
+
+    fun recall(message: MessageItem) {
+        val convId = _state.value.currentConvId
+        if (convId.isBlank()) return
+        if (isLocalConvId(convId)) {
+            viewModelScope.launch {
+                localStore.setRecalled(message.id)
+                _state.value = _state.value.copy(
+                    messages = _state.value.messages.map {
+                        if (it.id == message.id) it.copy(recalled = true) else it
+                    }
+                )
+            }
+            return
+        }
+        if (message.id.startsWith(LOCAL_PREFIX)) return
+        viewModelScope.launch {
+            chatRepository.recall(convId, message.id).onSuccess {
+                _state.value = _state.value.copy(
+                    messages = _state.value.messages.map {
+                        if (it.id == message.id) it.copy(recalled = true) else it
+                    }
+                )
+            }
+        }
+    }
+
+    fun deleteMessage(message: MessageItem) {
+        // 本地会话：消息只存本机，直接删本地库（生成中的占位气泡删除后，
+        // finalize 检测到气泡已不在会放弃落库）
+        if (isLocalConvId(message.convId.ifBlank { _state.value.currentConvId })) {
+            _state.value = _state.value.copy(
+                messages = _state.value.messages.filterNot { it.id == message.id }
+            )
+            viewModelScope.launch { localStore.deleteMessages(listOf(message.id)) }
+            return
+        }
+        // 仅存在于本地的乐观消息（发送时未确认/已离线）：直接本地移除，
+        // 不调 REST——服务端根本没有这条消息，调用必然 404/失败
+        if (message.id.startsWith(LOCAL_PREFIX)) {
+            // 媒体仍在后台上传：登记取消，上传完成后不再发 WS
+            val target = _state.value.messages.firstOrNull { it.id == message.id }
+            if (target?.uploading == true) {
+                cancelledUploads.add(message.id.removePrefix(LOCAL_PREFIX))
+            }
+            _state.value = _state.value.copy(
+                messages = _state.value.messages.filterNot { it.id == message.id }
+            )
+            return
+        }
+        val convId = _state.value.currentConvId
+        if (convId.isBlank()) return
+        viewModelScope.launch {
+            chatRepository.deleteMessage(convId, message.id).onSuccess {
+                _state.value = _state.value.copy(
+                    messages = _state.value.messages.filterNot { it.id == message.id }
+                )
+            }
+        }
+    }
+
+    fun retryInit() {
+        if (myId.isBlank() || _state.value.loading) return
+        viewModelScope.launch { bootstrapConversations() }
+    }
+
+    // ============ 消息操作扩展（对齐 RikkaHub：编辑重发/重新生成/多模型重答） ============
+
+    /** 是否本地智能体会话（发送落库/重新生成/多模型重答/编辑重发仅本地会话可用） */
+    private fun isLocalConv(): Boolean = isLocalConvId(_state.value.currentConvId)
+
+    /** 消息可编辑文本（text/markdown 段拼接，回退 content）；纯媒体消息返回空 */
+    private fun editableText(m: MessageItem): String {
+        val fromSegs = m.segments
+            ?.filter { it.type == "text" || it.type == "markdown" }
+            ?.map { it.get("text", "content") }
+            ?.filter { it.isNotBlank() }
+            ?.joinToString("\n")
+            .orEmpty()
+        return fromSegs.ifBlank { if (m.segments.isNullOrEmpty()) m.content else "" }.trim()
+    }
+
+    /** 长按消息 → 编辑重发：聊天页弹出编辑对话框 */
+    fun startEditMessage(m: MessageItem) {
+        _state.value = _state.value.copy(editing = m)
+    }
+
+    fun cancelEditMessage() {
+        _state.value = _state.value.copy(editing = null)
+    }
+
+    /**
+     * 确认编辑（仅本地会话，RikkaHub 式版本链）：
+     * 在原消息所在节点追加一个新版本，旧版本完整保留、‹ n/m › 可切换；
+     * 旧尾巴钉到旧版本分支（切回旧版本时整条换回），随后以新版本为末尾重新生成。
+     * 云端会话不提供编辑功能。
+     */
+    fun confirmEditMessage(newText: String) {
+        val target = _state.value.editing ?: return
+        val content = newText.trim()
+        if (content.isEmpty()) return
+        _state.value = _state.value.copy(editing = null)
+        viewModelScope.launch {
+            stopGeneratingAndWait()
+            val s = _state.value
+            if (!isLocalConvId(s.currentConvId)) return@launch
+            val node = s.messages.toMessageNodes().nodeOf(target.id)
+            if (node == null) {
+                _state.value = _state.value.copy(error = "消息已不存在，编辑失败")
+                return@launch
+            }
+            // 旧尾巴钉到当前选中版本（作为旧分支完整保留，切回旧版本时整条换回）
+            pinTailToVersion(node.anchorId, node.selectedIndex)
+            // 同节点追加新版本（timestamp = 锚点 + idx，保证版本聚集在锚点位置）；
+            // 继承**当前选中版本**的分支约束（嵌套分支时留在当前分支内）
+            val newIdx = node.versions.size
+            val edited = MessageItem(
+                id = UUID.randomUUID().toString(),
+                convId = s.currentConvId,
+                senderId = target.senderId.ifBlank { myId },
+                senderName = target.senderName,
+                segments = node.selected.branchConstraints()
+                    .map { branchSegment(it.first, it.second) } +
+                    listOf(versionSegment(node.anchorId, newIdx, newIdx)) +
+                    listOf(Segments.text(content)),
+                content = content,
+                isSelf = true,
+                timestamp = node.anchorTs + newIdx
+            )
+            appendMessage(edited)
+            localStore.insertMessage(edited)
+            localStore.touch(s.currentConvId, content, System.currentTimeMillis() * 1000)
+            maybeDispatchLocal()
+        }
+    }
+
+    /**
+     * 切换消息节点显示版本（仅本地会话）：‹ n/m › 切换器回调。
+     * 把该节点所有版本消息的 sys.ver 段同步为 sel=index 并回写 Room。
+     */
+    fun selectVersion(anchorId: String, index: Int) {
+        if (!isLocalConv()) return
+        val s = _state.value
+        val node = s.messages.toMessageNodes().firstOrNull { it.anchorId == anchorId } ?: return
+        if (index !in node.versions.indices || index == node.selectedIndex) return
+        val updated = node.versions.map { v ->
+            val meta = v.versionMeta() ?: return@map v
+            v.copy(segments = v.segments?.map { seg ->
+                if (seg.type == VERSION_SEG) versionSegment(anchorId, meta.idx, index) else seg
+            })
+        }
+        val byId = updated.associateBy { it.id }
+        _state.value = s.copy(
+            messages = s.messages.map { byId[it.id] ?: it }
+        )
+        viewModelScope.launch { localStore.insertMessages(updated) }
+    }
+
+    /** 停止生成并等待收尾完成（防止旧任务 finalize 延迟落库陈旧内容） */
+    private suspend fun stopGeneratingAndWait() {
+        val job = generatingJob
+        generatingJob = null
+        job?.cancelAndJoin()
+    }
+
+    /**
+     * 把锚点之后、尚未标记该锚点分支归属的消息钉到指定版本（sys.br 约束）。
+     * 在创建新版本前调用：旧尾巴完整保留为旧版本的分支，切换版本时整条换回。
+     */
+    private suspend fun pinTailToVersion(anchorId: String, versionIdx: Int) {
+        val s = _state.value
+        val nodes = s.messages.toMessageNodes()
+        val idx = nodes.indexOfFirst { it.anchorId == anchorId }
+        if (idx < 0) return
+        val toUpdate = nodes.drop(idx + 1).flatMap { it.versions }
+            .filter { m -> m.branchConstraints().none { it.first == anchorId } }
+            .map { m -> m.copy(segments = listOf(branchSegment(anchorId, versionIdx)) + m.segments.orEmpty()) }
+        if (toUpdate.isEmpty()) return
+        val byId = toUpdate.associateBy { it.id }
+        _state.value = s.copy(messages = s.messages.map { byId[it.id] ?: it })
+        localStore.insertMessages(toUpdate)
+    }
+
+    /** 当前可见分支上所有多版本节点的分支约束（新消息/新尾巴挂到当前选中分支） */
+    private fun activeBranchConstraints(): List<MessageSegment> =
+        _state.value.messages.toMessageNodes().resolveVisible()
+            .filter { it.versions.size > 1 }
+            .map { branchSegment(it.anchorId, it.selectedIndex) }
+
+    /**
+     * 删除锚点之后**当前可见分支**的尾巴消息（其他分支的消息保留）。
+     * 用于用户消息重新生成（RikkaHub 式截断），但只截当前分支。
+     */
+    private suspend fun deleteVisibleTailAfter(anchorId: String) {
+        val s = _state.value
+        val nodes = s.messages.toMessageNodes()
+        val selMap = nodes.associate { it.anchorId to it.selectedIndex }
+        val idx = nodes.indexOfFirst { it.anchorId == anchorId }
+        if (idx < 0) return
+        val toDelete = nodes.drop(idx + 1).flatMap { it.versions }.filter { m ->
+            m.branchConstraints().all { (of, req) -> (selMap[of] ?: req) == req }
+        }
+        if (toDelete.isEmpty()) return
+        val ids = toDelete.map { it.id }.toSet()
+        _state.value = s.copy(messages = s.messages.filterNot { it.id in ids })
+        localStore.deleteMessages(toDelete.map { it.id })
+    }
+
+    /**
+     * 从某条消息重新生成（仅本地会话，对齐 RikkaHub regenerateAtMessage）：
+     * - 用户消息：截断当前分支在该节点之后的尾巴（其他分支保留），重新生成
+     * - bot 回复：旧回复保留为旧版本（其尾巴钉到旧版本分支），新回复作为该节点新版本
+     */
+    fun regenerateAt(message: MessageItem) {
+        if (!isLocalConv()) return
+        viewModelScope.launch {
+            stopGeneratingAndWait()
+            val node = _state.value.messages.toMessageNodes().nodeOf(message.id) ?: return@launch
+            if (node.isSelf) {
+                deleteVisibleTailAfter(node.anchorId)
+                maybeDispatchLocal()
+            } else {
+                pinTailToVersion(node.anchorId, node.selectedIndex)
+                val newIdx = node.versions.size
+                generatingJob = viewModelScope.launch {
+                    runLocalGeneration(
+                        botId = _state.value.currentBotId,
+                        trimTrailingAssistant = true,
+                        versionAnchorId = node.anchorId,
+                        versionIdx = newIdx,
+                        versionAnchorTs = node.anchorTs
+                    )
+                }
+            }
+        }
+    }
+
+    /** 加载全部启用 Provider 的 CHAT 模型（多模型重答选择器数据源） */
+    fun loadChatModels() {
+        viewModelScope.launch {
+            _chatModels.value = llmRepository.getProviders()
+                .filter { it.enabled }
+                .flatMap { p ->
+                    p.models.filter { it.type == ModelType.CHAT }.map { m ->
+                        ChatModelOption(
+                            modelId = m.modelId,
+                            label = m.displayName.ifBlank { m.modelId },
+                            providerName = p.name
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 更新本地智能体默认模型（Rikka 式顶栏模型选择，持久化到 Room） */
+    fun setLocalAgentModel(agent: LlmAgent, modelId: String) {
+        if (agent.chatModelId == modelId) return
+        viewModelScope.launch {
+            llmRepository.upsertAgent(agent.copy(chatModelId = modelId))
+        }
+        // 同步 UI 上的当前智能体（顶栏副标题立即刷新，不等 Room 观察流回环）
+        if (_state.value.currentAgent?.id == agent.id) {
+            _state.value = _state.value.copy(
+                currentAgent = agent.copy(chatModelId = modelId)
+            )
+        }
+    }
+
+    /**
+     * 更新当前本地智能体的扩展配置（联网搜索/推理/MCP/技能/记忆/本地工具），
+     * 持久化到 Room 并同步 UI 当前快照；云端会话忽略。
+     */
+    fun updateCurrentAgent(transform: (LlmAgent) -> LlmAgent) {
+        val current = _state.value.currentAgent ?: return
+        val updated = transform(current)
+        if (updated == current) return
+        _state.value = _state.value.copy(currentAgent = updated)
+        viewModelScope.launch { llmRepository.upsertAgent(updated) }
+    }
+
+    /**
+     * 多模型重答（仅本地会话，对齐 RikkaHub 换模型重新生成）：
+     * 用指定模型对最后一个 AI 节点重新生成一个**新版本**（旧版本保留可切换）；
+     * 新回复署名带模型名，旧回复不参与本次上下文。
+     */
+    fun regenerateWithModel(modelId: String) {
+        if (!isLocalConv()) return
+        viewModelScope.launch {
+            stopGeneratingAndWait()
+            val node = _state.value.messages.toMessageNodes().resolveVisible()
+                .lastOrNull { !it.isSelf } ?: return@launch
+            // 旧尾巴钉到旧版本分支，新版本从空白尾巴重新长
+            pinTailToVersion(node.anchorId, node.selectedIndex)
+            generatingJob = viewModelScope.launch {
+                runLocalGeneration(
+                    botId = _state.value.currentBotId,
+                    overrideModelId = modelId,
+                    trimTrailingAssistant = true,
+                    versionAnchorId = node.anchorId,
+                    versionIdx = node.versions.size,
+                    versionAnchorTs = node.anchorTs
+                )
+            }
+        }
+    }
+
+    /** 把上下文消息回放到新本地会话（引擎切换分叉用）：仅保留文本/markdown 内容 */
+    private suspend fun replayContextInto(convId: String, context: List<MessageItem>) {
+        for (m in context) {
+            val text = editableText(m)
+            if (text.isBlank()) continue
+            val isSelf = m.senderId == myId
+            val segs = listOf(if (isSelf) Segments.text(text) else Segments.markdown(text))
+            localStore.insertMessage(
+                MessageItem(
+                    id = UUID.randomUUID().toString(),
+                    convId = convId,
+                    senderId = m.senderId,
+                    senderName = m.senderName,
+                    segments = segs,
+                    content = text,
+                    isSelf = isSelf,
+                    timestamp = m.timestamp
+                )
+            )
+        }
+    }
+
+    // ============ 对话引擎切换（顶栏 chip） ============
+
+    /**
+     * 顶栏引擎切换 → 本地智能体：
+     * - 当前已是绑定该智能体的本地会话：忽略；
+     * - 当前会话没有可用历史：直接新建该智能体的空本地会话；
+     * - 有历史（云端或其他智能体的本地会话）：分叉——新建绑定该智能体的
+     *   本地会话，并把当前会话消息回放为上下文（原会话保留不动）。
+     */
+    fun switchEngineToLocal(agent: LlmAgent) {
+        val s = _state.value
+        if (!s.ready) return
+        // 已在该智能体的会话中：也要刷新 currentAgent（防止编辑模型/名称后 state 滞留旧快照）
+        if (isLocalConvId(s.currentConvId) && extractAgentId(s.currentBotId) == agent.id) {
+            _state.value = s.copy(currentAgent = agent)
+            return
+        }
+        viewModelScope.launch {
+            val context = s.messages.toMessageNodes().selectedMessages()
+                .filter { !it.recalled && editableText(it).isNotBlank() }
+            if (context.isEmpty()) {
+                createLocalConversation(agent)
+                return@launch
+            }
+            val baseName = s.currentName
+            val name = if (baseName.isBlank() || baseName == NEW_CONV_NAME) {
+                agent.name.ifBlank { "AI 对话" }
+            } else {
+                "$baseName · ${agent.name.ifBlank { "智能体" }}"
+            }
+            val conv = localStore.createConversation(agent, name)
+            replayContextInto(conv.id, context)
+            openConv(conv)
+        }
+    }
+
+    /**
+     * 顶栏引擎切换 → 云端：
+     * 云端会话由服务端代理，无法预填本地上下文，直接新开一个云端会话。
+     */
+    fun switchEngineToCloud() {
+        if (!isLocalConvId(_state.value.currentConvId)) return
+        newConversation()
+    }
+
+    /** 置顶/取消置顶会话：本地会话写本地库，云端走服务端 PATCH + 本地重排 */
+    fun pinConversation(convId: String, pinned: Boolean) {
+        if (isLocalConvId(convId)) {
+            viewModelScope.launch { localStore.setPinned(convId, pinned) }
+            return
+        }
+        viewModelScope.launch {
+            chatRepository.updateConversation(convId, pinned = pinned)
+                .onSuccess { saved ->
+                    updateConvInList(convId) { it.copy(pinned = saved.pinned) }
+                }
+                .onFailure { e ->
+                    _state.value = _state.value.copy(error = e.message ?: "置顶失败")
+                }
+        }
+    }
+
+    // ============ 会话内搜索 ============
+
+    /**
+     * 打开搜索面板：后台全量拉取当前会话历史（每页 100，最多 15 页）合并进
+     * 消息流，保证搜索覆盖完整历史而不只是已加载分页。
+     */
+    fun openSearch() {
+        _state.value = _state.value.copy(searchOpen = true, searching = true, searchResults = emptyList())
+        // 本地会话：消息全在本地库，一次读全即可
+        if (isLocalConvId(_state.value.currentConvId)) {
+            val convId = _state.value.currentConvId
+            viewModelScope.launch {
+                val items = localStore.loadAllMessages(convId)
+                if (_state.value.currentConvId != convId) return@launch
+                _state.value = _state.value.copy(messages = items, searching = false)
+                applySearchFilter()
+            }
+            return
+        }
+        viewModelScope.launch {
+            var pages = 0
+            while (pages < 15) {
+                val s = _state.value
+                if (!s.searchOpen || s.currentConvId.isBlank()) return@launch
+                val oldest = s.messages.firstOrNull()?.timestamp
+                    ?: chatRepository.loadHistory(s.currentConvId, limit = 1).getOrNull()?.items?.firstOrNull()?.timestamp
+                    ?: break
+                val resp = chatRepository.loadHistory(s.currentConvId, before = oldest, limit = 100).getOrNull()
+                    ?: break
+                if (resp.items.isEmpty()) break
+                val merged = (resp.items + _state.value.messages)
+                    .distinctBy { cleanId(it.id) }
+                    .sortedBy { it.timestamp }
+                _state.value = _state.value.copy(messages = merged, hasMore = resp.hasMore)
+                pages++
+                if (!resp.hasMore) break
+            }
+            if (_state.value.searchOpen) {
+                _state.value = _state.value.copy(searching = false)
+                applySearchFilter()
+            }
+        }
+    }
+
+    fun closeSearch() {
+        _state.value = _state.value.copy(
+            searchOpen = false, searchQuery = "", searchResults = emptyList(),
+            searching = false, highlightMessageId = null
+        )
+    }
+
+    fun updateSearchQuery(query: String) {
+        _state.value = _state.value.copy(searchQuery = query, highlightMessageId = null)
+        applySearchFilter()
+    }
+
+    /** 内存过滤：命中 displayText / content（忽略大小写），按时间倒序展示 */
+    private fun applySearchFilter() {
+        val s = _state.value
+        val q = s.searchQuery.trim()
+        if (q.isEmpty()) {
+            _state.value = s.copy(searchResults = emptyList())
+            return
+        }
+        val results = s.messages
+            .filter { !it.recalled }
+            .filter {
+                it.displayText.contains(q, ignoreCase = true) || it.content.contains(q, ignoreCase = true)
+            }
+            .sortedByDescending { it.timestamp }
+        _state.value = s.copy(searchResults = results)
+    }
+
+    /** 搜索结果点击：关闭搜索面板，定位并高亮该消息 */
+    fun jumpToSearchResult(m: MessageItem) {
+        _state.value = _state.value.copy(searchOpen = false, highlightMessageId = m.id)
+    }
+
+    fun clearHighlight() {
+        _state.value = _state.value.copy(highlightMessageId = null)
+    }
+
+    fun clearError() {
+        _state.value = _state.value.copy(error = null)
+    }
+
+    companion object {
+        const val NEW_CONV_NAME = "新对话"
+
+        /** OCR 视觉模型的系统提示：要求逐字提取文字并描述画面（对齐 RikkaHub OcrPrompt） */
+        private const val OCR_PROMPT =
+            "You are an OCR and image description engine. Extract all readable text from the image " +
+                "verbatim (preserve layout with line breaks where possible), and briefly describe the " +
+                "non-text visual content. Reply in the same language as the text in the image."
+        const val SESSION_BOT_PREFIX = "sess-"
+        /** 本地智能体会话 bot_id 前缀（bot-local-{agentId}） */
+        const val LOCAL_BOT_PREFIX = LocalChatStore.BOT_PREFIX
+        /** 本地会话 id 前缀（会话归属判定的唯一依据） */
+        const val LOCAL_CONV_PREFIX = LocalChatStore.CONV_PREFIX
+
+        /** 是否本地会话（UI 层判定用；旧服务器 bot-local- 会话属云端，不算本地） */
+        fun isLocalConvId(convId: String): Boolean = convId.startsWith(LOCAL_CONV_PREFIX)
+
+        /** 本地智能体回复占位气泡 id 前缀（本地会话中该 id 即最终消息 id） */
+        private const val BOT_LOCAL_MSG_PREFIX = "bot-local-msg-"
+        /** 流式生成 UI 刷新节流（毫秒） */
+        private const val THROTTLE_MS = 80L
+        private const val NAME_MAX_LEN = 12
+        /** 与服务端 handleUpload 限制一致（20MB） */
+        private const val MAX_UPLOAD_BYTES = 20L * 1024 * 1024
+    }
+}

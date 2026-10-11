@@ -1,0 +1,25 @@
+pluginManagement {
+    repositories {
+        // 本地镜像（设备构建环境加速用），目录不存在时自动跳过
+        def localRepo = new File('/opt/maven-repo')
+        if (localRepo.isDirectory()) {
+            maven { url localRepo.toURI() }
+        }
+        google()
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        def localRepo = new File('/opt/maven-repo')
+        if (localRepo.isDirectory()) {
+            maven { url localRepo.toURI() }
+        }
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "LinkZoneApp"

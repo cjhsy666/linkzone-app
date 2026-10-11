@@ -1,0 +1,145 @@
+package com.cjhsy.linkzone.data.ai
+
+import com.cjhsy.linkzone.ai.core.InputSchema
+import com.cjhsy.linkzone.ai.core.Tool
+import com.cjhsy.linkzone.ai.ui.UIMessagePart
+import com.dokar.quickjs.QuickJsException
+import com.dokar.quickjs.QuickJsInterruptedException
+import com.dokar.quickjs.binding.function
+import com.dokar.quickjs.quickJs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.milliseconds
+
+/**
+ * eval_javascript 工具 —— 移植自 RikkaHub JavascriptTool。
+ *
+ * QuickJS 引擎（ES2020），无 DOM / Node API；带内存上限、栈上限、10s 超时；
+ * console.log/info/warn/error/debug 被捕获进 logs；结果为最后一个表达式的值。
+ */
+fun buildJavascriptTool(): Tool = Tool(
+    name = "eval_javascript",
+    description = """
+        Execute JavaScript code using QuickJS engine (ES2020).
+        The result is the value of the last expression in the code.
+        For calculations with decimals, use toFixed() to control precision.
+        Console output (log/info/warn/error) is captured and returned in 'logs' field.
+        No DOM or Node.js APIs available.
+        Example: '1 + 2' returns 3; 'const x = 5; x * 2' returns 10.
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("code", buildJsonObject {
+                    put("type", "string")
+                    put("description", "The JavaScript code to execute")
+                })
+            },
+            required = listOf("code")
+        )
+    },
+    execute = {
+        val code = it.jsonObject["code"]?.jsonPrimitive?.contentOrNull
+            ?: error("JavaScript code is required")
+        listOf(UIMessagePart.Text(evaluateJavascript(code)))
+    }
+)
+
+internal suspend fun evaluateJavascript(
+    code: String,
+    timeoutMillis: Long = JS_EXECUTION_TIMEOUT_MS,
+): String = withContext(Dispatchers.Default) {
+    val logs = StringBuilder()
+    var logsTruncated = false
+    fun appendLog(line: String) {
+        val remaining = JS_MAX_LOG_CHARS - logs.length
+        if (remaining <= 0) {
+            logsTruncated = true
+            return
+        }
+        val entry = if (logs.isEmpty()) line else "\n$line"
+        logs.append(entry.take(remaining))
+        if (entry.length > remaining) logsTruncated = true
+    }
+
+    fun errorPayload(message: String) = buildJsonObject {
+        put("error", message)
+    }.toString()
+
+    try {
+        withTimeoutOrNull(timeoutMillis.milliseconds) {
+            // 超时/取消时中断原生求值；运行时在求值（含结果序列化）结束后才关闭
+            quickJs(Dispatchers.Default) {
+                memoryLimit = JS_MEMORY_LIMIT_BYTES
+                maxStackSize = JS_MAX_STACK_BYTES
+                evaluationTimeoutMillis = timeoutMillis
+                function("__linkzoneLog") { args ->
+                    appendLog(args[0] as String)
+                }
+                val result = evaluate<String?>(
+                    """
+                    (() => {
+                        const log = globalThis.__linkzoneLog;
+                        delete globalThis.__linkzoneLog;
+                        const stringify = JSON.stringify;
+                        const toString = String;
+                        const format = value => {
+                            if (value !== null && typeof value === 'object') {
+                                try { return stringify(value); } catch (_) {}
+                            }
+                            return toString(value);
+                        };
+                        globalThis.console = {};
+                        for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+                            console[level] = (...args) => {
+                                let line = '[' + (level === 'debug' ? 'LOG' : level.toUpperCase()) + ']';
+                                for (const arg of args) {
+                                    line += ' ' + format(arg);
+                                    if (line.length > $JS_MAX_LOG_CHARS) {
+                                        line = line.slice(0, $JS_MAX_LOG_CHARS) + ' [truncated]';
+                                        break;
+                                    }
+                                }
+                                log(line);
+                            };
+                        }
+                        const result = (0, eval)(${JsonPrimitive(code)});
+                        if (result == null) return null;
+                        const type = typeof result;
+                        const text = type === 'object' || type === 'function'
+                            ? stringify(result) : toString(result);
+                        if (text != null && text.length > $JS_MAX_RESULT_CHARS) {
+                            throw new Error('JavaScript result exceeds output limit');
+                        }
+                        return text == null ? null : text;
+                    })()
+                    """.trimIndent()
+                )
+                buildJsonObject {
+                    if (logs.isNotEmpty()) {
+                        put("logs", logs.toString() + if (logsTruncated) "\n[Logs truncated]" else "")
+                    }
+                    put("result", result?.let(::JsonPrimitive) ?: JsonNull)
+                }.toString()
+            }
+        } ?: errorPayload("JavaScript execution timed out after ${timeoutMillis}ms")
+    } catch (_: QuickJsInterruptedException) {
+        errorPayload("JavaScript execution timed out after ${timeoutMillis}ms")
+    } catch (e: QuickJsException) {
+        errorPayload((e.message ?: "JavaScript execution failed").take(JS_MAX_LOG_CHARS))
+    }
+}
+
+private const val JS_EXECUTION_TIMEOUT_MS = 10_000L
+private const val JS_MEMORY_LIMIT_BYTES = 64L * 1024 * 1024
+private const val JS_MAX_STACK_BYTES = 256L * 1024
+private const val JS_MAX_LOG_CHARS = 64 * 1024
+private const val JS_MAX_RESULT_CHARS = 1024 * 1024

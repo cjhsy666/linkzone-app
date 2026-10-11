@@ -1,0 +1,36 @@
+# ===== Android / Gradle =====
+*.iml
+.gradle/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+.idea/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# ===== Kotlin =====
+.kotlin/
+
+# ===== 本项目私有构建产物与本地依赖 =====
+/localmvn/
+/localmvn.zip
+/libs/
+/mXzGnk.zip
+/src.zip
+/build-log.txt
+/gradlew_standalone
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ===== 日志 =====
+*.log

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 可共享路径：仅开放缓存目录（拍照/录音临时文件） -->
+<paths>
+    <cache-path name="cache" path="." />
+    <external-cache-path name="ext_cache" path="." />
+</paths>

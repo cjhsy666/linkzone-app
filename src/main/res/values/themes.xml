@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Compose 接管全部 UI 后，XML 主题只负责启动阶段的窗口底色与状态栏。
+      浅色用 Light 父主题 + 浅色状态栏图标；暗色见 values-night/themes.xml。
+    -->
+    <style name="Theme.LinkZone" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/window_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

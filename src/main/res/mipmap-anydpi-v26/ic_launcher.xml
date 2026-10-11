@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标：minSdk 26 全部走此定义。
+  背景随明暗模式切换（values/values-night 的 ic_launcher_bg），
+  前景为 web 端同款 logo（透明底 PNG，已缩入 72dp 安全区）。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_bg" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

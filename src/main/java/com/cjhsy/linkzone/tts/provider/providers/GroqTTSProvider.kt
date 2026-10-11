@@ -1,0 +1,77 @@
+package com.cjhsy.linkzone.tts.provider.providers
+
+import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import com.cjhsy.linkzone.tts.model.AudioChunk
+import com.cjhsy.linkzone.tts.model.AudioFormat
+import com.cjhsy.linkzone.tts.model.TTSRequest
+import com.cjhsy.linkzone.tts.provider.TTSProvider
+import com.cjhsy.linkzone.tts.provider.TTSProviderException
+import com.cjhsy.linkzone.tts.provider.TTSProviderSetting
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+private const val TAG = "GroqTTSProvider"
+
+class GroqTTSProvider(
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .readTimeout(120, TimeUnit.SECONDS)
+        .build()
+) : TTSProvider<TTSProviderSetting.Groq> {
+
+    override fun generateSpeech(
+        context: Context,
+        providerSetting: TTSProviderSetting.Groq,
+        request: TTSRequest
+    ): Flow<AudioChunk> = flow {
+        val requestBody = JSONObject().apply {
+            put("model", providerSetting.model)
+            put("input", request.text)
+            put("voice", providerSetting.voice)
+            put("response_format", "wav")
+        }
+
+        Log.i(TAG, "generateSpeech: $requestBody")
+
+        val httpRequest = Request.Builder()
+            .url("${providerSetting.baseUrl}/audio/speech")
+            .addHeader("Authorization", "Bearer ${providerSetting.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val response = httpClient.newCall(httpRequest).execute()
+
+        if (!response.isSuccessful) {
+            Log.e(TAG, "generateSpeech: ${response.code} ${response.message}")
+            Log.e(TAG, "generateSpeech: ${response.body?.string()}")
+            throw TTSProviderException(
+                message = "Groq TTS request failed: ${response.code} ${response.message}",
+                statusCode = response.code
+            )
+        }
+
+        val audioData = response.body?.bytes()
+            ?: throw TTSProviderException(message = "Groq TTS returned empty body", statusCode = response.code)
+
+        emit(
+            AudioChunk(
+                data = audioData,
+                format = AudioFormat.WAV,
+                isLast = true,
+                metadata = mapOf(
+                    "provider" to "groq",
+                    "model" to providerSetting.model,
+                    "voice" to providerSetting.voice,
+                    "response_format" to "wav"
+                )
+            )
+        )
+    }
+}

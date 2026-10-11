@@ -1,0 +1,47 @@
+package com.cjhsy.linkzone.data.ai
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/**
+ * 本地工具开关选项（对齐 RikkaHub LocalToolOption 的裁剪版）
+ *
+ * 新增子类必须带 @SerialName 且旧值不变：开关以 JSON 存进 Room（llm_agent.localTools），
+ * 反序列化遇到未知 serial 名会失败，故只增不改。
+ */
+@Serializable
+sealed class LocalToolOption {
+    @Serializable
+    @SerialName("chart_display")
+    object ChartDisplay : LocalToolOption()
+
+    /** 时间感知 get_time_info（查询设备当前日期时间） */
+    @Serializable
+    @SerialName("time_info")
+    object TimeInfo : LocalToolOption()
+
+    /** 剪贴板读写 clipboard_tool */
+    @Serializable
+    @SerialName("clipboard")
+    object Clipboard : LocalToolOption()
+
+    /** 主动追问 ask_user（HITL：生成暂停等用户作答） */
+    @Serializable
+    @SerialName("ask_user")
+    object AskUser : LocalToolOption()
+
+    /** 日历读写 calendar_query / calendar_create（需系统日历权限） */
+    @Serializable
+    @SerialName("calendar")
+    object Calendar : LocalToolOption()
+
+    /** 语音播报 text_to_speech（朗读文本） */
+    @Serializable
+    @SerialName("tts")
+    object Tts : LocalToolOption()
+
+    /** JavaScript 代码执行 eval_javascript（QuickJS 引擎） */
+    @Serializable
+    @SerialName("javascript")
+    object Javascript : LocalToolOption()
+}

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 暗色启动主题：深色窗口底 + 浅色状态栏图标，与 Compose DarkColors 对齐 -->
+    <style name="Theme.LinkZone" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/window_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

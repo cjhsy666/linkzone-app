@@ -1,0 +1,148 @@
+buildscript {
+    repositories {
+        maven { url 'file:///opt/maven-repo' }
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // AGP 8.13.2：8.x 线最新稳定版，支持 compileSdk 36；要求 Gradle >= 8.13（设备装 8.14.6）
+        classpath 'com.android.tools.build:gradle:8.13.2'
+        // Kotlin 2.3.20：与 KSP 2.3.12 配对（KSP 2.3.12 的 stdlib 依赖即 2.3.20）
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20'
+        classpath 'org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.3.20'
+        classpath 'org.jetbrains.kotlin:kotlin-serialization:2.3.20'
+        classpath 'com.google.devtools.ksp:symbol-processing-gradle-plugin:2.3.12'
+    }
+}
+
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
+apply plugin: 'com.google.devtools.ksp'
+
+android {
+    namespace 'com.cjhsy.linkzone'
+    // compileSdk 36：仅编译期 API 级别（quickjs-kt 等新库要求），targetSdk 保持 34 → 运行时行为不变
+    compileSdk 36
+    buildToolsVersion "36.0.0"
+
+    defaultConfig {
+        applicationId "com.cjhsy.linkzone"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+    buildFeatures {
+        compose true
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+    packaging {
+        resources {
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}']
+        }
+    }
+
+    // 本地设备环境复用已安装的 build-tools 36.0.0 的 aapt2；
+    // CI/其他环境该路径不存在时自动用 AGP 自带的 aapt2（从 Maven 下载）
+    def localAapt2 = '/root/android-sdk/build-tools/36.0.0/aapt2'
+    if (file(localAapt2).exists()) {
+        aapt2FromMavenOverride = localAapt2
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.19.1'
+
+    // QuickJS：eval_javascript 工具的 JS 引擎（ES2020，无 DOM/Node API）
+    implementation 'io.github.dokar3:quickjs-kt:1.0.15'
+
+    // Lifecycle / ViewModel / Activity
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.11.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.11.0'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0'
+    // ProcessLifecycleOwner：监听整个 App 前后台切换（回前台探活重连/增量同步）
+    implementation 'androidx.lifecycle:lifecycle-process:2.11.0'
+    implementation 'androidx.activity:activity-compose:1.13.0'
+
+    // Compose BOM 2026.09.00 -> compose ui 1.9.x / material3 1.4.0
+    implementation platform('androidx.compose:compose-bom:2026.09.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-graphics'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    // icons 已从 BOM 冻结在 1.7.x 线，必须显式版本（BOM 2026.09 不再管理）
+    implementation 'androidx.compose.material:material-icons-extended:1.7.8'
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+
+    // Navigation
+    implementation 'androidx.navigation:navigation-compose:2.10.2'
+
+    // Coroutines
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0'
+
+    // Serialization
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0'
+
+    // Network
+    implementation 'com.squareup.retrofit2:retrofit:3.0.0'
+    implementation 'com.squareup.retrofit2:converter-kotlinx-serialization:3.0.0'
+    implementation 'com.squareup.okhttp3:okhttp:5.5.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:5.5.0'
+    // OkHttp SSE（LLM 流式响应）
+    implementation 'com.squareup.okhttp3:okhttp-sse:5.5.0'
+
+    // Room（本地对话持久化）
+    implementation 'androidx.room:room-runtime:2.8.5'
+    implementation 'androidx.room:room-ktx:2.8.5'
+    ksp 'androidx.room:room-compiler:2.8.5'
+
+    // DI: Koin（4.2.2，compileSdk 36 已满足其 SDK 要求）
+    implementation 'io.insert-koin:koin-android:4.2.2'
+    implementation 'io.insert-koin:koin-androidx-compose:4.2.2'
+
+    // DataStore
+    implementation 'androidx.datastore:datastore-preferences:1.2.1'
+
+    // Token 安全存储
+    implementation 'androidx.security:security-crypto:1.1.0'
+
+    // 图片加载（coil-compose；animation 动图段显示动图 + GIF 角标）
+    implementation 'io.coil-kt:coil-compose:2.7.0'
+    // GIF / WebP 动图解码（coil 默认仅静态帧；image 段的 .gif 与 animation 段需要）
+    implementation 'io.coil-kt:coil-gif:2.7.0'
+
+    // 视频内联播放（Media3 ExoPlayer，类 QQ 气泡内播放 + 全屏）
+    implementation 'androidx.media3:media3-exoplayer:1.11.1'
+    implementation 'androidx.media3:media3-ui:1.11.1'
+
+    // 完整 Markdown 渲染（表格/代码块/任务列表/删除线/链接）
+    implementation 'io.noties.markwon:core:4.6.2'
+    implementation 'io.noties.markwon:ext-tables:4.6.2'
+    implementation 'io.noties.markwon:ext-strikethrough:4.6.2'
+    implementation 'io.noties.markwon:ext-tasklist:4.6.2'
+    implementation 'io.noties.markwon:html:4.6.2'
+    implementation 'io.noties.markwon:linkify:4.6.2'
+    // LaTeX 数学公式渲染（块级 $$...$$ + 行内；行内需 inline-parser）
+    implementation 'io.noties.markwon:ext-latex:4.6.2'
+    implementation 'io.noties.markwon:inline-parser:4.6.2'
+
+    // PDF 文档文本提取（本地 AI 附件解析；DOCX/PPTX/XLSX/EPUB 走内置 Zip+XmlPullParser 零依赖）
+    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+}
