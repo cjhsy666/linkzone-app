@@ -31,6 +31,7 @@ import com.cjhsy.linkzone.ai.provider.BuiltInTools
 import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.ModelAbility
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
+import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.provider.TextGenerationParams
 import com.cjhsy.linkzone.ai.provider.TextGenerationResult
 import com.cjhsy.linkzone.ai.provider.providers.PartGroup
@@ -227,7 +228,7 @@ internal class InteractionsAPI(
 
         // Interactions API 的 tools 是扁平数组，函数工具和内置工具写在同一个 key 下
         val useFunctionTools =
-            params.tools.isNotEmpty() && params.model.abilities.contains(ModelAbility.TOOL)
+            params.tools.isNotEmpty() && params.model.supportsTools()
         val builtInTools = params.model.tools.mapNotNull { builtInTool ->
             when (builtInTool) {
                 BuiltInTools.Search -> "google_search"

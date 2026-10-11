@@ -39,6 +39,7 @@ import com.cjhsy.linkzone.ai.provider.ClaudePromptCacheTtl
 import com.cjhsy.linkzone.ai.provider.ImageGenerationParams
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ModelAbility
+import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.provider.Provider
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.ai.provider.TextGenerationResult
@@ -504,7 +505,7 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
 
             // 处理工具
             val useFunctionTools =
-                params.model.abilities.contains(ModelAbility.TOOL) && params.tools.isNotEmpty()
+                params.tools.isNotEmpty() && params.model.supportsTools()
             val toolDefinitions = buildList {
                 if (useFunctionTools) {
                     params.tools.forEach { tool ->

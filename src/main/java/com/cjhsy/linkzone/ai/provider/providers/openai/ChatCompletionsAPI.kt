@@ -35,6 +35,7 @@ import com.cjhsy.linkzone.ai.core.TokenUsage
 import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ModelAbility
+import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.ai.provider.TextGenerationResult
 import com.cjhsy.linkzone.ai.provider.TextGenerationParams
@@ -402,7 +403,7 @@ class ChatCompletionsAPI(
                 }
             }
 
-            if (params.model.abilities.contains(ModelAbility.TOOL) && params.tools.isNotEmpty()) {
+            if (params.tools.isNotEmpty() && params.model.supportsTools()) {
                 putJsonArray("tools") {
                     params.tools.forEach { tool ->
                         add(buildJsonObject {

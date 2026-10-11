@@ -34,6 +34,7 @@ import com.cjhsy.linkzone.ai.provider.BuiltInTools
 import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ModelAbility
+import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.provider.ModelType
 import com.cjhsy.linkzone.ai.provider.Provider
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
@@ -460,7 +461,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
 
         // Client function tools and model built-in tools share the same array.
         val useFunctionTools =
-            params.tools.isNotEmpty() && params.model.abilities.contains(ModelAbility.TOOL)
+            params.tools.isNotEmpty() && params.model.supportsTools()
         val useBuiltInTools = params.model.tools.any {
             it == BuiltInTools.Search || it == BuiltInTools.UrlContext
         }

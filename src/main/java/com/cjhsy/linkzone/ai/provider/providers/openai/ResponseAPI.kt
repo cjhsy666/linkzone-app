@@ -31,6 +31,7 @@ import com.cjhsy.linkzone.ai.core.TokenUsage
 import com.cjhsy.linkzone.ai.provider.BuiltInTools
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ModelAbility
+import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.ai.provider.TextGenerationResult
 import com.cjhsy.linkzone.ai.provider.TextGenerationParams
@@ -259,7 +260,7 @@ class ResponseAPI(
             // Response API 的 tools 是扁平数组, 函数工具和内置工具可以共存, 必须写在同一个 key 下,
             // 否则后写入的会覆盖前者
             val useFunctionTools =
-                params.model.abilities.contains(ModelAbility.TOOL) && params.tools.isNotEmpty()
+                params.tools.isNotEmpty() && params.model.supportsTools()
             if (useFunctionTools || params.model.tools.isNotEmpty()) {
                 putJsonArray("tools") {
                     if (useFunctionTools) {
