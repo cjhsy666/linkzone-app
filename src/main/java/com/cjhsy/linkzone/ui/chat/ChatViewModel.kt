@@ -402,7 +402,7 @@ class ChatViewModel(
                         MessageItem(
                             id = UUID.randomUUID().toString(),
                             convId = conv.id,
-                            senderId = if (isUser) "me" else conv.botId,
+                            senderId = if (isUser) "me" else LOCAL_BOT_PREFIX + agent.id,
                             senderName = if (isUser) "" else agent.name.ifBlank { "AI" },
                             segments = listOf(Segments.markdown(preset.content)),
                             content = preset.content,
@@ -1490,7 +1490,10 @@ class ChatViewModel(
                         messages = _state.value.messages.map { m ->
                             if (m.id == botMsgId && m.content.isNotBlank()) {
                                 val segs = (m.segments ?: emptyList()) +
-                                    MessageSegment(type = "sys.stop", data = mapOf("reason" to "user"))
+                                    MessageSegment(
+                                        type = "sys.stop",
+                                        data = mapOf("reason" to kotlinx.serialization.json.JsonPrimitive("user"))
+                                    )
                                 m.copy(segments = segs)
                             } else m
                         }
