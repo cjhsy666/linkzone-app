@@ -1,22 +1,10 @@
-buildscript {
-    repositories {
-        maven { url 'file:///opt/maven-repo' }
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        // AGP 9.1.0：新版 androidx 要求；AGP 9.0+ 内置 Kotlin 支持，无需 kotlin-gradle-plugin
-        classpath 'com.android.tools.build:gradle:9.1.0'
-        classpath 'com.google.devtools.ksp:symbol-processing-gradle-plugin:2.3.12'
-    }
-}
-
 plugins {
-    id 'com.android.application'
-    // AGP 9.0 内置 Kotlin，不需要 org.jetbrains.kotlin.android
-    id 'org.jetbrains.kotlin.plugin.compose'
-    id 'org.jetbrains.kotlin.plugin.serialization'
-    id 'com.google.devtools.ksp'
+    // AGP 9.1.0：新版 androidx 要求；AGP 9.0+ 内置 Kotlin 支持
+    id 'com.android.application' version '9.1.0'
+    // Kotlin 子插件（compose/serialization），版本需与 AGP 内置 Kotlin 一致
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.3.20'
+    id 'org.jetbrains.kotlin.plugin.serialization' version '2.3.20'
+    id 'com.google.devtools.ksp' version '2.3.12'
 }
 
 android {
