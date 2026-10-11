@@ -1,16 +1,29 @@
 package com.cjhsy.linkzone.ui.chat
 
 import android.content.Intent
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -19,7 +32,9 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.widget.TextView
@@ -28,7 +43,6 @@ import io.noties.markwon.Markwon
 import io.noties.markwon.core.MarkwonTheme
 import io.noties.markwon.ext.latex.JLatexMathPlugin
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
-import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.ext.tasklist.TaskListPlugin
 import io.noties.markwon.html.HtmlPlugin
 import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
@@ -64,7 +78,6 @@ fun MarkdownContent(
         val inlineCodeBg = linkColor.copy(alpha = 0.12f).toArgb()
         val blockCodeBg = textColor.copy(alpha = 0.06f).toArgb()
         Markwon.builder(context)
-            .usePlugin(TablePlugin.create(context))
             .usePlugin(TaskListPlugin.create(context))
             .usePlugin(StrikethroughPlugin.create())
             .usePlugin(HtmlPlugin.create())
@@ -88,16 +101,52 @@ fun MarkdownContent(
             })
             .build()
     }
-    // 仅在内容变化时解析+渲染，避免列表重组反复解析整段 Markdown。
-    // 注意 markwon.parse() 返回的是 CommonMark 的 Node，
-    // setParsedMarkdown 需要的是渲染后的 Spanned，故直接用 toMarkdown()。
-    val rendered = remember(markwon, markdown) { markwon.toMarkdown(preprocessLatex(markdown)) }
+
+    // 表格不再交给 Markwon（其 span 绘制在窄屏/单元格换行时行高测量与边框错位，
+    // 出现内容溢出边框），拆分为文本段与表格段：文本仍走 Markwon，表格用 Compose 自绘
+    val segments = remember(markdown) { splitMarkdownTables(markdown) }
 
     // 长按/点击回调可能随重组变化，用稳定引用持有最新值（TextView 监听器只设置一次）
     val latestLongClick = rememberUpdatedState(onLongClick)
     val latestClick = rememberUpdatedState(onTextClick)
+
+    Column(modifier = modifier) {
+        segments.forEach { seg ->
+            when (seg) {
+                is MdSegment.Text -> MarkwonTextView(
+                    markwon = markwon,
+                    raw = seg.raw,
+                    textColor = textColor,
+                    linkColor = linkColor,
+                    selectable = selectable,
+                    latestLongClick = latestLongClick,
+                    latestClick = latestClick
+                )
+                is MdSegment.Table -> MarkdownTableBlock(
+                    rows = seg.rows,
+                    textColor = textColor,
+                    linkColor = linkColor
+                )
+            }
+        }
+    }
+}
+
+/** Markwon 驱动的单段 Markdown 文本视图（从 MarkdownContent 抽出，便于表格分段复用） */
+@Composable
+private fun MarkwonTextView(
+    markwon: Markwon,
+    raw: String,
+    textColor: Color,
+    linkColor: Color,
+    selectable: Boolean,
+    latestLongClick: androidx.compose.runtime.State<(() -> Unit)?>,
+    latestClick: androidx.compose.runtime.State<(() -> Unit)?>
+) {
+    // 仅在内容变化时解析+渲染，避免列表重组反复解析整段 Markdown
+    val rendered = remember(markwon, raw) { markwon.toMarkdown(preprocessLatex(raw)) }
     AndroidView(
-        modifier = modifier,
+        modifier = Modifier.fillMaxWidth(),
         factory = { ctx ->
             TextView(ctx).apply {
                 // 链接由 Markwon 的 LinkResolver 统一以 ACTION_VIEW 打开浏览器
@@ -132,6 +181,134 @@ fun MarkdownContent(
             tv.text = rendered
         }
     )
+}
+
+// ---------- 表格：从 Markdown 拆出 + Compose 自绘（替代 Markwon TablePlugin） ----------
+
+/** 拆分出的渲染段：纯文本段（走 Markwon）或表格段（Compose 自绘） */
+internal sealed class MdSegment {
+    data class Text(val raw: String) : MdSegment()
+    /** rows[0] 为表头，其余为数据行 */
+    data class Table(val rows: List<List<String>>) : MdSegment()
+}
+
+/** GFM 表格分隔行：| :--- | ---: | 之类（仅含 | : - 空格 且至少一段 --） */
+private fun isTableDivider(line: String): Boolean {
+    val t = line.trim()
+    if (t.isEmpty() || !t.contains('-')) return false
+    if (!t.all { it == '|' || it == ':' || it == '-' || it == ' ' || it == '\t' }) return false
+    return Regex("-{2,}").containsMatchIn(t)
+}
+
+/** 解析一行表格为单元格列表（剥首尾 |，处理 \| 转义） */
+private fun parseTableRow(line: String): List<String> {
+    var s = line.trim()
+    if (s.startsWith("|")) s = s.substring(1)
+    if (s.endsWith("|") && !s.endsWith("\\|")) s = s.substring(0, s.length - 1)
+    return s.split('|').map { it.trim().replace("\\|", "|") }
+}
+
+/**
+ * 把 markdown 拆成文本段/表格段序列。
+ * 表格判定：当前行含 | 且下一行是分隔行（GFM 规则），随后的含 | 非空行都归入表格。
+ */
+internal fun splitMarkdownTables(markdown: String): List<MdSegment> {
+    val out = mutableListOf<MdSegment>()
+    val textBuf = StringBuilder()
+    val lines = markdown.lines()
+
+    fun flushText() {
+        if (textBuf.isNotBlank()) out.add(MdSegment.Text(textBuf.toString().trimEnd('\n')))
+        textBuf.clear()
+    }
+
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i]
+        val next = lines.getOrNull(i + 1)
+        if (line.contains('|') && next != null && isTableDivider(next)) {
+            flushText()
+            val rows = mutableListOf(parseTableRow(line)) // 表头
+            i += 2 // 跳过表头与分隔行
+            while (i < lines.size && lines[i].trim().isNotEmpty() &&
+                (lines[i].contains('|') || lines[i].trimStart().startsWith("|"))) {
+                rows.add(parseTableRow(lines[i]))
+                i++
+            }
+            // 规整为相同列数，避免渲染越界
+            val cols = rows.maxOf { it.size }.coerceAtLeast(2)
+            out.add(MdSegment.Table(rows.map { r ->
+                if (r.size >= cols) r else r + List(cols - r.size) { "" }
+            }))
+            continue
+        }
+        textBuf.append(line).append('\n')
+        i++
+    }
+    flushText()
+    return out
+}
+
+/** 去掉单元格内的常见行内 markdown 标记（粗体/斜体/行内代码/链接只留文本） */
+private fun cleanInlineMd(s: String): String = s
+    .replace(Regex("""\*\*([^*]+)\*\*"""), "$1")
+    .replace(Regex("""\*([^*]+)\*"""), "$1")
+    .replace(Regex("""`([^`]+)`"""), "$1")
+    .replace(Regex("""\[([^\]]+)]\([^)]*\)"""), "$1")
+
+/** Compose 自绘表格：自适应行高（内容换行不会溢出）、横向滚动（宽表格）、行分隔线 */
+@Composable
+private fun MarkdownTableBlock(
+    rows: List<List<String>>,
+    textColor: Color,
+    linkColor: Color
+) {
+    if (rows.isEmpty()) return
+    val header = rows.first()
+    val body = rows.drop(1)
+    val divider = textColor.copy(alpha = 0.2f)
+    val cellPad = 10.dp
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .horizontalScroll(rememberScrollState())
+            .clip(RoundedCornerShape(10.dp))
+            .border(1.dp, divider, RoundedCornerShape(10.dp))
+    ) {
+        // 表头
+        Row {
+            header.forEach { cell ->
+                Text(
+                    text = cleanInlineMd(cell),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = textColor,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .widthIn(min = 104.dp)
+                        .padding(horizontal = cellPad, vertical = 8.dp)
+                )
+            }
+        }
+        HorizontalDivider(color = divider, thickness = 1.dp)
+        // 数据行
+        body.forEachIndexed { ri, row ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                row.forEach { cell ->
+                    AutoLinkText(
+                        text = cleanInlineMd(cell),
+                        textColor = textColor,
+                        linkColor = linkColor,
+                        modifier = Modifier
+                            .widthIn(min = 104.dp)
+                            .padding(horizontal = cellPad, vertical = 7.dp)
+                    )
+                }
+            }
+            if (ri < body.lastIndex) HorizontalDivider(color = divider.copy(alpha = 0.6f), thickness = 0.7.dp)
+        }
+    }
 }
 
 // ---------- 行内 LaTeX 预处理：把单美元 $...$ 转为 Markwon 的 $$...$$ ----------
