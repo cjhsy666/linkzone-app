@@ -313,7 +313,7 @@ fun LlmAgentScreen(
 
     val editing = state.editing
     if (editing != null) {
-        AgentEditor(agent = editing, state = state, viewModel = viewModel)
+        AgentEditor(agent = editing, state = state, viewModel = viewModel, onNavigate = onNavigate)
         return
     }
 
@@ -493,7 +493,8 @@ fun LlmAgentScreen(
 private fun AgentEditor(
     agent: LlmAgent,
     state: LlmAgentUiState,
-    viewModel: LlmAgentViewModel
+    viewModel: LlmAgentViewModel,
+    onNavigate: (String) -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().safeDrawingPadding().imePadding(),
@@ -917,7 +918,7 @@ private fun AgentEditor(
 
         // ===== 代码工作区 =====
         item { Text("代码工作区", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item { WorkspaceSelector(agent, viewModel) }
+        item { WorkspaceSelector(agent, viewModel, onNavigate) }
 
         // ===== 自定义请求 =====
         item { Text("自定义请求", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
@@ -1113,7 +1114,8 @@ private fun toggleIn(set: Set<String>, id: String): Set<String> =
 @Composable
 private fun WorkspaceSelector(
     agent: LlmAgent,
-    viewModel: LlmAgentViewModel
+    viewModel: LlmAgentViewModel,
+    onNavigate: (String) -> Unit = {}
 ) {
     val workspaceManager = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.WorkspaceManager>()
     var showDialog by remember { mutableStateOf(false) }

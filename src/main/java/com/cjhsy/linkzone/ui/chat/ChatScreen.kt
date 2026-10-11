@@ -451,9 +451,10 @@ fun ChatScreen(
 
     // 手动压缩结果提示（一次性 Toast）
     val compressNotice by viewModel.manualCompressNotice.collectAsStateWithLifecycle()
+    val noticeCtx = LocalContext.current
     LaunchedEffect(compressNotice) {
         compressNotice?.let {
-            Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show()
+            Toast.makeText(noticeCtx, it, Toast.LENGTH_SHORT).show()
             viewModel.consumeCompressNotice()
         }
     }
