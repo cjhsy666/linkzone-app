@@ -6,10 +6,10 @@ import com.cjhsy.linkzone.ai.ui.UIMessagePart
 import com.cjhsy.linkzone.workspace.Workspace
 import com.cjhsy.linkzone.workspace.WorkspaceShellContext
 import com.cjhsy.linkzone.workspace.WorkspaceShellRunner
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -73,7 +73,7 @@ private fun buildReadFileTool(workspace: Workspace): Tool = Tool(
         )
     },
     execute = { args ->
-        val path = args.stringParam("path") ?: error("path is required")
+        val path = args.jsonObject.stringParam("path") ?: error("path is required")
         val file = workspace.resolveInside(path)
         if (!file.exists()) error("File not found: $path")
         if (file.isDirectory) error("'$path' is a directory")
@@ -109,8 +109,8 @@ private fun buildWriteFileTool(workspace: Workspace): Tool = Tool(
         )
     },
     execute = { args ->
-        val path = args.stringParam("path") ?: error("path is required")
-        val text = args.stringParam("text") ?: error("text is required")
+        val path = args.jsonObject.stringParam("path") ?: error("path is required")
+        val text = args.jsonObject.stringParam("text") ?: error("text is required")
         val overwrite = args.jsonObject["overwrite"]?.jsonPrimitive?.booleanOrNull ?: true
         val file = workspace.resolveInside(path)
         if (file.exists() && !overwrite) error("File already exists: $path (overwrite=false)")
@@ -156,9 +156,9 @@ private fun buildEditFileTool(workspace: Workspace): Tool = Tool(
         )
     },
     execute = { args ->
-        val path = args.stringParam("path") ?: error("path is required")
-        val oldText = args.stringParam("old_text") ?: error("old_text is required")
-        val newText = args.stringParam("new_text") ?: error("new_text is required")
+        val path = args.jsonObject.stringParam("path") ?: error("path is required")
+        val oldText = args.jsonObject.stringParam("old_text") ?: error("old_text is required")
+        val newText = args.jsonObject.stringParam("new_text") ?: error("new_text is required")
         val replaceAll = args.jsonObject["replace_all"]?.jsonPrimitive?.booleanOrNull ?: false
         val file = workspace.resolveInside(path)
         if (!file.exists()) error("File not found: $path")
@@ -225,8 +225,8 @@ private fun buildShellTool(workspace: Workspace, runner: WorkspaceShellRunner): 
             )
         },
         execute = { args ->
-            val command = args.stringParam("command") ?: error("command is required")
-            val cwd = args.stringParam("cwd").orEmpty()
+            val command = args.jsonObject.stringParam("command") ?: error("command is required")
+            val cwd = args.jsonObject.stringParam("cwd").orEmpty()
             if (cwd.contains("..")) error("cwd must not contain '..'")
             val timeout = (args.jsonObject["timeout"]?.jsonPrimitive?.intOrNull ?: 30_000)
                 .coerceIn(1_000, 120_000).toLong()
@@ -250,4 +250,4 @@ private fun buildShellTool(workspace: Workspace, runner: WorkspaceShellRunner): 
 }
 
 private fun JsonObject.stringParam(key: String): String? =
-    this[key]?.jsonPrimitive?.contentOrNull
+    this[key]?.jsonPrimitive?.let { if (it is JsonNull) null else it.content }

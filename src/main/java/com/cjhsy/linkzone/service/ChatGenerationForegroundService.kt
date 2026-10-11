@@ -85,7 +85,7 @@ class ChatGenerationForegroundService : Service() {
         return builder
             .setContentTitle("AI 正在生成回复")
             .setContentText("点击返回 LinkZone")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.mipmap.ic_launcher_foreground)
             .setOngoing(true)
             .setContentIntent(openIntent)
             .setOnlyAlertOnce(true)

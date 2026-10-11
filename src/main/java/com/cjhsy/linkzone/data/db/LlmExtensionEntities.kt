@@ -33,6 +33,9 @@ interface LlmSkillDao {
     @Query("SELECT * FROM llm_skill")
     suspend fun getAll(): List<LlmSkillEntity>
 
+    @Query("SELECT * FROM llm_skill WHERE id = :id")
+    suspend fun getById(id: String): LlmSkillEntity?
+
     @Upsert
     suspend fun upsert(entity: LlmSkillEntity)
 

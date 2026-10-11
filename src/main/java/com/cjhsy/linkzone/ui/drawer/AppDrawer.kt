@@ -125,7 +125,7 @@ fun AppDrawer(
                     .heightIn(min = 44.dp),
                 placeholder = { Text("搜索会话", style = MaterialTheme.typography.bodySmall) },
                 singleLine = true,
-                colors = androidx.compose.material3.TextFieldDefaults.textFieldColors(
+                colors = androidx.compose.material3.TextFieldDefaults.colors(
                     containerColor = Color.Transparent,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,

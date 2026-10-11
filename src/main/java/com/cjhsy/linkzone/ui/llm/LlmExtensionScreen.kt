@@ -75,7 +75,7 @@ data class LlmExtensionUiState(
 
 /** AI 扩展管理：SKILL.md 技能、模式注入、世界书（Lorebook）、快捷指令的 CRUD */
 class LlmExtensionViewModel(
-    private val app: android.app.Application,
+    private val app: android.content.Context,
     private val llmRepository: LlmRepository
 ) : ViewModel() {
 

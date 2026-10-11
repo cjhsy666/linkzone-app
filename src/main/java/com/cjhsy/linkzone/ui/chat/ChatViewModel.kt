@@ -57,6 +57,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
@@ -252,17 +253,17 @@ class ChatViewModel(
         val questions = items.mapIndexedNotNull { idx, el ->
             runCatching {
                 val obj = el.jsonObject
-                val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val id = obj["id"]?.jsonPrimitive?.let { if (it is JsonNull) null else it.content }?.takeIf { it.isNotBlank() }
                     ?: "q$idx"
-                val question = obj["question"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val question = obj["question"]?.jsonPrimitive?.let { if (it is JsonNull) null else it.content }?.takeIf { it.isNotBlank() }
                     ?: return@runCatching null
                 AskUserQuestion(
                     id = id,
                     question = question,
                     options = obj["options"]?.jsonArray
-                        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                        ?.mapNotNull { it.jsonPrimitive.let { p -> if (p is JsonNull) null else p.content } }
                         .orEmpty(),
-                    selectionType = obj["selection_type"]?.jsonPrimitive?.contentOrNull ?: "text"
+                    selectionType = obj["selection_type"]?.jsonPrimitive?.let { if (it is JsonNull) null else it.content } ?: "text"
                 )
             }.getOrNull()
         }
@@ -1595,11 +1596,12 @@ class ChatViewModel(
         } else {
             selected
         }
-        val history = source
-            .asSequence()
-            .filter { !it.recalled && !it.uploadFailed }
-            .mapNotNull { it.toLlmUIMessage() }
-            .toList()
+        val history = buildList {
+            for (msg in source) {
+                if (msg.recalled || msg.uploadFailed) continue
+                msg.toLlmUIMessage()?.let { add(it) }
+            }
+        }
         // 上下文压缩：超过上限时把将被截断的旧消息总结为检查点，保留近期消息（RikkaHub CompressPrompt 思路）
         val compressed = if (agent.enableContextCompression && agent.contextMessageLimit > 0 &&
             history.size > agent.contextMessageLimit

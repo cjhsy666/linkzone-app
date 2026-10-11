@@ -727,7 +727,7 @@ private fun WorkspaceManageDialog(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(workspaces, key = { it.id }) { ws ->
-                        val stats = remember(ws.id, refreshTick) { workspaceManager.stats(ws) }
+                        val stats = remember(ws.id, refreshTick) { workspaceManager.get(ws.id)?.let { workspaceManager.stats(it) } }
                         val selected = ws.id == selectedId
                         Row(
                             modifier = Modifier

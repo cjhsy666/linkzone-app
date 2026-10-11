@@ -229,6 +229,7 @@ fun ChatScreen(
                 .navigationBarsPadding()
                 .imePadding()
         ) {
+            val ctx = LocalContext.current
             ChatTopBar(
                 isLocal = isLocal,
                 cloudTitle = state.currentName.let {
@@ -245,7 +246,6 @@ fun ChatScreen(
                 onNewConversation = onNewConversation,
                 onOpenSearch = viewModel::openSearch,
                 onExport = {
-                    val ctx = LocalContext.current
                     exportScope.launch {
                         val file = viewModel.exportConversation("md") ?: run {
                             Toast.makeText(ctx, "仅本地会话可导出", Toast.LENGTH_SHORT).show()
@@ -749,7 +749,7 @@ private fun MessageList(
                 val isNew = index >= nodes.lastIndex - 2
                 Column(
                     modifier = (if (isNew) Modifier.messageEnter() else Modifier)
-                        .animateItemPlacement()
+                        .then(animateItemPlacement())
                 ) {
                     val msg = node.selected
                     val prev = nodes.getOrNull(index - 1)?.selected
@@ -1535,7 +1535,7 @@ internal fun PendingMediaStrip(
     ) {
         items(items, key = { it.id }) { item ->
             Box(
-                modifier = Modifier.animateItemPlacement()
+                modifier = animateItemPlacement()
             ) {
                 // 缩略卡
                 Box(
@@ -1918,7 +1918,7 @@ internal fun SearchPanel(
                     }
                 },
                 singleLine = true,
-                colors = TextFieldDefaults.textFieldColors(
+                colors = TextFieldDefaults.colors(
                     containerColor = Color.Transparent,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,

@@ -22,6 +22,8 @@ import com.cjhsy.linkzone.data.model.LlmPrompt
 import com.cjhsy.linkzone.data.model.LlmQuickMessage
 import com.cjhsy.linkzone.data.model.LlmSkill
 import com.cjhsy.linkzone.data.search.SearchServiceOptions
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
@@ -43,6 +45,8 @@ class LlmRepository(
 
     /** 技能文件存储：filesDir/skills/<name>/（磁盘为文件唯一事实源，Room 仅存元数据） */
     private val skillStore = com.cjhsy.linkzone.data.files.SkillFileStore(appContext)
+
+    private val migrationMutex = Mutex()
 
     // ============ Provider ============
 
@@ -172,8 +176,8 @@ class LlmRepository(
      * 一次性迁移：旧版本把多文件存在 Room JSON 的 files 字段中，
      * 首次访问时把它们导出到 filesDir/skills/。之后磁盘为唯一事实源。
      */
-    @Synchronized
     private suspend fun migrateLegacyDbSkillsIfNeeded() {
+        migrationMutex.withLock {
         if (migrationPrefs.getBoolean(KEY_FILES_TO_DISK, false)) return
         runCatching {
             val dao = db.llmSkillDao()
@@ -195,6 +199,7 @@ class LlmRepository(
                 }
             }
             migrationPrefs.edit().putBoolean(KEY_FILES_TO_DISK, true).apply()
+        }
         }
     }
 
