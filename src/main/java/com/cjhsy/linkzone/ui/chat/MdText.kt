@@ -1,20 +1,32 @@
 package com.cjhsy.linkzone.ui.chat
 
 import android.content.Intent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,13 +37,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -72,11 +87,18 @@ fun MarkdownContent(
     val context = LocalContext.current
     val density = androidx.compose.ui.platform.LocalDensity.current
     val latexTextSize = with(density) { 14.sp.toPx() }
+    // 排版主题用到的像素值（一次性算好，remember 捕获）
+    val hairlinePx = with(density) { 1.dp.toPx().toInt() }
+    val quoteBarPx = with(density) { 3.dp.toPx().toInt() }
+    val quotePadPx = with(density) { 10.dp.toPx().toInt() }
 
-    val markwon = remember(linkColor, textColor) {
+    val markwon = remember(linkColor, textColor, hairlinePx, quoteBarPx, quotePadPx) {
         // 代码块 / 行内代码配色（随气泡文字色派生，无新依赖）
         val inlineCodeBg = linkColor.copy(alpha = 0.12f).toArgb()
         val blockCodeBg = textColor.copy(alpha = 0.06f).toArgb()
+        val dimLine = textColor.copy(alpha = 0.28f).toArgb()
+        val quoteBar = textColor.copy(alpha = 0.3f).toArgb()
+        val bullet = textColor.copy(alpha = 0.55f).toArgb()
         Markwon.builder(context)
             .usePlugin(TaskListPlugin.create(context))
             .usePlugin(StrikethroughPlugin.create())
@@ -97,14 +119,25 @@ fun MarkdownContent(
                         .codeBackgroundColor(inlineCodeBg)
                         .codeBlockTextColor(textColor.toArgb())
                         .codeBlockBackgroundColor(blockCodeBg)
+                        // 现代排版：标题层级、标题/段落分割线、引用竖条、列表圆点均随气泡色派生
+                        .headingTextSize(floatArrayOf(20f, 17.5f, 16f, 15f, 14.5f, 14f))
+                        .headingBreakColor(dimLine)
+                        .headingBreakHeight(hairlinePx)
+                        .blockquoteColor(quoteBar)
+                        .blockquoteWidth(quoteBarPx)
+                        .blockquoteLeftPadding(quotePadPx)
+                        .blockquoteRightPadding(quotePadPx)
+                        .thematicBreakColor(dimLine)
+                        .thematicBreakHeight(hairlinePx)
+                        .bulletColor(bullet)
                 }
             })
             .build()
     }
 
-    // 表格不再交给 Markwon（其 span 绘制在窄屏/单元格换行时行高测量与边框错位，
-    // 出现内容溢出边框），拆分为文本段与表格段：文本仍走 Markwon，表格用 Compose 自绘
-    val segments = remember(markdown) { splitMarkdownTables(markdown) }
+    // 拆分为文本段（Markwon）/ 表格段 / 代码块段（均 Compose 自绘）：
+    // Markwon 的表格 span 窄屏换行会溢出边框、代码块无卡片/复制/高亮，故两者自绘
+    val segments = remember(markdown) { splitMarkdownBlocks(markdown) }
 
     // 长按/点击回调可能随重组变化，用稳定引用持有最新值（TextView 监听器只设置一次）
     val latestLongClick = rememberUpdatedState(onLongClick)
@@ -126,6 +159,11 @@ fun MarkdownContent(
                     rows = seg.rows,
                     textColor = textColor,
                     linkColor = linkColor
+                )
+                is MdSegment.Code -> MarkdownCodeBlock(
+                    lang = seg.lang,
+                    code = seg.code,
+                    textColor = textColor
                 )
             }
         }
@@ -190,6 +228,8 @@ internal sealed class MdSegment {
     data class Text(val raw: String) : MdSegment()
     /** rows[0] 为表头，其余为数据行 */
     data class Table(val rows: List<List<String>>) : MdSegment()
+    /** 围栏代码块：lang 为语言标识（可为空），code 为代码内容 */
+    data class Code(val lang: String, val code: String) : MdSegment()
 }
 
 /** GFM 表格分隔行：| :--- | ---: | 之类（仅含 | : - 空格 且至少一段 --） */
@@ -246,6 +286,49 @@ internal fun splitMarkdownTables(markdown: String): List<MdSegment> {
         i++
     }
     flushText()
+    return out
+}
+
+/**
+ * 顶层拆分：先提取围栏代码块（代码块内可能包含表格样本文本，必须优先于表格提取），
+ * 普通文本再交给 [splitMarkdownTables] 拆表格。
+ */
+internal fun splitMarkdownBlocks(markdown: String): List<MdSegment> {
+    val out = mutableListOf<MdSegment>()
+    val buf = StringBuilder()
+    val lines = markdown.lines()
+
+    fun flush() {
+        if (buf.isNotBlank()) out.addAll(splitMarkdownTables(buf.toString().trimEnd('\n')))
+        buf.clear()
+    }
+
+    var i = 0
+    while (i < lines.size) {
+        val t = lines[i].trimStart()
+        val fenceChar = when {
+            t.startsWith("```") -> '`'
+            t.startsWith("~~~") -> '~'
+            else -> null
+        }
+        if (fenceChar != null) {
+            flush()
+            val lang = t.drop(3).trim()
+            val closePrefix = fenceChar.toString().repeat(3)
+            i++
+            val code = StringBuilder()
+            while (i < lines.size && !lines[i].trimStart().startsWith(closePrefix)) {
+                code.append(lines[i]).append('\n')
+                i++
+            }
+            if (i < lines.size) i++ // 跳过闭合围栏（未闭合则已到文件尾）
+            out.add(MdSegment.Code(lang, code.toString().trimEnd('\n')))
+            continue
+        }
+        buf.append(lines[i]).append('\n')
+        i++
+    }
+    flush()
     return out
 }
 
@@ -308,6 +391,150 @@ private fun MarkdownTableBlock(
             }
             if (ri < body.lastIndex) HorizontalDivider(color = divider.copy(alpha = 0.6f), thickness = 0.7.dp)
         }
+    }
+}
+
+// ---------- 代码块：Compose 卡片（语言标签 / 一键复制 / prism4j 语法高亮） ----------
+
+/** 一套代码高亮配色（随气泡文字明暗切换） */
+private data class CodePalette(
+    val keyword: Color, val string: Color, val number: Color,
+    val comment: Color, val function: Color, val type: Color, val operator: Color
+)
+
+private val LIGHT_CODE = CodePalette(
+    keyword = Color(0xFF7C4DFF), string = Color(0xFF2E7D32), number = Color(0xFFB25000),
+    comment = Color(0xFF9E9E9E), function = Color(0xFF0B7285), type = Color(0xFF00695C),
+    operator = Color(0xFF5D4037)
+)
+
+private val DARK_CODE = CodePalette(
+    keyword = Color(0xFFC792EA), string = Color(0xFFC3E88D), number = Color(0xFFF78C6C),
+    comment = Color(0xFF8B949E), function = Color(0xFF82AAFF), type = Color(0xFF4EC9B0),
+    operator = Color(0xFF89DDFF)
+)
+
+/** prism4j token 类型映射到配色类别（未命中不着色，保持正文色） */
+private fun CodePalette.colorFor(type: String): Color? = when {
+    type.contains("comment") -> comment
+    type.contains("string") || type == "char" -> string
+    type.contains("number") || type == "boolean" -> number
+    type.contains("keyword") || type == "control" || type == "statement" -> keyword
+    type.contains("function") || type == "method" -> function
+    type.contains("class") || type.contains("type") || type == "annotation" || type == "builtin" -> type
+    type == "operator" -> operator
+    else -> null
+}
+
+/** prism4j 高亮为 AnnotatedString；语言未知/解析失败时返回纯文本 */
+private fun highlightCode(code: String, lang: String, dark: Boolean): AnnotatedString {
+    if (lang.isBlank()) return AnnotatedString(code)
+    val nodes = runCatching {
+        io.noties.prism4j.Prism4j(io.noties.prism4j.bundle.Prism4jGrammarLocator())
+            .highlight(lang.lowercase(), code)
+    }.getOrNull() ?: return AnnotatedString(code)
+    val palette = if (dark) DARK_CODE else LIGHT_CODE
+    return buildAnnotatedString {
+        var idx = 0
+        fun walk(node: io.noties.prism4j.Prism4j.Node) {
+            when (node) {
+                is io.noties.prism4j.Prism4j.Text -> {
+                    append(node.text())
+                    idx += node.text().length
+                }
+                is io.noties.prism4j.Prism4j.Syntax -> {
+                    val start = idx
+                    node.children().forEach { walk(it) }
+                    if (idx > start) {
+                        palette.colorFor(node.type())?.let {
+                            addStyle(SpanStyle(color = it), start, idx)
+                        }
+                    }
+                }
+            }
+        }
+        nodes.forEach { walk(it) }
+    }
+}
+
+/** 现代代码卡片：顶部语言标签 + 复制按钮、等宽代码区、横向滚动、随气泡明暗配色 */
+@Composable
+private fun MarkdownCodeBlock(
+    lang: String,
+    code: String,
+    textColor: Color
+) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1500)
+            copied = false
+        }
+    }
+    val dark = textColor.luminance() > 0.5f
+    val bg = textColor.copy(alpha = 0.06f)
+    val border = textColor.copy(alpha = 0.14f)
+    val dim = textColor.copy(alpha = 0.65f)
+    val highlighted = remember(code, lang, dark) { highlightCode(code, lang, dark) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .border(1.dp, border, RoundedCornerShape(12.dp))
+            .background(bg)
+    ) {
+        // 顶栏：语言名 + 复制
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = lang.ifBlank { "代码" },
+                style = MaterialTheme.typography.labelSmall,
+                color = dim,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = {
+                    clipboard.setText(AnnotatedString(code))
+                    copied = true
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                modifier = Modifier.height(30.dp)
+            ) {
+                Icon(
+                    imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                    contentDescription = if (copied) "已复制" else "复制",
+                    tint = dim,
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = if (copied) "已复制" else "复制",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = dim
+                )
+            }
+        }
+        HorizontalDivider(color = border, thickness = 0.7.dp)
+        // 代码区：等宽字体 + 横向滚动（长行不换行折断，滑出查看）
+        Text(
+            text = highlighted,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = FontFamily.Monospace,
+                lineHeight = 18.sp
+            ),
+            color = textColor,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        )
     }
 }
 

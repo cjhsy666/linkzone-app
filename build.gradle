@@ -138,6 +138,8 @@ dependencies {
     // LaTeX 数学公式渲染（块级 $$...$$ + 行内；行内需 inline-parser）
     implementation 'io.noties.markwon:ext-latex:4.6.2'
     implementation 'io.noties.markwon:inline-parser:4.6.2'
+    // 代码块语法高亮（prism4j 内置常用语言定义，纯本地无网络）
+    implementation 'io.noties.prism4j:prism4j-bundle:2.0.0'
 
     // PDF 文档文本提取（本地 AI 附件解析；DOCX/PPTX/XLSX/EPUB 走内置 Zip+XmlPullParser 零依赖）
     implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
