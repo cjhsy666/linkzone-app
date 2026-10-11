@@ -20,9 +20,22 @@ android {
         versionCode 1
         versionName "1.0"
     }
+    signingConfigs {
+        appSign {
+            // 仓库内置固定 keystore：保证 CI / 设备 / 本地构建签名一致，可覆盖安装
+            storeFile file('keystore/app.keystore')
+            storePassword 'linkzone'
+            keyAlias 'linkzone'
+            keyPassword 'linkzone'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.appSign
+        }
         release {
             minifyEnabled false
+            signingConfig signingConfigs.appSign
         }
     }
     lint {
