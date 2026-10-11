@@ -5,21 +5,19 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        // AGP 9.1.0：新版 androidx（Compose 1.12/lifecycle 2.11/navigation 2.10/core-ktx 1.19 等）要求
+        // AGP 9.1.0：新版 androidx 要求；AGP 9.0+ 内置 Kotlin 支持，无需 kotlin-gradle-plugin
         classpath 'com.android.tools.build:gradle:9.1.0'
-        // Kotlin 2.3.20：与 KSP 2.3.12 配对（KSP 2.3.12 的 stdlib 依赖即 2.3.20）
-        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20'
-        classpath 'org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.3.20'
-        classpath 'org.jetbrains.kotlin:kotlin-serialization:2.3.20'
         classpath 'com.google.devtools.ksp:symbol-processing-gradle-plugin:2.3.12'
     }
 }
 
-apply plugin: 'com.android.application'
-apply plugin: 'org.jetbrains.kotlin.android'
-apply plugin: 'org.jetbrains.kotlin.plugin.compose'
-apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
-apply plugin: 'com.google.devtools.ksp'
+plugins {
+    id 'com.android.application'
+    // AGP 9.0 内置 Kotlin，不需要 org.jetbrains.kotlin.android
+    id 'org.jetbrains.kotlin.plugin.compose'
+    id 'org.jetbrains.kotlin.plugin.serialization'
+    id 'com.google.devtools.ksp'
+}
 
 android {
     namespace 'com.cjhsy.linkzone'
