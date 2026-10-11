@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateItem
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -54,7 +55,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.animateItemPlacement
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -750,7 +750,7 @@ private fun MessageList(
                 val isNew = index >= nodes.lastIndex - 2
                 Column(
                     modifier = (if (isNew) Modifier.messageEnter() else Modifier)
-                        .then(animateItemPlacement())
+                        .animateItem()
                 ) {
                     val msg = node.selected
                     val prev = nodes.getOrNull(index - 1)?.selected
@@ -1536,7 +1536,7 @@ internal fun PendingMediaStrip(
     ) {
         items(items, key = { it.id }) { item ->
             Box(
-                modifier = animateItemPlacement()
+                modifier = Modifier.animateItem()
             ) {
                 // 缩略卡
                 Box(
