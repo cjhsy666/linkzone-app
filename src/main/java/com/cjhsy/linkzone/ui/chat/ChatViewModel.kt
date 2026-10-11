@@ -286,41 +286,6 @@ class ChatViewModel(
         })
     }
 
-    /**
-     * 导出当前会话为 Markdown 或 JSON 文件，写入 app 外部文件目录，返回文件 URI（供分享）。
-     * 仅本地会话；云端会话历史不在本地完整持有，暂不支持。
-     */
-    suspend fun exportConversation(format: String): java.io.File? {
-        val convId = _state.value.currentConvId
-        if (!isLocalConvId(convId)) return null
-        val conv = localStore.getConversation(convId) ?: return null
-        val msgs = localStore.loadAllMessages(convId).sortedBy { it.timestamp }
-        val dir = appContext.getExternalFilesDir(null) ?: return null
-        val safeName = conv.name.ifBlank { "conversation" }
-            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
-            .take(40)
-        val file = java.io.File(dir, "${safeName}_${System.currentTimeMillis()}.${if (format == "json") "json" else "md"}")
-        val content = if (format == "json") {
-            json.encodeToString(
-                kotlinx.serialization.builtins.ListSerializer(MessageItem.serializer()),
-                msgs
-            )
-        } else {
-            buildString {
-                appendLine("# ${conv.name.ifBlank { "对话" }}")
-                appendLine()
-                msgs.forEach { m ->
-                    val role = if (m.isSelf) "我" else m.senderName.ifBlank { "AI" }
-                    appendLine("**$role**")
-                    appendLine(m.content)
-                    appendLine()
-                }
-            }
-        }
-        file.writeText(content)
-        return file
-    }
-
     /** 上传中被用户删除的媒体消息 clientId（不含 local- 前缀），上传完成后放弃发送 */
     private val cancelledUploads = java.util.Collections.synchronizedSet(HashSet<String>())
 

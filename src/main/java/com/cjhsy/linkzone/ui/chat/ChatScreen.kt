@@ -72,7 +72,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.WifiOff
@@ -182,7 +181,6 @@ fun ChatScreen(
     var showModelSheet by remember { mutableStateOf(false) }
     // AI 扩展面板（本地：推理/MCP/技能/记忆/本地工具）
     var showExtensionSheet by remember { mutableStateOf(false) }
-    val exportScope = rememberCoroutineScope()
 
     // 模型选择面板打开时加载全部启用 Provider 的模型
     LaunchedEffect(showModelSheet, showModelPicker) {
@@ -244,22 +242,7 @@ fun ChatScreen(
                 onClickCloudTitle = onOpenEnginePicker,
                 onClickLocalTitle = { showModelSheet = true },
                 onNewConversation = onNewConversation,
-                onOpenSearch = viewModel::openSearch,
-                onExport = {
-                    exportScope.launch {
-                        val file = viewModel.exportConversation("md") ?: run {
-                            Toast.makeText(ctx, "仅本地会话可导出", Toast.LENGTH_SHORT).show()
-                            return@launch
-                        }
-                        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
-                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "text/markdown"
-                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        ctx.startActivity(android.content.Intent.createChooser(intent, "导出会话"))
-                    }
-                }
+                onOpenSearch = viewModel::openSearch
             )
 
             // 连接状态条：断开时红色条滑入，连接后滑出（本地引擎会话不展示）
@@ -475,8 +458,7 @@ private fun ChatTopBar(
     onClickCloudTitle: () -> Unit,
     onClickLocalTitle: () -> Unit,
     onNewConversation: () -> Unit,
-    onOpenSearch: () -> Unit,
-    onExport: () -> Unit
+    onOpenSearch: () -> Unit
 ) {
     Column {
         Row(
@@ -558,12 +540,6 @@ private fun ChatTopBar(
                 // 会话内搜索
                 IconButton(onClick = onOpenSearch) {
                     Icon(Icons.Filled.Search, contentDescription = "搜索")
-                }
-                // 导出会话（仅本地会话）
-                if (isLocal) {
-                    IconButton(onClick = onExport) {
-                        Icon(Icons.Filled.Share, contentDescription = "导出会话")
-                    }
                 }
                 AnimatedVisibility(
                     visible = !connected && !isLocal,
