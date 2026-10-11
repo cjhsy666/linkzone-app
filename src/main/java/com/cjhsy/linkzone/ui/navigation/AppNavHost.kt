@@ -28,6 +28,7 @@ import com.cjhsy.linkzone.ui.profile.ProfileScreen
 import com.cjhsy.linkzone.ui.settings.SettingsScreen
 import com.cjhsy.linkzone.ui.signin.SignInScreen
 import com.cjhsy.linkzone.ui.wallet.WalletScreen
+import com.cjhsy.linkzone.ui.workspace.WorkspaceScreen
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 
@@ -49,6 +50,7 @@ object Routes {
     const val LLM_MCP = "llm_mcp"
     const val LLM_SEARCH = "llm_search"
     const val LLM_MEMORY = "llm_memory"
+    const val LLM_WORKSPACE = "llm_workspace"
     const val STATS = "stats"
 }
 
@@ -194,7 +196,10 @@ fun AppNavHost(
         }
 
         composable(Routes.LLM_AGENTS) {
-            LlmAgentScreen(onBack = { navController.popBackStack() })
+            LlmAgentScreen(
+                onBack = { navController.popBackStack() },
+                onNavigate = { route -> navController.navigate(route) }
+            )
         }
 
         composable(Routes.LLM_EXTENSIONS) {
@@ -211,6 +216,10 @@ fun AppNavHost(
 
         composable(Routes.LLM_MEMORY) {
             LlmMemoryScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.LLM_WORKSPACE) {
+            WorkspaceScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.STATS) {

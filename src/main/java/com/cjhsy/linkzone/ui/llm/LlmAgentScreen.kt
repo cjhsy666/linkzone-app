@@ -193,6 +193,26 @@ class LlmAgentViewModel(
         }
     }
 
+    fun duplicate(agent: LlmAgent) {
+        viewModelScope.launch {
+            // 内置智能体也允许复制，复制件为普通智能体
+            var name = agent.name.ifBlank { "未命名" } + " ·副本"
+            // 极端情况下多次复制重名，继续追加序号
+            var suffix = 2
+            while (_state.value.agents.any { it.name == name }) {
+                name = "${agent.name.ifBlank { "未命名" }} ·副本$suffix"
+                suffix++
+            }
+            val copy = agent.copy(
+                id = java.util.UUID.randomUUID().toString(),
+                name = name,
+                createdAt = System.currentTimeMillis()
+            )
+            llmRepository.upsertAgent(copy)
+            _state.value = _state.value.copy(message = "已复制「$name」", error = null)
+        }
+    }
+
     fun clearMessage() {
         _state.value = _state.value.copy(message = null, error = null)
     }
@@ -284,6 +304,7 @@ class LlmAgentViewModel(
 @Composable
 fun LlmAgentScreen(
     onBack: () -> Unit,
+    onNavigate: (String) -> Unit = {},
     viewModel: LlmAgentViewModel = koinViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -423,6 +444,13 @@ fun LlmAgentScreen(
                             onDismissRequest = { menuOpen = false }
                         ) {
                             androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("复制") },
+                                onClick = {
+                                    menuOpen = false
+                                    viewModel.duplicate(agent)
+                                }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("导出") },
                                 onClick = {
                                     menuOpen = false
@@ -523,37 +551,66 @@ private fun AgentEditor(
             OutlinedTextField(
                 value = agent.systemPrompt,
                 onValueChange = { v -> viewModel.updateEditing { it.copy(systemPrompt = v) } },
-                label = { Text("支持 {{model}} / {{time}} / {{date}} 变量") },
+                label = { Text("定义角色、语气与行为边界") },
                 modifier = Modifier.fillMaxWidth().height(140.dp)
             )
+        }
+        // 变量点击插入（Rikka 式 available variables）
+        item {
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf("{{model}}" to "当前模型名", "{{time}}" to "当前时间", "{{date}}" to "当前日期").forEach { (token, desc) ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                            .clickable {
+                                viewModel.updateEditing { it.copy(systemPrompt = it.systemPrompt + token) }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "$token $desc",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
 
         // ===== 参数 =====
         item { Text("生成参数", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = agent.temperature?.toString() ?: "",
-                    onValueChange = { v -> viewModel.updateEditing { it.copy(temperature = v.toFloatOrNull()) } },
-                    label = { Text("温度") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = agent.topP?.toString() ?: "",
-                    onValueChange = { v -> viewModel.updateEditing { it.copy(topP = v.toFloatOrNull()) } },
-                    label = { Text("Top P") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = agent.maxTokens?.toString() ?: "",
-                    onValueChange = { v -> viewModel.updateEditing { it.copy(maxTokens = v.toIntOrNull()) } },
-                    label = { Text("最大 Token") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
-                )
-            }
+            GatedFloatParam(
+                label = "温度",
+                hint = "0–2，越高越发散；关闭则跟随服务商默认",
+                value = agent.temperature,
+                defaultValue = 0.8f,
+                valueRange = 0f..2f,
+                onValueChange = { v -> viewModel.updateEditing { it.copy(temperature = v) } }
+            )
+        }
+        item {
+            GatedFloatParam(
+                label = "Top P",
+                hint = "0–1 核采样；关闭则跟随服务商默认",
+                value = agent.topP,
+                defaultValue = 1f,
+                valueRange = 0f..1f,
+                onValueChange = { v -> viewModel.updateEditing { it.copy(topP = v) } }
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = agent.maxTokens?.toString() ?: "",
+                onValueChange = { v -> viewModel.updateEditing { it.copy(maxTokens = v.toIntOrNull()) } },
+                label = { Text("最大 Token（留空 = 跟随默认）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
         }
         item {
             OutlinedTextField(
@@ -608,6 +665,63 @@ private fun AgentEditor(
             }
         }
 
+        // ===== 对话增强 =====
+        item { Text("对话增强", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("时间感知", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "长间隔消息前注入当前时间，跨天对话不混淆",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = agent.enableTimeReminder,
+                    onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableTimeReminder = v) } }
+                )
+            }
+        }
+        if (agent.enableTimeReminder) {
+            item {
+                OutlinedTextField(
+                    value = if (agent.timeReminderIntervalMinutes == 60) "" else agent.timeReminderIntervalMinutes.toString(),
+                    onValueChange = { v ->
+                        val n = v.toIntOrNull()?.coerceAtLeast(1) ?: 60
+                        viewModel.updateEditing { it.copy(timeReminderIntervalMinutes = n) }
+                    },
+                    label = { Text("提醒间隔分钟数（默认 60）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+        }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("上下文压缩", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "超出条数上限时把旧消息总结为检查点而非直接丢弃",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = agent.enableContextCompression,
+                    onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableContextCompression = v) } }
+                )
+            }
+        }
+
         // ===== AI 扩展关联 =====
         item { Text("AI 扩展", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
         item {
@@ -617,73 +731,61 @@ private fun AgentEditor(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        if (state.skills.isNotEmpty()) {
-            item { Text("技能", style = MaterialTheme.typography.bodyMedium) }
-            item {
-                MultiSelectChips(
-                    items = state.skills.map { it.id to it.name },
-                    selectedIds = agent.enabledSkills,
-                    onToggle = { id ->
-                        viewModel.updateEditing { a ->
-                            a.copy(enabledSkills = toggleIn(a.enabledSkills, id))
-                        }
-                    }
-                )
+        ExtensionAssociationBlock(
+            title = "技能",
+            emptyHint = "暂无技能，可在 AI 中心导入后在此关联",
+            items = state.skills.map { it.id to it.name },
+            selectedIds = agent.enabledSkills,
+            onToggle = { id ->
+                viewModel.updateEditing { a -> a.copy(enabledSkills = toggleIn(a.enabledSkills, id)) }
             }
-        }
-        if (state.prompts.isNotEmpty()) {
-            item { Text("模式注入", style = MaterialTheme.typography.bodyMedium) }
-            item {
-                MultiSelectChips(
-                    items = state.prompts.map { it.id to (it.name.ifBlank { "未命名" }) },
-                    selectedIds = agent.promptIds,
-                    onToggle = { id ->
-                        viewModel.updateEditing { a ->
-                            a.copy(promptIds = toggleIn(a.promptIds, id))
-                        }
-                    }
-                )
+        )
+        ExtensionAssociationBlock(
+            title = "模式注入",
+            emptyHint = "暂无模式注入，可在 AI 扩展页创建",
+            items = state.prompts.map { it.id to (it.name.ifBlank { "未命名" }) },
+            selectedIds = agent.promptIds,
+            onToggle = { id ->
+                viewModel.updateEditing { a -> a.copy(promptIds = toggleIn(a.promptIds, id)) }
             }
-        }
-        if (state.lorebooks.isNotEmpty()) {
-            item { Text("世界书", style = MaterialTheme.typography.bodyMedium) }
-            item {
-                MultiSelectChips(
-                    items = state.lorebooks.map { it.id to (it.name.ifBlank { "未命名" }) },
-                    selectedIds = agent.lorebookIds,
-                    onToggle = { id ->
-                        viewModel.updateEditing { a ->
-                            a.copy(lorebookIds = toggleIn(a.lorebookIds, id))
-                        }
-                    }
-                )
+        )
+        ExtensionAssociationBlock(
+            title = "世界书",
+            emptyHint = "暂无世界书，可在 AI 扩展页创建（导入角色卡也会自动生成）",
+            items = state.lorebooks.map { it.id to (it.name.ifBlank { "未命名" }) },
+            selectedIds = agent.lorebookIds,
+            onToggle = { id ->
+                viewModel.updateEditing { a -> a.copy(lorebookIds = toggleIn(a.lorebookIds, id)) }
             }
-        }
-        if (state.quickMessages.isNotEmpty()) {
-            item { Text("快捷指令", style = MaterialTheme.typography.bodyMedium) }
-            item {
-                MultiSelectChips(
-                    items = state.quickMessages.map { it.id to it.title },
-                    selectedIds = agent.quickMessageIds,
-                    onToggle = { id ->
-                        viewModel.updateEditing { a ->
-                            a.copy(quickMessageIds = toggleIn(a.quickMessageIds, id))
-                        }
-                    }
-                )
+        )
+        ExtensionAssociationBlock(
+            title = "快捷指令",
+            emptyHint = "暂无快捷指令，可在 AI 扩展页创建",
+            items = state.quickMessages.map { it.id to it.title },
+            selectedIds = agent.quickMessageIds,
+            onToggle = { id ->
+                viewModel.updateEditing { a -> a.copy(quickMessageIds = toggleIn(a.quickMessageIds, id)) }
             }
-        }
+        )
 
         // ===== 工具与记忆 =====
         item { Text("工具与记忆", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        if (state.mcpServers.isNotEmpty()) {
+        item {
+            Text(
+                "MCP 服务器（启用且已连接的服务器工具会注入对话，命名 mcp__服务器__工具）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (state.mcpServers.isEmpty()) {
             item {
                 Text(
-                    "MCP 服务器（启用且已连接的服务器工具会注入对话，命名 mcp__服务器__工具）",
+                    "暂无 MCP 服务器，可在 AI 中心「MCP」页添加",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        } else {
             item {
                 MultiSelectChips(
                     items = state.mcpServers.map { it.id to it.commonOptions.name.ifBlank { "未命名" } },
@@ -736,6 +838,22 @@ private fun AgentEditor(
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableWebSearch = v) } }
                 )
             }
+        }
+
+        // ===== 本地工具 =====
+        item { Text("本地工具", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        item {
+            com.cjhsy.linkzone.ui.chat.LocalToolSwitchList(
+                selected = agent.localTools,
+                onToggle = { option, enable ->
+                    viewModel.updateEditing { a ->
+                        a.copy(
+                            localTools = if (enable) a.localTools + option
+                            else a.localTools.filter { it != option }
+                        )
+                    }
+                }
+            )
         }
 
         // ===== 图片生成 =====
@@ -801,12 +919,190 @@ private fun AgentEditor(
         item { Text("代码工作区", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
         item { WorkspaceSelector(agent, viewModel) }
 
+        // ===== 自定义请求 =====
+        item { Text("自定义请求", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        item {
+            Text(
+                "追加到每次模型请求的自定义 Header / Body 字段（企业网关或特殊参数）。留空的条目不会发送。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            CustomRequestEditor(
+                headers = agent.customHeaders,
+                bodies = agent.customBodies,
+                onHeadersChange = { list -> viewModel.updateEditing { it.copy(customHeaders = list) } },
+                onBodiesChange = { list -> viewModel.updateEditing { it.copy(customBodies = list) } }
+            )
+        }
+
         item {
             TextButton(onClick = { viewModel.delete(agent) }) {
                 Text("删除智能体", color = MaterialTheme.colorScheme.error)
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+/** 可空浮点参数行：开关门控 + 数值输入（Rikka 式 temperature/topP） */
+@Composable
+private fun GatedFloatParam(
+    label: String,
+    hint: String,
+    value: Float?,
+    defaultValue: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float?) -> Unit
+) {
+    // 用本地文本承接中间态（如 "1."），避免输入过程中 parse 失败导致开关回弹
+    var text by remember(value) { mutableStateOf(value?.toString() ?: "") }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = value != null,
+            onCheckedChange = { on ->
+                if (on) {
+                    onValueChange(defaultValue)
+                } else {
+                    text = ""
+                    onValueChange(null)
+                }
+            }
+        )
+        if (value != null) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { raw ->
+                    text = raw
+                    raw.toFloatOrNull()?.let { onValueChange(it.coerceIn(valueRange.start, valueRange.endInclusive)) }
+                },
+                singleLine = true,
+                modifier = Modifier.width(96.dp)
+            )
+        }
+    }
+}
+
+/** 自定义 Header / Body 编辑区 */
+@Composable
+private fun CustomRequestEditor(
+    headers: List<com.cjhsy.linkzone.ai.provider.CustomHeader>,
+    bodies: List<com.cjhsy.linkzone.ai.provider.CustomBody>,
+    onHeadersChange: (List<com.cjhsy.linkzone.ai.provider.CustomHeader>) -> Unit,
+    onBodiesChange: (List<com.cjhsy.linkzone.ai.provider.CustomBody>) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("请求头", style = MaterialTheme.typography.bodyMedium)
+        headers.forEachIndexed { index, header ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = header.name,
+                    onValueChange = { v ->
+                        onHeadersChange(headers.mapIndexed { i, h -> if (i == index) h.copy(name = v) else h })
+                    },
+                    label = { Text("名称") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = header.value,
+                    onValueChange = { v ->
+                        onHeadersChange(headers.mapIndexed { i, h -> if (i == index) h.copy(value = v) else h })
+                    },
+                    label = { Text("值") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("删", color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.clickable {
+                        onHeadersChange(headers.filterIndexed { i, _ -> i != index })
+                    })
+            }
+        }
+        TextButton(onClick = {
+            onHeadersChange(headers + com.cjhsy.linkzone.ai.provider.CustomHeader("", ""))
+        }) { Text("＋ 添加请求头") }
+
+        Text("请求体字段", style = MaterialTheme.typography.bodyMedium)
+        bodies.forEachIndexed { index, body ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = body.key,
+                    onValueChange = { v ->
+                        onBodiesChange(bodies.mapIndexed { i, b -> if (i == index) b.copy(key = v) else b })
+                    },
+                    label = { Text("字段名") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = body.value.toString(),
+                    onValueChange = { v ->
+                        val parsed = runCatching {
+                            kotlinx.serialization.json.Json.parseToJsonElement(v)
+                        }.getOrElse { kotlinx.serialization.json.JsonPrimitive(v) }
+                        onBodiesChange(bodies.mapIndexed { i, b -> if (i == index) b.copy(value = parsed) else b })
+                    },
+                    label = { Text("JSON 值") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("删", color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.clickable {
+                        onBodiesChange(bodies.filterIndexed { i, _ -> i != index })
+                    })
+            }
+        }
+        TextButton(onClick = {
+            onBodiesChange(
+                bodies + com.cjhsy.linkzone.ai.provider.CustomBody(
+                    "", kotlinx.serialization.json.JsonPrimitive("")
+                )
+            )
+        }) { Text("＋ 添加请求体字段") }
+    }
+}
+
+/** AI 扩展关联块（空列表时展示引导提示，而非整块消失） */
+private fun androidx.compose.foundation.lazy.LazyListScope.ExtensionAssociationBlock(
+    title: String,
+    emptyHint: String,
+    items: List<Pair<String, String>>,
+    selectedIds: Set<String>,
+    onToggle: (String) -> Unit
+) {
+    item { Text(title, style = MaterialTheme.typography.bodyMedium) }
+    if (items.isEmpty()) {
+        item {
+            Text(
+                emptyHint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    } else {
+        item { MultiSelectChips(items = items, selectedIds = selectedIds, onToggle = onToggle) }
     }
 }
 
@@ -854,6 +1150,7 @@ private fun WorkspaceSelector(
             onSelect = { id ->
                 viewModel.updateEditing { it.copy(workspaceId = id) }
             },
+            onOpenManager = { showDialog = false; onNavigate(com.cjhsy.linkzone.ui.navigation.Routes.LLM_WORKSPACE) },
             onDismiss = { showDialog = false }
         )
     }
@@ -864,6 +1161,7 @@ private fun WorkspaceManageDialog(
     workspaceManager: com.cjhsy.linkzone.workspace.WorkspaceManager,
     selectedId: String?,
     onSelect: (String?) -> Unit,
+    onOpenManager: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var refreshTick by remember { mutableStateOf(0) }
@@ -891,6 +1189,12 @@ private fun WorkspaceManageDialog(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                TextButton(
+                    onClick = onOpenManager,
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    Text("打开完整管理页（文件浏览 / 终端）↗", style = MaterialTheme.typography.labelMedium)
                 }
                 Spacer(Modifier.height(8.dp))
                 if (workspaces.isEmpty()) {

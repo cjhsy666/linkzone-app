@@ -49,6 +49,8 @@ data class LlmAgent(
     val localTools: List<LocalToolOption> = emptyList(),
     /** 时间感知：在首条/间隔较大的用户消息前注入当前时间提醒（RikkaHub TimeReminderTransformer） */
     val enableTimeReminder: Boolean = true,
+    /** 时间提醒触发间隔（分钟），距上条消息超过该间隔才注入 */
+    val timeReminderIntervalMinutes: Int = 60,
     /** 上下文压缩：超 contextMessageLimit 时把旧消息总结为检查点而非直接丢弃（RikkaHub CompressPrompt） */
     val enableContextCompression: Boolean = true,
     /** 启用图片生成工具 image_generate（需配置 IMAGE 类型模型） */

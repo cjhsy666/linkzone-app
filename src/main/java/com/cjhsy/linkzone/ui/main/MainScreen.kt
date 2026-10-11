@@ -126,6 +126,7 @@ fun MainScreen(
                     showEnginePicker = true
                 },
                 onManageAgents = { onNavigate("llm_hub") },
+                onOpenWorkspace = { onNavigate("llm_workspace") },
                 viewModel = chatViewModel
             )
         }

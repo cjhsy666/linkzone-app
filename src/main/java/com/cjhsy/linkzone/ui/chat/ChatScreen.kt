@@ -166,6 +166,7 @@ fun ChatScreen(
     onOpenEnginePicker: () -> Unit,
     onNewConversation: () -> Unit,
     onManageAgents: () -> Unit,
+    onOpenWorkspace: () -> Unit = {},
     viewModel: ChatViewModel = koinViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -367,10 +368,15 @@ fun ChatScreen(
                     {
                         LocalExtensionChips(
                             agent = state.currentAgent,
+                            currentModelLabel = agent?.chatModelId?.substringAfterLast('/')?.ifBlank { null },
+                            onOpenModels = { showModelSheet = true },
                             onToggleSearch = {
                                 viewModel.updateCurrentAgent { it.copy(enableWebSearch = !it.enableWebSearch) }
                             },
-                            onOpenExtensions = { showExtensionSheet = true }
+                            onOpenExtensions = { showExtensionSheet = true },
+                            extensionsCount = agent?.let {
+                                it.enabledSkills.size + it.mcpServers.size + (if (it.enableMemory) 1 else 0)
+                            } ?: 0
                         )
                     }
                 } else null
@@ -428,16 +434,28 @@ fun ChatScreen(
         )
     }
 
-    // ---------- AI 扩展面板（本地：推理/MCP/技能/记忆/本地工具） ----------
+    // ---------- AI 扩展面板（本地：工作区/推理/MCP/技能/记忆/压缩/本地工具） ----------
     if (showExtensionSheet) {
         LocalExtensionSheet(
             agent = state.currentAgent,
             skills = skills,
             mcpServers = mcpServers,
             mcpStatus = mcpStatus,
+            workspaceName = remember(state.currentAgent?.workspaceId) { viewModel.boundWorkspaceName() },
+            onOpenWorkspace = onOpenWorkspace,
+            onCompressNow = viewModel::compressContextNow,
             onUpdate = { transform -> viewModel.updateCurrentAgent(transform) },
             onDismiss = { showExtensionSheet = false }
         )
+    }
+
+    // 手动压缩结果提示（一次性 Toast）
+    val compressNotice by viewModel.manualCompressNotice.collectAsStateWithLifecycle()
+    LaunchedEffect(compressNotice) {
+        compressNotice?.let {
+            Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show()
+            viewModel.consumeCompressNotice()
+        }
     }
 }
 

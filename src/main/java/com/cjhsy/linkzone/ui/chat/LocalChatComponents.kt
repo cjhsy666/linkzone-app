@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -172,12 +174,15 @@ internal fun LocalModelSheet(
 // AI 扩展入口（Rikka 式：输入栏上方功能 chips + 扩展面板）
 // ============================================================
 
-/** 输入栏上方功能行：联网搜索开关 chip + 推理等级 chip + AI 扩展入口 chip */
+/** 输入栏上方功能行：模型 chip + 联网搜索开关 chip + 推理等级 chip + AI 扩展入口 chip（带角标） */
 @Composable
 internal fun LocalExtensionChips(
     agent: LlmAgent?,
+    currentModelLabel: String?,
+    onOpenModels: () -> Unit,
     onToggleSearch: () -> Unit,
-    onOpenExtensions: () -> Unit
+    onOpenExtensions: () -> Unit,
+    extensionsCount: Int = 0
 ) {
     if (agent == null) return
     LazyRow(
@@ -186,6 +191,14 @@ internal fun LocalExtensionChips(
             .padding(horizontal = 12.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        item(key = "model") {
+            LocalToggleChip(
+                label = currentModelLabel?.let { "模型 · $it" } ?: "选择模型",
+                icon = Icons.Filled.SmartToy,
+                checked = false,
+                onClick = onOpenModels
+            )
+        }
         item(key = "web_search") {
             LocalToggleChip(
                 label = "联网搜索",
@@ -207,6 +220,7 @@ internal fun LocalExtensionChips(
                 label = "AI 扩展",
                 icon = Icons.Filled.Extension,
                 checked = false,
+                badge = extensionsCount,
                 onClick = onOpenExtensions
             )
         }
@@ -219,7 +233,8 @@ private fun LocalToggleChip(
     label: String,
     icon: ImageVector,
     checked: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    badge: Int = 0
 ) {
     val bg = if (checked) MaterialTheme.colorScheme.primaryContainer
     else MaterialTheme.colorScheme.surface
@@ -244,6 +259,20 @@ private fun LocalToggleChip(
             )
             Spacer(Modifier.width(5.dp))
             Text(text = label, style = MaterialTheme.typography.labelMedium, color = fg)
+            if (badge > 0) {
+                Spacer(Modifier.width(4.dp))
+                Surface(
+                    shape = androidx.compose.foundation.shape.CircleShape,
+                    color = MaterialTheme.colorScheme.primary
+                ) {
+                    Text(
+                        text = badge.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(horizontal = 5.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -280,6 +309,9 @@ internal fun LocalExtensionSheet(
     skills: List<LlmSkill>,
     mcpServers: List<McpServerConfig>,
     mcpStatus: Map<String, McpStatus>,
+    workspaceName: String?,
+    onOpenWorkspace: () -> Unit,
+    onCompressNow: () -> Unit,
     onUpdate: ((LlmAgent) -> LlmAgent) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -310,6 +342,49 @@ internal fun LocalExtensionSheet(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
             )
+
+            // ---------- 代码工作区 ----------
+            LocalSheetSectionTitle("代码工作区")
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onOpenWorkspace)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Terminal,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = workspaceName ?: "未绑定工作区",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = if (workspaceName != null) "已绑定 · 点击打开管理页（文件浏览 / 终端）"
+                            else "绑定后智能体可读写文件、执行命令",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        text = "↗",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
 
             // ---------- 联网搜索 ----------
             LocalSheetSwitchRow(
@@ -414,59 +489,103 @@ internal fun LocalExtensionSheet(
             // ---------- 上下文 ----------
             LocalSheetSectionTitle("上下文")
             LocalSheetSwitchRow(
+                title = "自动压缩上下文",
+                subtitle = "超出上限时自动把旧消息总结为检查点",
+                checked = agent.enableContextCompression,
+                onToggle = { onUpdate { it.copy(enableContextCompression = !it.enableContextCompression) } }
+            )
+            LocalSheetSwitchRow(
                 title = "时间感知",
                 subtitle = "在长间隔消息前注入当前时间提醒，跨天对话不混淆时间",
                 checked = agent.enableTimeReminder,
                 onToggle = { onUpdate { it.copy(enableTimeReminder = !it.enableTimeReminder) } }
             )
+            // 手动压缩入口：立即把较早消息总结为检查点
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "立即压缩上下文",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "手动总结较早消息为检查点，长对话立即瘦身",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = onCompressNow) { Text("执行") }
+            }
 
             // ---------- 本地工具 ----------
             LocalSheetSectionTitle("本地工具")
-            val calendarPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-                androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
-            ) { }
-            listOf(
-                Triple("图表渲染", "允许模型通过 chart_display 渲染图表", LocalToolOption.ChartDisplay),
-                Triple("时间查询", "查询设备当前日期、时间与时区", LocalToolOption.TimeInfo),
-                Triple("剪贴板", "读取或写入剪贴板文本", LocalToolOption.Clipboard),
-                Triple("主动追问", "信息不足时暂停生成向你提问（可跳过）", LocalToolOption.AskUser),
-                Triple("日历读写", "查询/创建系统日历日程", LocalToolOption.Calendar),
-                Triple("语音播报", "朗读文本给用户听（系统 TTS）", LocalToolOption.Tts),
-                Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript)
-            ).forEach { (title, subtitle, option) ->
-                val enabled = agent.localTools.contains(option)
-                LocalSheetSwitchRow(
-                    title = title,
-                    subtitle = subtitle,
-                    checked = enabled,
-                    onToggle = {
-                        onUpdate { a ->
-                            val next = if (enabled) {
-                                a.localTools.filter { it != option }
-                            } else {
-                                a.localTools + option
-                            }
-                            a.copy(localTools = next)
-                        }
-                        // 开启日历时顺手请求系统权限；拒绝后工具调用会返回未授权提示
-                        if (option is LocalToolOption.Calendar && !enabled) {
-                            calendarPermLauncher.launch(
-                                arrayOf(
-                                    android.Manifest.permission.READ_CALENDAR,
-                                    android.Manifest.permission.WRITE_CALENDAR
-                                )
-                            )
-                        }
+            LocalToolSwitchList(
+                selected = agent.localTools,
+                onToggle = { option, enable ->
+                    onUpdate { a ->
+                        a.copy(
+                            localTools = if (enable) a.localTools + option
+                            else a.localTools.filter { it != option }
+                        )
                     }
-                )
-            }
+                }
+            )
+        }
+    }
+}
+
+/**
+ * 本地工具开关列表（智能体编辑页与聊天扩展面板共用）。
+ * 开启「日历读写」时顺带申请系统日历权限。
+ */
+@Composable
+internal fun LocalToolSwitchList(
+    selected: List<com.cjhsy.linkzone.data.ai.LocalToolOption>,
+    onToggle: (com.cjhsy.linkzone.data.ai.LocalToolOption, Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val calendarPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
+    val tools = listOf(
+        Triple("图表渲染", "允许模型通过 chart_display 渲染图表", LocalToolOption.ChartDisplay),
+        Triple("时间查询", "查询设备当前日期、时间与时区", LocalToolOption.TimeInfo),
+        Triple("剪贴板", "读取或写入剪贴板文本", LocalToolOption.Clipboard),
+        Triple("主动追问", "信息不足时暂停生成向你提问（可跳过）", LocalToolOption.AskUser),
+        Triple("日历读写", "查询/创建系统日历日程", LocalToolOption.Calendar),
+        Triple("语音播报", "朗读文本给用户听（系统 TTS）", LocalToolOption.Tts),
+        Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript)
+    )
+    Column(modifier = modifier) {
+        tools.forEach { (title, subtitle, option) ->
+            val enabled = option in selected
+            LocalSheetSwitchRow(
+                title = title,
+                subtitle = subtitle,
+                checked = enabled,
+                onToggle = {
+                    onToggle(option, !enabled)
+                    if (option is LocalToolOption.Calendar && !enabled) {
+                        calendarPermLauncher.launch(
+                            arrayOf(
+                                android.Manifest.permission.READ_CALENDAR,
+                                android.Manifest.permission.WRITE_CALENDAR
+                            )
+                        )
+                    }
+                }
+            )
         }
     }
 }
 
 /** 扩展面板小节标题 */
 @Composable
-private fun LocalSheetSectionTitle(title: String) {
+internal fun LocalSheetSectionTitle(title: String) {
     Text(
         text = title,
         style = MaterialTheme.typography.labelMedium,
@@ -475,9 +594,9 @@ private fun LocalSheetSectionTitle(title: String) {
     )
 }
 
-/** 扩展面板空列表提示 */
+/** 扩展面板空提示 */
 @Composable
-private fun LocalSheetEmptyHint(text: String) {
+internal fun LocalSheetEmptyHint(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodySmall,
@@ -488,7 +607,7 @@ private fun LocalSheetEmptyHint(text: String) {
 
 /** 扩展面板通用 Switch 行 */
 @Composable
-private fun LocalSheetSwitchRow(
+internal fun LocalSheetSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,

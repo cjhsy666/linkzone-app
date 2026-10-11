@@ -1592,16 +1592,24 @@ class ChatViewModel(
                 msg.toLlmUIMessage()?.let { add(it) }
             }
         }
-        // 上下文压缩：超过上限时把将被截断的旧消息总结为检查点，保留近期消息（RikkaHub CompressPrompt 思路）
-        val compressed = if (agent.enableContextCompression && agent.contextMessageLimit > 0 &&
-            history.size > agent.contextMessageLimit
-        ) {
-            compressContext(history, agent.contextMessageLimit, agent, model)
-        } else {
-            history.limitContext(agent.contextMessageLimit)
+        // 上下文压缩：手动检查点优先（用户从扩展面板主动触发），其次自动压缩
+        //（RikkaHub CompressPrompt 思路：把将被截断的旧消息总结为检查点，保留近期消息）
+        val convKey = _state.value.currentConvId
+        val manual = manualCheckpoint
+            ?.takeIf { it.first == convKey && history.size > manualCheckpointCovered }
+        val compressed = when {
+            manual != null -> listOf(manual.second) + history.drop(manualCheckpointCovered)
+            agent.enableContextCompression && agent.contextMessageLimit > 0 &&
+                history.size > agent.contextMessageLimit
+            -> compressContext(history, agent.contextMessageLimit, agent, model)
+            else -> history.limitContext(agent.contextMessageLimit)
         }
         messages += compressed
-            .let { if (agent.enableTimeReminder) applyTimeReminder(it) else it }
+            .let {
+                if (agent.enableTimeReminder) {
+                    applyTimeReminder(it, agent.timeReminderIntervalMinutes)
+                } else it
+            }
             // 非视觉模型：图片必须转文本（启用 OCR 时用视觉模型识别，否则降级占位）
             .let { applyOcrTransform(agent, model, it) }
 
@@ -1671,6 +1679,63 @@ class ChatViewModel(
             "<context_summary>\n$summary\n</context_summary>"
         ).copy(isContextCheckpoint = true)
         return listOf(checkpoint) + history.drop(dropCount)
+    }
+
+    // ---- 手动压缩（扩展面板入口） ----
+    /** 手动压缩检查点（内存态）：convId to checkpoint；进程重启后丢失，自动压缩兜底 */
+    private var manualCheckpoint: Pair<String, UIMessage>? = null
+    /** 检查点覆盖的消息条数（buildMessages 时 drop 掉这部分历史） */
+    private var manualCheckpointCovered: Int = 0
+
+    /** 当前会话智能体绑定的代码工作区名（扩展面板入口显示用） */
+    fun boundWorkspaceName(): String? =
+        _state.value.currentAgent?.workspaceId?.let { workspaceManager.get(it)?.name }
+
+    /**
+     * 手动触发上下文压缩：把较早消息总结为检查点并在后续每轮请求复用
+     * （内存态，跨会话/进程重启失效）。生成中忽略。
+     */
+    fun compressContextNow() {
+        if (_state.value.generating) return
+        val convId = _state.value.currentConvId
+        val agent = _state.value.currentAgent ?: return
+        viewModelScope.launch {
+            val (_, model) = resolveChatModel(agent) ?: run {
+                _state.value = _state.value.copy(error = "未配置可用模型，无法压缩")
+                return@launch
+            }
+            val selected = _state.value.messages.toMessageNodes().selectedMessages()
+            val history = buildList {
+                for (msg in selected) {
+                    if (msg.recalled || msg.uploadFailed) continue
+                    msg.toLlmUIMessage()?.let { add(it) }
+                }
+            }
+            val keep = agent.contextMessageLimit.takeIf { it > 0 } ?: 20
+            if (history.size <= keep + 4) {
+                _state.value = _state.value.copy(error = "当前消息不多，无需压缩")
+                return@launch
+            }
+            val before = history.size
+            val checkpoint = compressContext(history, keep, agent, model)
+                .firstOrNull { it.isContextCheckpoint }
+            if (checkpoint == null) {
+                _state.value = _state.value.copy(error = "压缩失败（模型未返回摘要），可稍后重试")
+            } else {
+                manualCheckpoint = convId to checkpoint
+                manualCheckpointCovered = before - keep
+                _state.value = _state.value.copy(error = null)
+                _manualCompressNotice.value = "已压缩：早期 ${before - keep} 条消息已总结为检查点"
+            }
+        }
+    }
+
+    /** 手动压缩结果提示（一次性事件流，UI 侧 Toast） */
+    private val _manualCompressNotice = MutableStateFlow<String?>(null)
+    val manualCompressNotice: StateFlow<String?> = _manualCompressNotice.asStateFlow()
+
+    fun consumeCompressNotice() {
+        _manualCompressNotice.value = null
     }
 
     /** OCR 结果进程内缓存（图片 URL → 识别文本），同图多轮对话只识别一次 */

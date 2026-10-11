@@ -221,5 +221,6 @@ val appModule = module {
     viewModel { LlmSearchViewModel(get()) }
     viewModel { LlmMemoryViewModel(get()) }
     viewModel { com.cjhsy.linkzone.ui.stats.StatsViewModel(get()) }
+    viewModel { com.cjhsy.linkzone.ui.workspace.WorkspaceViewModel(androidContext()) }
     viewModel { SettingsViewModel(get(), get()) }
 }

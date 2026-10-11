@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -204,6 +205,12 @@ private val aiHubEntries = listOf(
         title = "长期记忆",
         desc = "跨会话持久化的记忆与知识",
         route = Routes.LLM_MEMORY
+    ),
+    AiHubEntry(
+        icon = Icons.Filled.Terminal,
+        title = "代码工作区",
+        desc = "文件浏览与 shell 命令台",
+        route = Routes.LLM_WORKSPACE
     ),
     AiHubEntry(
         icon = Icons.Filled.BarChart,
