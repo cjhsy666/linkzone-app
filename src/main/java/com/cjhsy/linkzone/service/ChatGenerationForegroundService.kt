@@ -89,12 +89,6 @@ class ChatGenerationForegroundService : Service() {
             .setOngoing(true)
             .setContentIntent(openIntent)
             .setOnlyAlertOnce(true)
-            .apply {
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                    @Suppress("DEPRECATION")
-                    priority = Notification.PRIORITY_LOW
-                }
-            }
             .build()
     }
 
