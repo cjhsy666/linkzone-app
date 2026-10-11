@@ -5,8 +5,8 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        // AGP 8.13.2：8.x 线最新稳定版，支持 compileSdk 36；要求 Gradle >= 8.13（设备装 8.14.6）
-        classpath 'com.android.tools.build:gradle:8.13.2'
+        // AGP 9.1.0：新版 androidx（Compose 1.12/lifecycle 2.11/navigation 2.10/core-ktx 1.19 等）要求
+        classpath 'com.android.tools.build:gradle:9.1.0'
         // Kotlin 2.3.20：与 KSP 2.3.12 配对（KSP 2.3.12 的 stdlib 依赖即 2.3.20）
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20'
         classpath 'org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.3.20'
