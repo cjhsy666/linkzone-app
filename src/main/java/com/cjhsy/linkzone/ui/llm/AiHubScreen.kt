@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Api
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Hub
@@ -203,5 +204,11 @@ private val aiHubEntries = listOf(
         title = "长期记忆",
         desc = "跨会话持久化的记忆与知识",
         route = Routes.LLM_MEMORY
+    ),
+    AiHubEntry(
+        icon = Icons.Filled.BarChart,
+        title = "用量统计",
+        desc = "Token 用量、请求数与每日趋势",
+        route = Routes.STATS
     )
 )

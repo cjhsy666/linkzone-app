@@ -114,6 +114,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onChangePassword: () -> Unit,
     onAiHub: () -> Unit = {},
+    onStats: () -> Unit = {},
     onLoggedOut: () -> Unit,
     viewModel: SettingsViewModel = koinViewModel()
 ) {
@@ -164,6 +165,8 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(12.dp))
                     SettingsActionButton(label = "进入 AI 中心", onClick = onAiHub)
+                    Spacer(Modifier.height(8.dp))
+                    SettingsActionButton(label = "AI 用量统计", onClick = onStats)
                 }
             }
         }

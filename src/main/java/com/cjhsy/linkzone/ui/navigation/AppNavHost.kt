@@ -49,6 +49,7 @@ object Routes {
     const val LLM_MCP = "llm_mcp"
     const val LLM_SEARCH = "llm_search"
     const val LLM_MEMORY = "llm_memory"
+    const val STATS = "stats"
 }
 
 /** 导航转场时长（毫秒） */
@@ -171,6 +172,7 @@ fun AppNavHost(
                 onBack = { navController.popBackStack() },
                 onChangePassword = { navController.navigate(Routes.PROFILE_EDIT) },
                 onAiHub = { navController.navigate(Routes.LLM_HUB) },
+                onStats = { navController.navigate(Routes.STATS) },
                 onLoggedOut = {
                     navController.navigate(Routes.LOGIN) {
                         popUpTo(0) { inclusive = true }
@@ -209,6 +211,10 @@ fun AppNavHost(
 
         composable(Routes.LLM_MEMORY) {
             LlmMemoryScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.STATS) {
+            com.cjhsy.linkzone.ui.stats.StatsScreen(onBack = { navController.popBackStack() })
         }
     }
 }

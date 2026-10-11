@@ -14,6 +14,7 @@ import com.cjhsy.linkzone.data.repository.ChatRepository
 import com.cjhsy.linkzone.data.repository.LocalChatStore
 import com.cjhsy.linkzone.data.repository.UserRepository
 import com.cjhsy.linkzone.ai.core.MessageRole
+import com.cjhsy.linkzone.ai.core.TokenUsage
 import com.cjhsy.linkzone.ai.core.Tool
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ModelType
@@ -174,6 +175,8 @@ class ChatViewModel(
     private val mcpManager: McpManager,
     private val workspaceManager: com.cjhsy.linkzone.workspace.WorkspaceManager,
     private val json: Json,
+    /** Token 用量统计（本地会话每轮生成完成后记录） */
+    private val usageStats: com.cjhsy.linkzone.data.stats.UsageStatsStore,
     /** 应用级 Context：本地工具（剪贴板/日历）与权限查询使用，不持 UI 引用 */
     private val appContext: Context
 ) : ViewModel() {
@@ -1302,6 +1305,7 @@ class ChatViewModel(
                     _state.value = _state.value.copy(error = "工具调用步数超过 $MAX_TOOL_STEPS，已中止")
                     break
                 }
+                val stepStartedAt = System.currentTimeMillis()
                 providerManager.getProviderByType(setting)
                     .streamText(
                         providerSetting = setting,
@@ -1332,6 +1336,27 @@ class ChatViewModel(
                             updateLocalBotBubble(botMsgId, latestText, latestThinking)
                         }
                     }
+
+                // 用量统计：本轮 tokens 记入 usage_stats.json。
+                // Usage chunk 会被 merge 到流末尾的 assistant 消息上（新一轮覆盖旧值），
+                // 所以每轮记录后清零，保证多步工具循环逐轮累计不重复
+                val lastMsg = uiMessages.lastOrNull()
+                val lastUsage = lastMsg?.takeIf { it.role == MessageRole.ASSISTANT }?.usage
+                if (lastUsage != null && (lastUsage.promptTokens > 0 || lastUsage.completionTokens > 0)) {
+                    try {
+                        usageStats.record(
+                            modelId = model.modelId,
+                            promptTokens = lastUsage.promptTokens.toLong(),
+                            completionTokens = lastUsage.completionTokens.toLong(),
+                            durationMs = System.currentTimeMillis() - stepStartedAt,
+                        )
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // 统计写盘失败不影响生成流程
+                    }
+                    uiMessages = uiMessages.dropLast(1) + lastMsg.copy(usage = TokenUsage())
+                }
 
                 // 本轮回复是否携带未执行的工具调用；没有则生成结束
                 val lastMessage = uiMessages.lastOrNull() ?: break

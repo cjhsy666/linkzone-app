@@ -192,6 +192,9 @@ val appModule = module {
     // MCP：管理器内部自建 OkHttpClient（长超时）/状态存储/OAuth 协调器/会话注册表
     single { McpManager(get()) }
 
+    // Token 用量统计（filesDir/usage_stats.json，本地会话生成完成后由 ChatViewModel 记录）
+    single { com.cjhsy.linkzone.data.stats.UsageStatsStore(androidContext(), get()) }
+
     // ---------- 仓库 ----------
     single { AuthRepository(get(), get(), get(), get()) }
     single { UserRepository(get(), get(), get()) }
@@ -210,12 +213,13 @@ val appModule = module {
     viewModel { SignInViewModel(get()) }
     viewModel { NotificationViewModel(get()) }
     viewModel { MainViewModel(get(), get(), get(), get()) }
-    viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { LlmProviderViewModel(get(), get()) }
-    viewModel { LlmAgentViewModel(get()) }
+    viewModel { LlmAgentViewModel(get(), get()) }
     viewModel { LlmExtensionViewModel(androidContext(), get()) }
     viewModel { LlmMcpViewModel(get(), get()) }
     viewModel { LlmSearchViewModel(get()) }
     viewModel { LlmMemoryViewModel(get()) }
+    viewModel { com.cjhsy.linkzone.ui.stats.StatsViewModel(get()) }
     viewModel { SettingsViewModel(get(), get()) }
 }

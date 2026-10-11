@@ -1,5 +1,8 @@
 package com.cjhsy.linkzone.ui.llm
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,9 +21,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -36,11 +43,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.FileProvider
 import com.cjhsy.linkzone.ai.core.ReasoningLevel
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
@@ -55,6 +64,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.koin.androidx.compose.koinViewModel
 
 data class LlmAgentUiState(
@@ -75,13 +86,22 @@ data class LlmAgentUiState(
     val error: String? = null
 )
 
+/** 智能体导出文件格式（type 字段用于导入时校验） */
+@Serializable
+internal data class AgentExportPayload(
+    val type: String = "linkzone-agent",
+    val version: Int = 1,
+    val agent: LlmAgent
+)
+
 /**
  * 本地智能体管理：CRUD、系统提示词（支持 {{model}}/{{time}}/{{date}}）、
  * 模型绑定、生成参数（温度/topP/最大 token/推理等级）、上下文上限、流式开关、
- * AI 扩展关联（Skills / 模式注入 / 世界书 / 快捷指令）。
+ * AI 扩展关联（Skills / 模式注入 / 世界书 / 快捷指令）、导出/导入（JSON 文件）。
  */
 class LlmAgentViewModel(
-    private val llmRepository: LlmRepository
+    private val llmRepository: LlmRepository,
+    private val json: Json
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LlmAgentUiState())
@@ -174,6 +194,39 @@ class LlmAgentViewModel(
         _state.value = _state.value.copy(message = null, error = null)
     }
 
+    /** 序列化智能体为导出 JSON（文件内容由 UI 层写入并分享） */
+    fun exportAgentJson(agent: LlmAgent): String =
+        json.encodeToString(AgentExportPayload.serializer(), AgentExportPayload(agent = agent))
+
+    /**
+     * 从导出 JSON 导入智能体：校验格式、重置 id 避免覆盖已有配置，
+     * 与现有智能体重名时自动追加「·导入」后缀。
+     */
+    fun importAgentJson(text: String) {
+        viewModelScope.launch {
+            try {
+                val payload = json.decodeFromString(AgentExportPayload.serializer(), text)
+                val imported = payload.agent
+                    .copy(id = java.util.UUID.randomUUID().toString())
+                    .let { a ->
+                        val nameTaken = _state.value.agents.any { it.name == a.name }
+                        if (nameTaken) a.copy(name = a.name.ifBlank { "导入的智能体" } + " ·导入")
+                        else a.copy(name = a.name.ifBlank { "导入的智能体" })
+                    }
+                llmRepository.upsertAgent(imported)
+                _state.value = _state.value.copy(
+                    message = "已导入「${imported.name}」", error = null
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    error = "导入失败：${e.message ?: "文件格式不正确"}"
+                )
+            }
+        }
+    }
+
     /** 可选模型展示名 */
     fun modelLabel(modelId: String?): String {
         if (modelId == null) return "跟随全局默认"
@@ -192,11 +245,31 @@ fun LlmAgentScreen(
     viewModel: LlmAgentViewModel = koinViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     val editing = state.editing
     if (editing != null) {
         AgentEditor(agent = editing, state = state, viewModel = viewModel)
         return
+    }
+
+    // 导入：从文件选择器挑 JSON（兼容部分文件管理器报 text/plain）
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching {
+                    val text = context.contentResolver.openInputStream(uri)
+                        ?.bufferedReader()?.use { it.readText() }
+                        ?: error("无法读取所选文件")
+                    viewModel.importAgentJson(text)
+                }.onFailure { e ->
+                    Toast.makeText(context, "导入失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     LazyColumn(
@@ -214,6 +287,7 @@ fun LlmAgentScreen(
                 Row {
                     TextButton(onClick = onBack) { Text("返回") }
                     TextButton(onClick = viewModel::startCreate) { Text("新建") }
+                    TextButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) { Text("导入") }
                 }
             }
         }
@@ -236,6 +310,7 @@ fun LlmAgentScreen(
         }
 
         items(state.agents, key = { it.id }) { agent ->
+            var menuOpen by remember { mutableStateOf(false) }
             Card(
                 modifier = Modifier.fillMaxWidth().clickable { viewModel.startEdit(agent) },
                 shape = RoundedCornerShape(20.dp),
@@ -276,6 +351,45 @@ fun LlmAgentScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
+                        }
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false }
+                        ) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("导出") },
+                                onClick = {
+                                    menuOpen = false
+                                    scope.launch {
+                                        runCatching {
+                                            val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+                                            val safeName = agent.name.ifBlank { "agent" }
+                                                .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                                                .take(40)
+                                            val file = java.io.File(dir, "${safeName}_${System.currentTimeMillis()}.json")
+                                            file.writeText(viewModel.exportAgentJson(agent))
+                                            val uri = FileProvider.getUriForFile(
+                                                context, "${context.packageName}.fileprovider", file
+                                            )
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                type = "application/json"
+                                                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            context.startActivity(
+                                                android.content.Intent.createChooser(intent, "导出智能体")
+                                            )
+                                        }.onFailure { e ->
+                                            Toast.makeText(context, "导出失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
                             )
                         }
                     }
