@@ -148,9 +148,12 @@ fun List<MessageNode>.selectedMessages(): List<MessageItem> = resolveVisible().m
 fun List<MessageNode>.nodeOf(messageId: String): MessageNode? =
     firstOrNull { node -> node.versions.any { it.id == messageId } }
 
-/** 去掉渲染无关的内部段（版本元数据 / 分支约束 / 思考过程由专门面板渲染） */
+/** 去掉渲染无关的内部段（版本元数据 / 分支约束 / 思考过程由专门面板渲染 / 中断标记由操作行渲染） */
 fun MessageItem.visibleSegments(): List<MessageSegment> =
-    segments?.filter { it.type != VERSION_SEG && it.type != BRANCH_SEG && it.type != "thinking" }.orEmpty()
+    segments?.filter {
+        it.type != VERSION_SEG && it.type != BRANCH_SEG &&
+            it.type != "thinking" && it.type != "sys.stop"
+    }.orEmpty()
 
 /** 思考过程文本（thinking 段拼接） */
 fun MessageItem.thinkingText(): String =

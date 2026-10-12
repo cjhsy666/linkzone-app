@@ -1488,7 +1488,9 @@ class ChatViewModel(
                     interruptedByUser = false
                     _state.value = _state.value.copy(
                         messages = _state.value.messages.map { m ->
-                            if (m.id == botMsgId && m.content.isNotBlank()) {
+                            // 正文或思考过程非空（思考阶段中断也要保留并可续写）
+                            val hasThinking = m.segments?.any { it.type == "thinking" } == true
+                            if (m.id == botMsgId && (m.content.isNotBlank() || hasThinking)) {
                                 val segs = (m.segments ?: emptyList()) +
                                     MessageSegment(
                                         type = "sys.stop",
@@ -1542,7 +1544,10 @@ class ChatViewModel(
         val (thinkFromText, cleanText) = extractThinkTags(trimmed)
         val finalText = cleanText.trim()
         val finalThinking = (thinking + thinkFromText).trim()
-        if (finalText.isEmpty() && imageUrls.isEmpty()) {
+        // 用户中断时即使正文还没开始（只有思考过程），也保留气泡：思考内容可回看，
+        // 且下方需要出现「继续生成」按钮；无思考无正文（刚发就停）才移除占位
+        val keepThinkingOnly = interruptedByUser && finalThinking.isNotBlank()
+        if (finalText.isEmpty() && imageUrls.isEmpty() && !keepThinkingOnly) {
             _state.value = _state.value.copy(
                 messages = _state.value.messages.filterNot { it.id == botMsgId }
             )
@@ -1581,15 +1586,21 @@ class ChatViewModel(
                     timestamp = timestamp
                 )
             )
-            localStore.touch(convId, finalText.ifBlank { "[图片]" }.take(NAME_MAX_LEN), timestamp)
-            // 首答完成：LLM 总结会话标题 + 生成回复建议
-            maybeGenerateLlmTitle(
-                convId = convId,
-                agent = agent,
-                userText = _state.value.messages.firstOrNull { it.isSelf }?.content.orEmpty(),
-                aiText = finalText
+            localStore.touch(
+                convId,
+                finalText.ifBlank { if (imageUrls.isNotEmpty()) "[图片]" else "[思考中断]" }.take(NAME_MAX_LEN),
+                timestamp
             )
-            maybeGenerateSuggestions(agent, model, finalText)
+            // 首答完成：LLM 总结会话标题 + 生成回复建议（思考中断、无正文时不触发）
+            if (finalText.isNotBlank()) {
+                maybeGenerateLlmTitle(
+                    convId = convId,
+                    agent = agent,
+                    userText = _state.value.messages.firstOrNull { it.isSelf }?.content.orEmpty(),
+                    aiText = finalText
+                )
+                maybeGenerateSuggestions(agent, model, finalText)
+            }
             return
         }
         chatRepository.upsertMessage(

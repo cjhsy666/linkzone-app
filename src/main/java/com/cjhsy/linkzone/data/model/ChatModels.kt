@@ -249,6 +249,8 @@ data class MessageSegment(
             // 版本链元数据段（sys.ver）与分支约束段（sys.br）：不参与展示文本摘要
             "sys.ver" -> ""
             "sys.br" -> ""
+            // 用户中断生成标记：仅驱动「继续生成」按钮，不参与展示文本摘要
+            "sys.stop" -> ""
             "sys.abort" -> "[已终止]"
             "sys.listen_stop" -> "[已停止]"
             "sys.emotion" -> {
