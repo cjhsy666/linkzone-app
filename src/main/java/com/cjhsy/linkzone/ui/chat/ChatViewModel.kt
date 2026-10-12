@@ -1351,7 +1351,7 @@ class ChatViewModel(
                         .firstOrNull { it.anchorId == versionAnchorId }
                         ?.selected?.branchConstraints()
                         ?.forEach { add(branchSegment(it.first, it.second)) }
-                    add(versionSegment(versionAnchorId, versionIdx, versionIdx))
+                    add(versionSegment(versionAnchorId, versionIdx, versionIdx, System.currentTimeMillis() * 1000))
                 } else {
                     // 普通追加：挂到当前可见分支（切上游版本时新尾巴随分支切换）
                     addAll(activeBranchConstraints())
@@ -2472,38 +2472,63 @@ class ChatViewModel(
         val content = newText.trim()
         if (content.isEmpty()) return
         _state.value = _state.value.copy(editing = null)
+        // 生成进行中忽略：快速连点会让两个占位气泡拿到相同 version idx，版本链永久错乱
+        if (generatingJob?.isActive == true) return
         viewModelScope.launch {
             stopGeneratingAndWait()
             val s = _state.value
             if (!isLocalConvId(s.currentConvId)) return@launch
-            val node = s.messages.toMessageNodes().nodeOf(target.id)
-            if (node == null) {
-                _state.value = _state.value.copy(error = "消息已不存在，编辑失败")
-                return@launch
-            }
-            // 旧尾巴钉到当前选中版本（作为旧分支完整保留，切回旧版本时整条换回）
-            pinTailToVersion(node.anchorId, node.selectedIndex)
-            // 同节点追加新版本（timestamp = 锚点 + idx，保证版本聚集在锚点位置）；
-            // 继承**当前选中版本**的分支约束（嵌套分支时留在当前分支内）
-            val newIdx = node.versions.size
-            val edited = MessageItem(
-                id = UUID.randomUUID().toString(),
-                convId = s.currentConvId,
-                senderId = target.senderId.ifBlank { myId },
-                senderName = target.senderName,
-                segments = node.selected.branchConstraints()
-                    .map { branchSegment(it.first, it.second) } +
-                    listOf(versionSegment(node.anchorId, newIdx, newIdx)) +
-                    listOf(Segments.text(content)),
-                content = content,
-                isSelf = true,
-                timestamp = node.anchorTs + newIdx
-            )
-            appendMessage(edited)
-            localStore.insertMessage(edited)
-            localStore.touch(s.currentConvId, content, System.currentTimeMillis() * 1000)
+            forkUserVersion(target, content)
             maybeDispatchLocal()
         }
+    }
+
+    /**
+     * 在用户消息节点追加一个新版本（RikkaHub 式分叉，非破坏式）：
+     * - [newText] 非空 → 新版本使用编辑后的文本（编辑重发）
+     * - [newText] 为空 → 克隆原消息全部内容段（图片/文件等，消息下「重新生成」入口）
+     * 旧尾巴钉到旧版本分支完整保留；新版本时间戳仍聚集在锚点（排序/分页稳定），
+     * 真实重发时间记录在 sys.ver 的 ts 字段供 UI 展示。
+     */
+    private suspend fun forkUserVersion(target: MessageItem, newText: String?) {
+        val s = _state.value
+        val node = s.messages.toMessageNodes().nodeOf(target.id)
+        if (node == null) {
+            _state.value = _state.value.copy(error = "消息已不存在，操作失败")
+            return
+        }
+        // 旧尾巴钉到当前选中版本（作为旧分支完整保留，切回旧版本时整条换回）
+        pinTailToVersion(node.anchorId, node.selectedIndex)
+        val newIdx = node.versions.size
+        val source = node.selected
+        val contentSegs = if (newText != null) {
+            listOf(Segments.text(newText))
+        } else {
+            // 克隆原文：剔除版本/分支/思考/中断等内部段，保留 text/image/file 等全部内容段
+            source.segments.orEmpty().filter {
+                it.type != VERSION_SEG && it.type != BRANCH_SEG &&
+                    it.type != "thinking" && it.type != "sys.stop"
+            }.ifEmpty { listOf(Segments.text(source.content)) }
+        }
+        val displayContent = newText ?: source.content
+        val now = System.currentTimeMillis() * 1000
+        val edited = MessageItem(
+            id = UUID.randomUUID().toString(),
+            convId = s.currentConvId,
+            senderId = source.senderId.ifBlank { myId },
+            senderName = source.senderName,
+            segments = source.branchConstraints()
+                .map { branchSegment(it.first, it.second) } +
+                listOf(versionSegment(node.anchorId, newIdx, newIdx, now)) +
+                contentSegs,
+            content = displayContent,
+            isSelf = true,
+            // 排序时间聚集在锚点（+idx 微秒），真实时间放 sys.ver.ts
+            timestamp = node.anchorTs + newIdx
+        )
+        appendMessage(edited)
+        localStore.insertMessage(edited)
+        localStore.touch(s.currentConvId, displayContent, now)
     }
 
     /**
@@ -2518,7 +2543,8 @@ class ChatViewModel(
         val updated = node.versions.map { v ->
             val meta = v.versionMeta() ?: return@map v
             v.copy(segments = v.segments?.map { seg ->
-                if (seg.type == VERSION_SEG) versionSegment(anchorId, meta.idx, index) else seg
+                // 只重写 sel，保留 node/idx 与该版本自身的生成时间 ts
+                if (seg.type == VERSION_SEG) versionSegment(anchorId, meta.idx, index, meta.displayTs) else seg
             })
         }
         val byId = updated.associateBy { it.id }
@@ -2560,36 +2586,20 @@ class ChatViewModel(
             .map { branchSegment(it.anchorId, it.selectedIndex) }
 
     /**
-     * 删除锚点之后**当前可见分支**的尾巴消息（其他分支的消息保留）。
-     * 用于用户消息重新生成（RikkaHub 式截断），但只截当前分支。
-     */
-    private suspend fun deleteVisibleTailAfter(anchorId: String) {
-        val s = _state.value
-        val nodes = s.messages.toMessageNodes()
-        val selMap = nodes.associate { it.anchorId to it.selectedIndex }
-        val idx = nodes.indexOfFirst { it.anchorId == anchorId }
-        if (idx < 0) return
-        val toDelete = nodes.drop(idx + 1).flatMap { it.versions }.filter { m ->
-            m.branchConstraints().all { (of, req) -> (selMap[of] ?: req) == req }
-        }
-        if (toDelete.isEmpty()) return
-        val ids = toDelete.map { it.id }.toSet()
-        _state.value = s.copy(messages = s.messages.filterNot { it.id in ids })
-        localStore.deleteMessages(toDelete.map { it.id })
-    }
-
-    /**
      * 从某条消息重新生成（仅本地会话，对齐 RikkaHub regenerateAtMessage）：
-     * - 用户消息：截断当前分支在该节点之后的尾巴（其他分支保留），重新生成
+     * - 用户消息：在该节点**非破坏式分叉**一个新版本（克隆原文，含图片/文件），
+     *   旧尾巴完整保留为旧版本分支，随后对新版本重新生成（不再删除任何消息）
      * - bot 回复：旧回复保留为旧版本（其尾巴钉到旧版本分支），新回复作为该节点新版本
      */
     fun regenerateAt(message: MessageItem) {
         if (!isLocalConv()) return
+        // 生成进行中直接忽略：并发重生成会产生相同 version idx 的占位，版本链错乱
+        if (generatingJob?.isActive == true) return
         viewModelScope.launch {
             stopGeneratingAndWait()
             val node = _state.value.messages.toMessageNodes().nodeOf(message.id) ?: return@launch
             if (node.isSelf) {
-                deleteVisibleTailAfter(node.anchorId)
+                forkUserVersion(message, null)
                 maybeDispatchLocal()
             } else {
                 pinTailToVersion(node.anchorId, node.selectedIndex)
@@ -2720,6 +2730,7 @@ class ChatViewModel(
      */
     fun regenerateWithModel(modelId: String) {
         if (!isLocalConv()) return
+        if (generatingJob?.isActive == true) return
         viewModelScope.launch {
             stopGeneratingAndWait()
             val node = _state.value.messages.toMessageNodes().resolveVisible()

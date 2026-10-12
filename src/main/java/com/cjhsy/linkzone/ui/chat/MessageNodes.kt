@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 /**
  * 消息版本链（借鉴 RikkaHub MessageNode）。
@@ -37,15 +38,23 @@ const val BRANCH_SEG = "sys.br"
 data class VersionMeta(
     val node: String,
     val idx: Int,
-    val sel: Int
+    val sel: Int,
+    /** 该版本实际生成/重发时间（微秒）；null 时 UI 回退到消息时间戳 */
+    val displayTs: Long? = null
 )
 
 /** 构造版本元数据段（sel=0 时省略字段，读取侧默认 0） */
-internal fun versionSegment(node: String, idx: Int, sel: Int): MessageSegment {
+internal fun versionSegment(
+    node: String,
+    idx: Int,
+    sel: Int,
+    displayTs: Long? = null
+): MessageSegment {
     val data = linkedMapOf<String, JsonElement>()
     data["node"] = JsonPrimitive(node)
     data["idx"] = JsonPrimitive(idx)
     if (sel != 0) data["sel"] = JsonPrimitive(sel)
+    displayTs?.let { data["ts"] = JsonPrimitive(it) }
     return MessageSegment(VERSION_SEG, data)
 }
 
@@ -63,8 +72,17 @@ fun MessageItem.versionMeta(): VersionMeta? {
     val node = seg.get("node").ifBlank { return null }
     val idx = seg.data["idx"]?.jsonPrimitive?.intOrNull ?: return null
     val sel = seg.data["sel"]?.jsonPrimitive?.intOrNull ?: 0
-    return VersionMeta(node = node, idx = idx, sel = sel)
+    val displayTs = seg.data["ts"]?.jsonPrimitive?.longOrNull
+    return VersionMeta(node = node, idx = idx, sel = sel, displayTs = displayTs)
 }
+
+/**
+ * 版本消息的**显示时间**：新版本取 sys.ver 中记录的实际重发生成时间，
+ * 首版/无元数据时回退消息自身时间戳。
+ * 注意：消息排序/分页仍用 [MessageItem.timestamp]（= 锚点时间 + idx 微秒），
+ * 保证版本聚集在锚点位置、落在同一分页，仅展示层用此时间。
+ */
+fun MessageItem.displayTimestamp(): Long = versionMeta()?.displayTs ?: timestamp
 
 /** 读取消息携带的全部分支约束（of=锚点 id, idx=版本序号） */
 fun MessageItem.branchConstraints(): List<Pair<String, Int>> =

@@ -358,7 +358,7 @@ fun MessageItemView(
                     versionCount = versionCount,
                     versionIndex = versionIndex,
                     onSelectVersion = onSelectVersion,
-                    timestamp = message.timestamp,
+                    timestamp = message.displayTimestamp(),
                     onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
                     onEdit = onEdit,
                     onRegenerate = onRegenerate
@@ -387,7 +387,7 @@ fun MessageItemView(
                         versionCount = versionCount,
                         versionIndex = versionIndex,
                         onSelectVersion = onSelectVersion,
-                        timestamp = message.timestamp,
+                        timestamp = message.displayTimestamp(),
                         onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
                         onRegenerate = onRegenerate,
                         onRegenerateWithModel = onRegenerateWithModel

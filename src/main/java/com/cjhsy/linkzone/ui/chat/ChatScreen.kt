@@ -767,7 +767,7 @@ private fun MessageList(
                 ) {
                     val msg = node.selected
                     val prev = nodes.getOrNull(index - 1)?.selected
-                    if (shouldShowTime(prev?.timestamp ?: 0L, msg.timestamp)) {
+                    if (shouldShowTime(prev?.let { it.displayTimestamp() } ?: 0L, msg.displayTimestamp())) {
                         // 现代化时间分隔：居中弱化胶囊（QQ/Telegram 式）
                         Box(
                             modifier = Modifier
@@ -776,7 +776,7 @@ private fun MessageList(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = formatMessageTime(msg.timestamp),
+                                text = formatMessageTime(msg.displayTimestamp()),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),

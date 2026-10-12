@@ -1,6 +1,7 @@
 package com.cjhsy.linkzone.ui.chat
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +66,20 @@ import com.cjhsy.linkzone.data.model.LlmSkill
 // 本地智能体专属 UI：顶栏模型选择面板 / AI 扩展 chips / 扩展面板
 // 统一聊天页通过组件复用这些能力（云端会话不显示）
 // ============================================================
+
+/**
+ * 关闭内容层的 overscroll（拉伸回弹）。
+ *
+ * ModalBottomSheet 内嵌 LazyColumn 时，快速滑动到边界继续 fling，列表的回弹
+ * 嵌套滚动会与 BottomSheet 自身 anchoredDraggable 互相抢占剩余滑动量，
+ * 表现为「抽屉一直跳动/抖动」。在 sheet 内容提供 null OverscrollFactory
+ * （Compose 1.8+ 的 LocalOverscrollFactory）即可消除该反馈环，
+ * 列表正常滚动与顶部下拉关闭手势不受影响。
+ */
+@Composable
+internal fun BottomSheetNoOverscroll(content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalOverscrollFactory provides null, content = content)
+}
 
 /**
  * 顶栏模型选择底部菜单：
@@ -115,6 +131,7 @@ internal fun LocalModelSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState
     ) {
+        BottomSheetNoOverscroll {
         Column(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -204,6 +221,7 @@ internal fun LocalModelSheet(
                 }
             }
             Spacer(Modifier.height(10.dp))
+        }
         }
     }
 }
@@ -505,24 +523,34 @@ internal fun LocalExtensionSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val workspaceManager = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.WorkspaceManager>()
     var wsTick by remember { mutableStateOf(0) }
-    val workspaces = remember(wsTick, agent?.workspaceId) { workspaceManager.list() }
+    // 工作区列表是磁盘 IO（列目录 + 逐个解析 meta JSON），放到 IO 线程加载，
+    // 避免打开 AI 扩展面板时在主线程读盘造成卡顿
+    var workspaces by remember {
+        mutableStateOf(listOf<com.cjhsy.linkzone.workspace.WorkspaceMeta>())
+    }
+    LaunchedEffect(wsTick, agent?.workspaceId) {
+        workspaces = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            workspaceManager.list()
+        }
+    }
     var newWsName by remember { mutableStateOf("") }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState
     ) {
+        BottomSheetNoOverscroll {
         if (agent == null) {
-            Text(
-                text = "当前会话未关联智能体",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(20.dp)
-            )
-            Spacer(Modifier.height(20.dp))
-            return@ModalBottomSheet
-        }
-        Column(
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "当前会话未关联智能体",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(20.dp)
+                )
+                Spacer(Modifier.height(20.dp))
+            }
+        } else Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.9f)
@@ -959,6 +987,7 @@ internal fun LocalExtensionSheet(
                     )
                 }
             }
+        }
         }
     }
 }

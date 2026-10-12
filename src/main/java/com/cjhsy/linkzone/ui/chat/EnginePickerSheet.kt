@@ -57,6 +57,7 @@ fun EnginePickerSheet(
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
+        BottomSheetNoOverscroll {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -161,6 +162,7 @@ fun EnginePickerSheet(
                     )
                 }
             }
+        }
         }
     }
 }
