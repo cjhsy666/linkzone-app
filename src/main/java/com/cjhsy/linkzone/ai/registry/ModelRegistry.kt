@@ -282,11 +282,13 @@ object ModelRegistry {
 
     private val DEEPSEEK_V3_MODEL = defineModel {
         tokens("deepseek", "v", "3")
+        visionInput()
         toolAbility()
     }
 
     private val DEEPSEEK_CHAT = defineModel {
         tokens("deepseek", "chat")
+        visionInput()
         toolAbility()
     }
 
@@ -312,6 +314,7 @@ object ModelRegistry {
 
     private val DEEPSEEK_V4_FLASH = defineModel {
         tokens("deepseek", "v", "4", "flash")
+        visionInput()
         toolReasoningAbility()
         contextLength(1.m)
     }
@@ -332,6 +335,7 @@ object ModelRegistry {
 
     private val DEEPSEEK_V4_PRO = defineModel {
         tokens("deepseek", "v", "4", "pro")
+        visionInput()
         toolReasoningAbility()
         contextLength(1.m)
     }
@@ -352,6 +356,7 @@ object ModelRegistry {
 
     private val QWEN_3 = defineModel {
         tokens("qwen", "3")
+        visionInput()
         toolReasoningAbility()
     }
 
@@ -431,6 +436,7 @@ object ModelRegistry {
 
     private val KIMI_K2 = defineModel {
         tokens("kimi", "k", "2")
+        visionInput()
         toolReasoningAbility()
     }
 
@@ -485,36 +491,43 @@ object ModelRegistry {
 
     private val GLM_4_5 = defineModel {
         tokens("glm", "4", "5")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val GLM_4_6 = defineModel {
         tokens("glm", "4", "6")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val GLM_4_7 = defineModel {
         tokens("glm", "4", "7")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val GLM_5 = defineModel {
         tokens("glm", "5")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val GLM_5_1 = defineModel {
         tokens("glm", "5", "1")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val GLM_5_2 = defineModel {
         tokens("glm", "5", "2")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val GLM_5_3 = defineModel {
         tokens("glm", "5", "3")
+        visionInput()
         toolReasoningAbility()
     }
 
@@ -526,16 +539,19 @@ object ModelRegistry {
 
     private val MINIMAX_M2 = defineModel {
         tokens("minimax", "m", "2")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val MINIMAX_M2_5 = defineModel {
         tokens("minimax", "m", "2", "5")
+        visionInput()
         toolReasoningAbility()
     }
 
     private val MINIMAX_M2_7 = defineModel {
         tokens("minimax", "m", "2", "7")
+        visionInput()
         toolReasoningAbility()
     }
 
@@ -547,6 +563,7 @@ object ModelRegistry {
 
     private val XIAOMI_MIMO_V2 = defineModel {
         tokens("mimo", "v", "2")
+        visionInput()
         toolReasoningAbility()
     }
 

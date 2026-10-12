@@ -1738,6 +1738,11 @@ class ChatViewModel(
                             )
                         } else part
                     }
+                    // 调试：确认图片是否真的进了上下文
+                    val imgParts = newParts.filterIsInstance<com.cjhsy.linkzone.ai.ui.UIMessagePart.Image>()
+                    if (imgParts.isNotEmpty()) {
+                        android.util.Log.d("LZC-image", "buildLocalContext userMsg images=${imgParts.size} urls=${imgParts.map { it.url }}")
+                    }
                     add(ui.copy(parts = newParts))
                 }
             }
@@ -2040,8 +2045,12 @@ class ChatViewModel(
                     ?.let { parts += UIMessagePart.Text(it) }
                 "markdown" -> seg.get("content").takeIf { it.isNotBlank() }
                     ?.let { parts += UIMessagePart.Text(it) }
-                "image" -> seg.mediaUrl.takeIf { it.startsWith("http") || it.startsWith("file://") }
-                    ?.let { parts += UIMessagePart.Image(it) }
+                "image" -> {
+                    val url = seg.mediaUrl
+                    val ok = url.startsWith("http") || url.startsWith("file://")
+                    android.util.Log.d("LZC-image", "toLlmUIMessage image seg url=[$url] startsOk=$ok allData=${seg.data}")
+                    url.takeIf { ok }?.let { parts += UIMessagePart.Image(it) }
+                }
                 "file" -> {
                     val url = seg.mediaUrl
                     val name = seg.get("name", "title").ifBlank { "attachment" }
