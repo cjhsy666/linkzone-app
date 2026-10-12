@@ -1,6 +1,5 @@
 package com.cjhsy.linkzone.ai.provider.providers.openai
 
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
@@ -578,9 +577,9 @@ class ChatCompletionsAPI(
                                         put("image_url", buildJsonObject {
                                             put("url", encodedImage.base64)
                                         })
-                                    }.onFailure { e ->
-                                        // 不再静默写空文本——跳过并打日志，避免用户感知为"AI 看不到图片"
-                                        android.util.Log.e("LZ-image", "encodeBase64 failed url=${part.url}", e)
+                                    }.onFailure {
+                                        // 跳过：静默写空文本会让 AI 完全看不到图片且无报错
+                                        // 不再做任何写入，让 JSON 构造器自然跳过这一段
                                     }
                                 })
                             }
@@ -634,9 +633,9 @@ class ChatCompletionsAPI(
                                         put("image_url", buildJsonObject {
                                             put("url", encodedImage.base64)
                                         })
-                                    }.onFailure { e ->
-                                        // 不再静默写空文本——跳过并打日志，避免用户感知为"AI 看不到图片"
-                                        android.util.Log.e("LZ-image", "encodeBase64 failed url=${part.url}", e)
+                                    }.onFailure {
+                                        // 跳过：静默写空文本会让 AI 完全看不到图片且无报错
+                                        // 不再做任何写入，让 JSON 构造器自然跳过这一段
                                     }
                                 })
                             }

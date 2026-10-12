@@ -2551,7 +2551,7 @@ class ChatViewModel(
                             modelId = m.modelId,
                             label = m.displayName.ifBlank { m.modelId },
                             providerName = p.name,
-                            supportsVision = com.cjhsy.linkzone.ai.provider.Modality.IMAGE in m.inputModalities,
+                            supportsVision = Modality.IMAGE in m.inputModalities,
                             supportsTools = m.supportsTools(),
                             supportsReasoning = com.cjhsy.linkzone.ai.provider.ModelAbility.REASONING in m.abilities,
                         )
