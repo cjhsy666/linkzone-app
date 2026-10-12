@@ -35,7 +35,9 @@ class ChatGenerationForegroundService : Service() {
         when (intent?.action) {
             ACTION_ACQUIRE -> {
                 val convId = intent.getStringExtra(EXTRA_CONV_ID).orEmpty()
-                startForegroundCompat(buildNotification(convId))
+                // startForeground 在后台启动窗口/权限拒绝等场景会抛异常，
+                // 生成保活失败绝不能让聊天闪退（协程仍在进程内运行）
+                runCatching { startForegroundCompat(buildNotification(convId)) }
             }
             ACTION_RELEASE -> {
                 stopForegroundCompat()

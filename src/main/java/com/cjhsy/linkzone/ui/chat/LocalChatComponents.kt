@@ -129,7 +129,11 @@ internal fun LocalModelSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState
+        sheetState = sheetState,
+        // 关闭 sheet 拖拽手势：内层 LazyColumn 快速 fling 到边界后与 sheet 的
+        // anchoredDraggable 嵌套滚动互相抢 delta，导致抽屉持续跳动；
+        // 关闭后经点空白/返回键关闭，手势冲突从根上消除
+        sheetGesturesEnabled = false
     ) {
         BottomSheetNoOverscroll {
         Column(
@@ -537,7 +541,10 @@ internal fun LocalExtensionSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState
+        sheetState = sheetState,
+        // 关闭 sheet 拖拽手势：内层 LazyColumn fling 过界后与 sheet 拖拽互相抢占，
+        // 滑到底再上滑时抽屉持续跳动；关闭后经点空白/返回键关闭，彻底消除
+        sheetGesturesEnabled = false
     ) {
         BottomSheetNoOverscroll {
         if (agent == null) {

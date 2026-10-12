@@ -118,8 +118,12 @@ fun MarkdownContent(
     }
 
     // 拆分为文本段（Markwon）/ 表格段 / 代码块段（均 Compose 自绘）：
-    // Markwon 的表格 span 窄屏换行会溢出边框、代码块无卡片/复制/高亮，故两者自绘
-    val segments = remember(markdown) { splitMarkdownBlocks(markdown) }
+    // Markwon 的表格 span 窄屏换行会溢出边框、代码块无卡片/复制/高亮，故两者自绘。
+    // 拆分失败（畸形输入）时整体退化为单个文本段，绝不在 composition 内抛出。
+    val segments = remember(markdown) {
+        runCatching { splitMarkdownBlocks(markdown) }
+            .getOrElse { listOf(MdSegment.Text(markdown)) }
+    }
 
     // 长按/点击回调可能随重组变化，用稳定引用持有最新值（TextView 监听器只设置一次）
     val latestLongClick = rememberUpdatedState(onLongClick)
@@ -163,8 +167,15 @@ private fun MarkwonTextView(
     latestLongClick: androidx.compose.runtime.State<(() -> Unit)?>,
     latestClick: androidx.compose.runtime.State<(() -> Unit)?>
 ) {
-    // 仅在内容变化时解析+渲染，避免列表重组反复解析整段 Markdown
-    val rendered = remember(markwon, raw) { markwon.toMarkdown(preprocessLatex(raw)) }
+    // 仅在内容变化时解析+渲染，避免列表重组反复解析整段 Markdown。
+    // 流式期间的半截 Markdown/LaTeX（未闭合 $$、残缺 HTML 等）可能触发
+    // Markwon/JLatexMath 插件抛异常——解析发生在 composition 内，一旦抛出
+    // 应用直接闪退。这里逐级降级：完整解析 → 不做 LaTeX 预处理解析 → 纯文本。
+    val rendered = remember(markwon, raw) {
+        runCatching { markwon.toMarkdown(preprocessLatex(raw)) }
+            .recoverCatching { markwon.toMarkdown(raw) }
+            .getOrElse { android.text.SpannableString(raw) }
+    }
     AndroidView(
         modifier = Modifier.fillMaxWidth(),
         factory = { ctx ->

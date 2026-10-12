@@ -1,5 +1,6 @@
 package com.cjhsy.linkzone.data.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -60,7 +61,8 @@ data class MessagesResponse(
     @SerialName("has_more") val hasMore: Boolean = false
 )
 
-/** 消息段（框架 pkg/message 标准结构） */
+/** 消息段（框架 pkg/message 标准结构）。@Immutable：段创建后不再原地修改，供 Compose 跳过未变气泡重组 */
+@Immutable
 @Serializable
 data class MessageSegment(
     val type: String = "",
@@ -272,6 +274,7 @@ fun List<MessageSegment>?.displayText(): String {
     return joinToString("") { it.display }
 }
 
+@Immutable
 @Serializable
 data class MessageItem(
     val id: String = "",

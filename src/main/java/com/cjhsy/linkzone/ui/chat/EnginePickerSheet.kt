@@ -56,7 +56,12 @@ fun EnginePickerSheet(
     onManageAgents: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        // 关闭 sheet 拖拽手势，避免内层列表 fling 过界与 sheet 拖拽互抢导致跳动；
+        // 点空白/返回键仍可关闭
+        sheetGesturesEnabled = false
+    ) {
         BottomSheetNoOverscroll {
         Column(
             modifier = Modifier

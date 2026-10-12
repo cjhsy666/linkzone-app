@@ -56,6 +56,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -1236,8 +1237,12 @@ class ChatViewModel(
         // 前台服务保活：退到后台/锁屏时生成不被系统杀死
         com.cjhsy.linkzone.service.ChatGenerationForegroundService.acquire(appContext, convId)
 
-        // 在插入占位气泡前组装上下文（此时消息流末尾是刚发送的用户消息）
-        val context = buildLocalContext(agent, model, trimTrailingAssistant || continueMode)
+        // 在插入占位气泡前组装上下文（此时消息流末尾是刚发送的用户消息）。
+        // 上下文组装含 PDF/文档解析与图片压缩编码（CPU+IO 密集），必须离开主线程，
+        // 否则带图/带文件生成时界面冻结数秒，系统可能弹 ANR 被当成"闪退"
+        val context = withContext(Dispatchers.IO) {
+            buildLocalContext(agent, model, trimTrailingAssistant || continueMode)
+        }
             .let { ctx ->
                 if (continueMode) {
                     // 续写：末尾附"请继续"提示，让模型接着上一条回复写
@@ -1883,10 +1888,13 @@ class ChatViewModel(
                 return@launch
             }
             val selected = _state.value.messages.toMessageNodes().selectedMessages()
-            val history = buildList {
-                for (msg in selected) {
-                    if (msg.recalled || msg.uploadFailed) continue
-                    msg.toLlmUIMessage()?.let { add(it) }
+            // 文档解析（PDF/DOCX 等）是重 IO/CPU，离开主线程避免压缩前界面冻结
+            val history = withContext(Dispatchers.IO) {
+                buildList {
+                    for (msg in selected) {
+                        if (msg.recalled || msg.uploadFailed) continue
+                        msg.toLlmUIMessage()?.let { add(it) }
+                    }
                 }
             }
             val keep = agent.contextMessageLimit.takeIf { it > 0 } ?: 20
