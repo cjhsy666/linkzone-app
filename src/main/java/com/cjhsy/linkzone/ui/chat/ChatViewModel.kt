@@ -1729,12 +1729,16 @@ class ChatViewModel(
             for (msg in source) {
                 if (msg.recalled || msg.uploadFailed) continue
                 msg.toLlmUIMessage()?.let { ui ->
-                    // 非视觉正则：修改真实消息文本（进上下文）；仅视觉的在渲染侧处理
+                    // 非视觉正则：仅修改 Text part 的文本（进上下文），Image 等其他 part 完整保留
                     val scope = if (msg.isSelf) "user" else "assistant"
-                    val newText = applyAgentRegexes(agent, ui.toText(), scope, visual = false)
-                    if (newText != ui.toText()) {
-                        add(ui.copy(parts = listOf(com.cjhsy.linkzone.ai.ui.UIMessagePart.Text(newText))))
-                    } else add(ui)
+                    val newParts = ui.parts.map { part ->
+                        if (part is com.cjhsy.linkzone.ai.ui.UIMessagePart.Text) {
+                            com.cjhsy.linkzone.ai.ui.UIMessagePart.Text(
+                                applyAgentRegexes(agent, part.text, scope, visual = false)
+                            )
+                        } else part
+                    }
+                    add(ui.copy(parts = newParts))
                 }
             }
         }
@@ -1898,21 +1902,16 @@ class ChatViewModel(
         chatModel: Model,
         messages: List<UIMessage>
     ): List<UIMessage> {
-        if (Modality.IMAGE in chatModel.inputModalities) return messages
-        val hasImages = messages.any { m ->
-            m.parts.any { it is UIMessagePart.Image && it.url.startsWith("file://") }
-        }
-        if (!hasImages) return messages
-        val vision = if (agent.enableOcr) resolveVisionChatModel(agent.ocrModelId) else null
+        // 只有用户明确开启 OCR 时才做图片→文本替换；否则始终传图给 API，
+        // 即使模型没在 registry 标 visionInput()——主流模型大多实际支持，
+        // API 层报错比静默替换成 [图片] 让 AI 看不到好
+        if (!agent.enableOcr) return messages
+        val vision = resolveVisionChatModel(agent.ocrModelId) ?: return messages
         return messages.map { m ->
             m.copy(
                 parts = m.parts.map { part ->
-                    if (part is UIMessagePart.Image && part.url.startsWith("file://")) {
-                        val text = if (vision != null) {
-                            performOcr(part.url, vision.first, vision.second)
-                        } else {
-                            "[图片]"
-                        }
+                    if (part is UIMessagePart.Image) {
+                        val text = performOcr(part.url, vision.first, vision.second)
                         UIMessagePart.Text(text)
                     } else part
                 }
