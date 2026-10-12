@@ -150,7 +150,13 @@ data class ChatModelOption(
     val modelId: String,
     val label: String,
     /** provider 显示名（副标题） */
-    val providerName: String
+    val providerName: String,
+    /** 是否支持图片输入（视觉模型） */
+    val supportsVision: Boolean = false,
+    /** 是否支持工具调用 */
+    val supportsTools: Boolean = false,
+    /** 是否支持深度思考（reasoning） */
+    val supportsReasoning: Boolean = false,
 )
 
 /**
@@ -2544,7 +2550,10 @@ class ChatViewModel(
                         ChatModelOption(
                             modelId = m.modelId,
                             label = m.displayName.ifBlank { m.modelId },
-                            providerName = p.name
+                            providerName = p.name,
+                            supportsVision = com.cjhsy.linkzone.ai.provider.Modality.IMAGE in m.inputModalities,
+                            supportsTools = m.supportsTools(),
+                            supportsReasoning = com.cjhsy.linkzone.ai.provider.ModelAbility.REASONING in m.abilities,
                         )
                     }
                 }

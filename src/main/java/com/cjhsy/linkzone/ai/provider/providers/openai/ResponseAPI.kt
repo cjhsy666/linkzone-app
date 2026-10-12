@@ -442,10 +442,8 @@ class ResponseAPI(
                                                 part.encodeBase64().onSuccess { encoded ->
                                                     put("type", "input_image")
                                                     put("image_url", encoded.base64)
-                                                }.onFailure {
-                                                    it.printStackTrace()
-                                                    put("type", "input_text")
-                                                    put("text", "Error: Failed to encode image to base64")
+                                                }.onFailure { e ->
+                                                    android.util.Log.e("LZ-image", "ResponseAPI encodeBase64 failed url=${part.url}", e)
                                                 }
                                             })
                                             is UIMessagePart.Text -> add(buildJsonObject {
@@ -530,10 +528,8 @@ class ResponseAPI(
                                     part.encodeBase64().onSuccess { encodedImage ->
                                         put("type", "input_image")
                                         put("image_url", encodedImage.base64)
-                                    }.onFailure {
-                                        it.printStackTrace()
-                                        put("type", "input_text")
-                                        put("text", "Error: Failed to encode image to base64")
+                                    }.onFailure { e ->
+                                        android.util.Log.e("LZ-image", "ResponseAPI encodeBase64 failed url=${part.url}", e)
                                     }
                                 })
                             }

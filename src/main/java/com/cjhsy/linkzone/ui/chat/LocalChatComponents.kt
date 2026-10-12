@@ -284,6 +284,12 @@ private fun ModelRow(model: ChatModelOption, selected: Boolean, onPick: (String)
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            // 能力标签：视觉 / 工具 / 推理
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (model.supportsVision) CapabilityTag("📷 图片")
+                if (model.supportsTools) CapabilityTag("🔧 工具")
+                if (model.supportsReasoning) CapabilityTag("🧠 思考")
+            }
         }
         if (selected) {
             Icon(
@@ -293,6 +299,22 @@ private fun ModelRow(model: ChatModelOption, selected: Boolean, onPick: (String)
                 modifier = Modifier.size(18.dp)
             )
         }
+    }
+}
+
+/** 模型能力小标签——极简圆角 chip */
+@Composable
+private fun CapabilityTag(label: String) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+        )
     }
 }
 

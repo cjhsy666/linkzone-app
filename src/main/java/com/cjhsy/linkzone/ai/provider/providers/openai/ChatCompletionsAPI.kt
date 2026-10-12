@@ -578,10 +578,9 @@ class ChatCompletionsAPI(
                                         put("image_url", buildJsonObject {
                                             put("url", encodedImage.base64)
                                         })
-                                    }.onFailure {
-                                        it.printStackTrace()
-                                        put("type", "text")
-                                        put("text", "")
+                                    }.onFailure { e ->
+                                        // 不再静默写空文本——跳过并打日志，避免用户感知为"AI 看不到图片"
+                                        android.util.Log.e("LZ-image", "encodeBase64 failed url=${part.url}", e)
                                     }
                                 })
                             }
@@ -635,10 +634,9 @@ class ChatCompletionsAPI(
                                         put("image_url", buildJsonObject {
                                             put("url", encodedImage.base64)
                                         })
-                                    }.onFailure {
-                                        it.printStackTrace()
-                                        put("type", "text")
-                                        put("text", "")
+                                    }.onFailure { e ->
+                                        // 不再静默写空文本——跳过并打日志，避免用户感知为"AI 看不到图片"
+                                        android.util.Log.e("LZ-image", "encodeBase64 failed url=${part.url}", e)
                                     }
                                 })
                             }
