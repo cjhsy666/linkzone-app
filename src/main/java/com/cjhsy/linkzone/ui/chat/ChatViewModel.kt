@@ -2108,6 +2108,9 @@ class ChatViewModel(
                     val url = seg.mediaUrl
                     val ok = url.startsWith("http") || url.startsWith("file://")
                     android.util.Log.d("LZC-image", "toLlmUIMessage image seg url=[$url] startsOk=$ok allData=${seg.data}")
+                    if (!ok) {
+                        android.util.Log.w("LZC-image", "image seg DROPPED (bad url) → 将退化为 content 占位: id=$id data=${seg.data}")
+                    }
                     url.takeIf { ok }?.let { parts += UIMessagePart.Image(it) }
                 }
                 "file" -> {
@@ -2117,14 +2120,25 @@ class ChatViewModel(
                         val docFile = File(url.removePrefix("file://"))
                         if (docFile.exists()) {
                             val text = DocumentParser.parse(docFile, name)
+                            android.util.Log.d("LZC-image", "file parsed name=$name chars=${text.length}")
                             docs.append(DocumentParser.wrapAsPrompt(name, text)).append('\n')
+                        } else {
+                            // fail-loud：文件丢失时让模型明确说出"没读到内容"，而不是只剩文件名占位
+                            android.util.Log.w("LZC-image", "file seg DROPPED (missing): id=$id url=$url")
+                            docs.append(DocumentParser.wrapAsPrompt(name, "[ERROR, 文件不存在或已被清理：$name]")).append('\n')
                         }
+                    } else {
+                        android.util.Log.w("LZC-image", "file seg DROPPED (bad url): id=$id url=$url data=${seg.data}")
                     }
                 }
             }
         }
         if (docs.isNotEmpty()) parts.add(0, UIMessagePart.Text(docs.toString()))
-        if (parts.isEmpty() && content.isNotBlank()) parts += UIMessagePart.Text(content)
+        if (parts.isEmpty() && content.isNotBlank()) {
+            // 触发此分支 = 媒体段全部丢失，AI 只会看到 "[图片]"/"[文件:x]" 占位文本
+            android.util.Log.w("LZC-image", "CONTENT FALLBACK: id=$id segs=${segments?.map { it.type }} content=$content")
+            parts += UIMessagePart.Text(content)
+        }
         if (parts.isEmpty()) return null
         return UIMessage(
             role = if (senderId == myId) MessageRole.USER else MessageRole.ASSISTANT,
