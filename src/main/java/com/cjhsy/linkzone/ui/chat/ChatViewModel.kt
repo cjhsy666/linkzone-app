@@ -22,6 +22,7 @@ import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.ProviderManager
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.ai.provider.TextGenerationParams
+import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.ui.StreamChunk
 import com.cjhsy.linkzone.ai.ui.StreamChunkHandler
 import com.cjhsy.linkzone.ai.ui.UIMessage
