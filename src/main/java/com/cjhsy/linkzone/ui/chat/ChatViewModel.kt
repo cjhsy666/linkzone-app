@@ -78,6 +78,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import android.content.Context
+import com.cjhsy.linkzone.ai.util.encodeBase64
 import java.io.File
 import java.util.UUID
 
@@ -1774,16 +1775,29 @@ class ChatViewModel(
             }
             // 非视觉模型：图片必须转文本（启用 OCR 时用视觉模型识别，否则降级占位）
             .let { applyOcrTransform(agent, model, it) }
+            // 发送前把 file:// 图片统一预编码为 data: URL（fail-loud：
+            // 读不到文件立即报错上屏，杜绝 Provider 静默丢图只剩"[图片]"占位）
+            .let { ensureImagesEncoded(it) }
 
         // 提示词注入：模式注入 + 世界书（Lorebook）关键词触发
         val hasPromptRefs = agent.promptIds.isNotEmpty() || agent.lorebookIds.isNotEmpty()
-        return if (!hasPromptRefs) {
+        val result = if (!hasPromptRefs) {
             messages
         } else {
             val prompts = llmRepository.getPrompts()
             val lorebooks = llmRepository.getLorebooks()
             LlmPromptInjector.apply(messages, prompts, lorebooks, agent.promptIds, agent.lorebookIds)
         }
+        android.util.Log.d("LZC-image", "context built: " + result.joinToString { m ->
+            m.role.name.lowercase() + m.parts.joinToString(prefix = "[", postfix = "]") { p ->
+                when (p) {
+                    is UIMessagePart.Image -> "image(${p.url.take(24)}…len=${p.url.length})"
+                    is UIMessagePart.Text -> "text"
+                    else -> p::class.simpleName ?: "?"
+                }
+            }
+        })
+        return result
     }
 
     /**
@@ -1929,6 +1943,44 @@ class ChatViewModel(
                 }
             )
         }
+    }
+
+    /** file:// 图片预编码缓存：url → data: URL（避免每轮生成重复压缩编码） */
+    private val imageEncodeCache = android.util.LruCache<String, String>(32)
+
+    /**
+     * 发送前预编码（fail-loud）：把上下文里所有 file:// 图片统一转成 data: URL，
+     * 三个 Provider 的编码器对 data: 均原样透传，等于在唯一入口完成读图。
+     * 文件丢失/解码失败时：①聊天页立即报错（不再让 AI 答"只看到占位符"）；
+     * ②该图替换为显式文本标记，模型与用户都能明确看到哪张图没传上。
+     */
+    private fun ensureImagesEncoded(messages: List<UIMessage>): List<UIMessage> {
+        var firstError: String? = null
+        val out = messages.map { m ->
+            if (m.parts.none { it is UIMessagePart.Image }) return@map m
+            m.copy(parts = m.parts.map { part ->
+                if (part !is UIMessagePart.Image) return@map part
+                val url = part.url
+                // http(s)/data: 由 Provider 原样透传，无需本地处理
+                if (!url.startsWith("file://")) return@map part
+                imageEncodeCache.get(url)?.let { return@map UIMessagePart.Image(it) }
+                val result = part.encodeBase64(withPrefix = true)
+                result.onSuccess { encoded ->
+                    imageEncodeCache.put(url, encoded.base64)
+                    android.util.Log.d("LZC-image", "pre-encode ok url=$url bytes=${encoded.base64.length}")
+                }
+                result.onFailure { e ->
+                    android.util.Log.w("LZC-image", "pre-encode FAILED url=$url", e)
+                    if (firstError == null) firstError = e.message ?: "未知错误"
+                }
+                result.getOrNull()?.let { UIMessagePart.Image(it.base64) }
+                    ?: UIMessagePart.Text("[图片读取失败：${url.substringAfterLast('/')}]")
+            })
+        }
+        firstError?.let {
+            _state.value = _state.value.copy(error = "图片读取失败，AI 看不到这张图：$it")
+        }
+        return out
     }
 
     /** 调视觉模型识别单张图片，带缓存；失败返回错误占位文本 */

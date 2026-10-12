@@ -389,7 +389,9 @@ internal class InteractionsAPI(
             put("text", text)
         }
 
-        is UIMessagePart.Image -> encodeBase64(false).getOrNull()?.let { encoded ->
+        is UIMessagePart.Image -> encodeBase64(false)
+            .onFailure { android.util.Log.w("InteractionsAPI", "encode image part failed: ${url.take(80)}", it) }
+            .getOrNull()?.let { encoded ->
             buildJsonObject {
                 put("type", "image")
                 if (encoded.base64.startsWith("http")) {

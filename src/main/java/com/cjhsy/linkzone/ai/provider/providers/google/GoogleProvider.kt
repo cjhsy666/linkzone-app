@@ -804,7 +804,9 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         }
 
         is UIMessagePart.Image -> {
-            encodeBase64(false).getOrNull()?.let { encoded ->
+            encodeBase64(false)
+                .onFailure { Log.w(TAG, "encode image part failed: ${url.take(80)}", it) }
+                .getOrNull()?.let { encoded ->
                 buildJsonObject {
                     put("inlineData", buildJsonObject {
                         put("mimeType", encoded.mimeType)

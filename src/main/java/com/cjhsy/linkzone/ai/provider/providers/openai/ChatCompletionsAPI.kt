@@ -581,6 +581,7 @@ class ChatCompletionsAPI(
                                     }.onFailure {
                                         // 跳过：静默写空文本会让 AI 完全看不到图片且无报错
                                         // 不再做任何写入，让 JSON 构造器自然跳过这一段
+                                        Log.w(TAG, "encode image part failed: ${part.url.take(80)}", it)
                                     }
                                 })
                             }
@@ -637,6 +638,7 @@ class ChatCompletionsAPI(
                                     }.onFailure {
                                         // 跳过：静默写空文本会让 AI 完全看不到图片且无报错
                                         // 不再做任何写入，让 JSON 构造器自然跳过这一段
+                                        Log.w(TAG, "encode image part failed: ${part.url.take(80)}", it)
                                     }
                                 })
                             }
