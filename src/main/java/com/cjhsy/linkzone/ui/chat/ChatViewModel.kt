@@ -1491,10 +1491,15 @@ class ChatViewModel(
         } finally {
             // 停止/异常/正常结束统一收尾；NonCancellable 保证取消后仍能落库
             withContext(NonCancellable) {
-                finalizeLocalBotMessage(
-                    convId, botId, agent, model, botMsgId, senderName,
-                    latestText, latestThinking, generatedImageUrls
-                )
+                // finalize 内部异常（如落库失败）不得中断收尾：
+                // 否则 sys.stop 标记与 generating 复位被跳过，
+                // UI 永远卡在生成态、中断后不出现「继续生成」按钮
+                runCatching {
+                    finalizeLocalBotMessage(
+                        convId, botId, agent, model, botMsgId, senderName,
+                        latestText, latestThinking, generatedImageUrls
+                    )
+                }
                 // 用户主动中断：在气泡尾部追加"已中断"标记（正文保留不撤回），
                 // 消息行上会出现「继续生成」按钮，点击后 sendContinueGeneration 续写
                 if (interruptedByUser) {

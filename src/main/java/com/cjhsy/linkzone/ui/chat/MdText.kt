@@ -184,8 +184,10 @@ private fun MarkwonTextView(
                 movementMethod = android.text.method.LinkMovementMethod.getInstance()
                 // 自由复制模式由外层切换（菜单点"自由复制"进入，点气泡背景退出）
                 setTextIsSelectable(false)
-                setLineSpacing(4f, 1f)
-                val pad = (6 * ctx.resources.displayMetrics.density).toInt()
+                // 排版：比例行高 1.45（长文阅读不局促），微弱字距提升呼吸感
+                setLineSpacing(0f, 1.45f)
+                letterSpacing = 0.01f
+                val pad = (4 * ctx.resources.displayMetrics.density).toInt()
                 setPadding(0, pad, 0, pad)
                 // 长按主动上报给外层弹消息菜单：
                 // TextView 会吞掉触摸流，外层 Compose 的 combinedClickable 收不到长按，
@@ -208,7 +210,7 @@ private fun MarkwonTextView(
             tv.setTextColor(textColor.toArgb())
             tv.setLinkTextColor(linkColor.toArgb())
             tv.setTextIsSelectable(selectable)
-            tv.textSize = 14f
+            tv.textSize = 15f
             tv.text = rendered
         }
     )
@@ -353,8 +355,8 @@ private fun MarkdownTableBlock(
             .clip(RoundedCornerShape(10.dp))
             .border(1.dp, divider, RoundedCornerShape(10.dp))
     ) {
-        // 表头
-        Row {
+        // 表头（浅底色区分层级）
+        Row(modifier = Modifier.background(textColor.copy(alpha = 0.05f))) {
             header.forEach { cell ->
                 Text(
                     text = cleanInlineMd(cell),
@@ -540,7 +542,7 @@ private fun MarkdownCodeBlock(
             text = highlighted,
             style = MaterialTheme.typography.bodySmall.copy(
                 fontFamily = FontFamily.Monospace,
-                lineHeight = 18.sp
+                lineHeight = 19.sp
             ),
             color = textColor,
             modifier = Modifier
@@ -632,7 +634,7 @@ fun AutoLinkText(
 
     Text(
         text = annotated,
-        style = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+        style = MaterialTheme.typography.bodyMedium.copy(color = textColor, lineHeight = 21.sp),
         onTextLayout = { layoutResult = it },
         modifier = modifier.pointerInput(annotated, onLongClick != null) {
             detectTapGestures(

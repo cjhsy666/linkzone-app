@@ -6,14 +6,16 @@ import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
@@ -25,11 +27,13 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.DragInteraction
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -717,6 +721,44 @@ private fun MessageList(
         }
     }
 
+    // ---------- 流式输出贴底跟随（ChatGPT 式 stick-to-bottom） ----------
+    // 正文/思考增长时，用户仍贴底则持续滚底（即时滚动无动画，80ms 节流不抖动）；
+    // 用户上翻立即释放跟随，回到底部附近自动恢复。
+    // 跟随状态只由用户手势决定：程序化滚动不干扰（DragInteraction 仅在用户拖动时触发）
+    var followStream by remember { mutableStateOf(true) }
+    var userDragging by remember { mutableStateOf(false) }
+    LaunchedEffect(state.generating) { if (state.generating) followStream = true }
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> userDragging = true
+                is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                    userDragging = false
+                    // 拖动结束瞬间采样：末条底边贴近视口底端（容差 ~56dp）则保持/恢复跟随
+                    val info = listState.layoutInfo
+                    val last = info.visibleItemsInfo.lastOrNull()
+                    followStream = last != null &&
+                        last.index >= info.totalItemsCount - 1 &&
+                        last.offset + last.size <= info.viewportEndOffset + 160
+                }
+            }
+        }
+    }
+    val streamBottomIndex = nodes.lastIndex + headerCount
+    val streamTail = nodes.lastOrNull()?.selected
+    // 流式尾部内容长度（正文 + 思考过程），每次节流刷新都会变化，驱动滚底
+    val streamTailLen = if (state.generating && streamTail != null) {
+        streamTail.content.length + (streamTail.segments
+            ?.filter { it.type == "thinking" }
+            ?.sumOf { it.get("text").length } ?: 0)
+    } else 0
+    LaunchedEffect(streamTailLen, streamBottomIndex) {
+        if (state.generating && followStream && !userDragging && streamBottomIndex >= 0) {
+            // 超大 scrollOffset 触发列表最大滚动位置钳制 = 末条底边贴齐视口底
+            listState.scrollToItem(streamBottomIndex, Int.MAX_VALUE)
+        }
+    }
+
     if (state.messages.isEmpty() && !state.loading) {
         EmptyState(
             isLocal = isLocal,
@@ -766,7 +808,11 @@ private fun MessageList(
                 // 历史消息不挂动画状态（rememberSaveable + 动画），滚动更流畅
                 val isNew = index >= nodes.lastIndex - 2
                 Column(
-                    modifier = if (isNew) Modifier.messageEnter() else Modifier
+                    modifier = Modifier
+                        // 条目增删/位置变化平滑过渡（撤回/删除/版本切换不再瞬跳）；
+                        // 关闭自带淡入淡出，避免与 messageEnter 叠加
+                        .animateItem(fadeInSpec = null, fadeOutSpec = null)
+                        .then(if (isNew) Modifier.messageEnter() else Modifier)
                 ) {
                     val msg = node.selected
                     val prev = nodes.getOrNull(index - 1)?.selected
@@ -849,8 +895,10 @@ private fun MessageList(
                 modifier = Modifier
                     .size(44.dp)
                     .clickable {
+                        // 回到底部后恢复流式跟随；下标 = 末节点 + 头部偏移（旧版用 messages 下标会错位）
+                        followStream = true
                         scope.launch {
-                            listState.animateScrollToItem(state.messages.lastIndex)
+                            listState.animateScrollToItem(nodes.lastIndex + headerCount)
                         }
                     }
             ) {
@@ -1476,29 +1524,44 @@ internal fun ChatInputBar(
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    if (generating) {
-                        // 生成中：停止按钮（方形停符）
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Color.White)
-                        )
-                    } else if (sending) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = Color.White
-                        )
-                    } else {
-                        Icon(
-                            imageVector = if (canSend) Icons.Filled.ArrowUpward
-                            else if (panelOpen) Icons.Filled.Close
-                            else Icons.Filled.Add,
-                            contentDescription = if (canSend) "发送" else "功能",
-                            tint = sendTint,
-                            modifier = Modifier.size(20.dp)
-                        )
+                    // ⊕/↑/■ 状态切换：缩放 + 淡入淡出过渡，避免生硬跳变
+                    val sendState = when {
+                        generating -> "stop"
+                        sending -> "sending"
+                        canSend -> "send"
+                        panelOpen -> "close"
+                        else -> "add"
+                    }
+                    AnimatedContent(
+                        targetState = sendState,
+                        transitionSpec = {
+                            (fadeIn(tween(150)) + scaleIn(tween(150), initialScale = 0.6f))
+                                .togetherWith(fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.6f))
+                        },
+                        label = "sendBtn"
+                    ) { st ->
+                        when (st) {
+                            // 生成中：停止按钮（方形停符）
+                            "stop" -> Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(Color.White)
+                            )
+                            "sending" -> CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White
+                            )
+                            else -> Icon(
+                                imageVector = if (st == "send") Icons.Filled.ArrowUpward
+                                else if (st == "close") Icons.Filled.Close
+                                else Icons.Filled.Add,
+                                contentDescription = if (st == "send") "发送" else "功能",
+                                tint = sendTint,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1761,7 +1824,8 @@ internal fun ReplyPreviewBar(
 }
 
 /**
- * 消息首次进入组合时上浮 16dp + 淡入（220ms）。
+ * 消息首次进入组合时上浮 16dp + 淡入。
+ * 低回弹弹簧曲线（dampingRatio 0.86）：末端轻微过冲，比线性缓动更自然跟手。
  * 以消息 id 为 key 的条目 remember 状态在其存活期内只播放一次；
  * 撤回/删除由 LazyColumn 的 animateItemPlacement 负责平滑移动。
  */
@@ -1773,7 +1837,10 @@ internal fun Modifier.messageEnter(): Modifier {
     LaunchedEffect(Unit) { shown = true }
     val progress by animateFloatAsState(
         targetValue = if (shown) 1f else 0f,
-        animationSpec = tween(durationMillis = 220, easing = LinearOutSlowInEasing),
+        animationSpec = spring(
+            dampingRatio = 0.86f,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "messageEnter"
     )
     val offsetPx = with(LocalDensity.current) { 16.dp.toPx() }

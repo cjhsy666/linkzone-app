@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartToy
@@ -83,6 +84,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.cjhsy.linkzone.data.model.MessageItem
 import com.cjhsy.linkzone.data.model.MessageSegment
 import java.io.File
@@ -365,22 +367,19 @@ fun MessageItemView(
                 )
             }
 
-            // AI 消息下方快捷操作行：复制常驻；重生成/换模型仅本地智能体；
-            // 中断标记（sys.stop 段）时在最前加「继续生成」按钮（Deepseek 式）
-            if (!message.isSelf && !message.recalled && interactionsEnabled) {
+            // AI 消息下方：中断时醒目「继续生成」卡片（独立一行，Deepseek 式）+ 快捷操作行
+            if (!message.isSelf && !message.recalled) {
                 val interrupted = message.segments?.any { it.type == "sys.stop" } == true
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (interrupted && onContinue != null) {
-                        Text(
-                            text = "⚡ 已中断 · 继续生成",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(onClick = onContinue)
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = interrupted && onContinue != null && interactionsEnabled,
+                    enter = androidx.compose.animation.fadeIn(tween(240)) +
+                        androidx.compose.animation.expandVertically(tween(240)),
+                    exit = androidx.compose.animation.fadeOut(tween(150)) +
+                        androidx.compose.animation.shrinkVertically(tween(150))
+                ) {
+                    ContinueGenerationBar(onClick = { onContinue?.invoke() })
+                }
+                if (interactionsEnabled) {
                     MessageActionBar(
                         hasText = hasText,
                         canRegenerate = canRegenerate,
@@ -830,6 +829,43 @@ private fun MessageActionBar(
 }
 
 /**
+ * 中断续写卡（Deepseek 式）：中断后醒目的「继续生成」入口。
+ * 品牌色浅底胶囊卡 + 播放图标，一眼可辨、点击区域充足，
+ * 替代原先混在操作行里的 12sp 小字（用户几乎注意不到）。
+ */
+@Composable
+private fun ContinueGenerationBar(onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.32f)),
+        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+                text = "已中断 · 继续生成",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+/**
  * 版本切换器（RikkaHub ChatMessageBranch 式）：‹ 当前/总数 ›。
  * 端点（已是首/末版本）箭头半透明不可用。
  */
@@ -860,13 +896,23 @@ private fun VersionSwitcher(
                 .clickable(enabled = canPrev) { onSelectVersion(versionIndex - 1) }
                 .padding(3.dp)
         )
-        Text(
-            text = "${versionIndex + 1}/$versionCount",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 1.dp)
-        )
+        // n/m 计数切换时淡入淡出，避免生硬跳变
+        AnimatedContent(
+            targetState = versionIndex,
+            transitionSpec = {
+                (fadeIn(tween(140)) + scaleIn(tween(140), initialScale = 0.85f))
+                    .togetherWith(fadeOut(tween(110)) + scaleOut(tween(110), targetScale = 0.85f))
+            },
+            label = "versionCount"
+        ) { idx ->
+            Text(
+                text = "${idx + 1}/$versionCount",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 1.dp)
+            )
+        }
         Icon(
             imageVector = Icons.Filled.KeyboardArrowRight,
             contentDescription = "下一版本",
@@ -914,11 +960,11 @@ internal fun ThinkingPanel(thinking: String, streaming: Boolean) {
         remember { mutableStateOf(1f) }
     }
     Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
         border = BorderStroke(
             0.6.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -928,7 +974,7 @@ internal fun ThinkingPanel(thinking: String, streaming: Boolean) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     .clickable { userExpanded = !expanded }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -977,10 +1023,11 @@ internal fun ThinkingPanel(thinking: String, streaming: Boolean) {
                 exit = androidx.compose.animation.shrinkVertically(tween(180)) +
                     androidx.compose.animation.fadeOut(tween(180))
             ) {
+                // 思考正文：弱化次要信息观感（降透明 + 舒适行高）
                 Text(
                     text = thinking,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 280.dp)
