@@ -2540,20 +2540,34 @@ class ChatViewModel(
         }
     }
 
-    /** 加载全部启用 Provider 的 CHAT 模型（多模型重答选择器数据源） */
+    /** 加载全部启用 Provider 的 CHAT 模型（多模型重答选择器数据源）。
+     *
+     * 能力判断走两层：
+     * 1. 模型自身显式声明（inputModalities / abilities）——用户手动配置的覆盖项
+     * 2. ModelRegistry 查表 —— 内置已知模型的默认能力，或自定义模型的安全 fallback
+     *    （registry 未匹配时 resolveModalities 默认 IMAGE+TEXT，MODEL_ABILITIES 默认工具全开）
+     */
     fun loadChatModels() {
         viewModelScope.launch {
             _chatModels.value = llmRepository.getProviders()
                 .filter { it.enabled }
                 .flatMap { p ->
                     p.models.filter { it.type == ModelType.CHAT }.map { m ->
+                        // 优先用模型自身显式声明；未声明时走 ModelRegistry 查表
+                        val registryInput = com.cjhsy.linkzone.ai.registry.ModelRegistry.MODEL_INPUT_MODALITIES.getData(m.modelId)
+                        val registryAbilities = com.cjhsy.linkzone.ai.registry.ModelRegistry.MODEL_ABILITIES.getData(m.modelId)
+                        val vision = Modality.IMAGE in m.inputModalities ||
+                                (m.inputModalities.size == 1 && m.inputModalities.first() == Modality.TEXT && Modality.IMAGE in registryInput) ||
+                                (m.inputModalities.isEmpty() && Modality.IMAGE in registryInput)
+                        val reasoning = com.cjhsy.linkzone.ai.provider.ModelAbility.REASONING in m.abilities ||
+                                (m.abilities.isEmpty() && com.cjhsy.linkzone.ai.provider.ModelAbility.REASONING in registryAbilities)
                         ChatModelOption(
                             modelId = m.modelId,
                             label = m.displayName.ifBlank { m.modelId },
                             providerName = p.name,
-                            supportsVision = Modality.IMAGE in m.inputModalities,
+                            supportsVision = vision,
                             supportsTools = m.supportsTools(),
-                            supportsReasoning = com.cjhsy.linkzone.ai.provider.ModelAbility.REASONING in m.abilities,
+                            supportsReasoning = reasoning,
                         )
                     }
                 }

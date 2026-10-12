@@ -29,6 +29,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +41,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cjhsy.linkzone.ai.provider.Model
+import com.cjhsy.linkzone.ai.provider.ModelAbility
+import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.ProviderManager
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.data.repository.LlmRepository
@@ -165,6 +170,18 @@ class LlmProviderViewModel(
     fun removeModel(provider: ProviderSetting, model: Model) {
         viewModelScope.launch {
             llmRepository.upsertProvider(provider.delModel(model))
+        }
+    }
+
+    /** 更新模型能力（UI 上勾选图片/工具/推理开关时调用） */
+    fun updateModel(provider: ProviderSetting, updated: Model) {
+        viewModelScope.launch {
+            llmRepository.upsertProvider(provider.editModel(updated))
+            _state.value = _state.value.copy(
+                editing = _state.value.editing?.let { e ->
+                    if (e.id == provider.id) e.editModel(updated) else e
+                }
+            )
         }
     }
 
@@ -429,26 +446,27 @@ private fun ProviderEditor(
             }
         }
         items(provider.models, key = { it.id }) { model ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    model.displayName.ifBlank { model.modelId },
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    "移除",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { viewModel.removeModel(provider, model) }
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-            }
+            ModelCapabilityRow(
+                provider = provider,
+                model = model,
+                onToggleVision = { vision ->
+                    val newModalities = if (vision) listOf(Modality.TEXT, Modality.IMAGE) else listOf(Modality.TEXT)
+                    viewModel.updateModel(provider, model.copy(inputModalities = newModalities))
+                },
+                onToggleTools = { tools ->
+                    val newAbilities = (model.abilities.toSet() - ModelAbility.TOOL).toMutableSet().apply {
+                        if (tools) add(ModelAbility.TOOL)
+                    }.toList()
+                    viewModel.updateModel(provider, model.copy(abilities = newAbilities))
+                },
+                onToggleReasoning = { reasoning ->
+                    val newAbilities = (model.abilities.toSet() - ModelAbility.REASONING).toMutableSet().apply {
+                        if (reasoning) add(ModelAbility.REASONING)
+                    }.toList()
+                    viewModel.updateModel(provider, model.copy(abilities = newAbilities))
+                },
+                onRemove = { viewModel.removeModel(provider, model) }
+            )
         }
 
         item {
@@ -590,6 +608,88 @@ private fun LazyListScope.ClaudeFields(provider: ProviderSetting.Claude, viewMod
             label = "提示词缓存",
             checked = provider.promptCaching,
             onChange = { v -> viewModel.updateEditing { p -> (p as? ProviderSetting.Claude)?.copy(promptCaching = v) ?: p } }
+        )
+    }
+}
+
+/**
+ * Provider 模型列表里的一行：名称 + 当前能力摘要 + 可展开的能力开关面板。
+ * 用户没手动配置时能力可能为空（= 默认行为：registry 查表 / 工具全开 / 图片直传 API），
+ * 用户手动勾选后会写入模型自身的 inputModalities / abilities 字段，覆盖默认行为。
+ */
+@Composable
+private fun ModelCapabilityRow(
+    provider: ProviderSetting,
+    model: Model,
+    onToggleVision: (Boolean) -> Unit,
+    onToggleTools: (Boolean) -> Unit,
+    onToggleReasoning: (Boolean) -> Unit,
+    onRemove: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    // 当前能力状态：模型自身显式声明优先，否则走 registry fallback 显示
+    val vision = Modality.IMAGE in model.inputModalities
+    val tools = ModelAbility.TOOL in model.abilities || model.abilities.isEmpty()
+    val reasoning = ModelAbility.REASONING in model.abilities
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        tonalElevation = 0.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { expanded = !expanded }
+            .padding(vertical = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = model.displayName.ifBlank { model.modelId },
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = model.modelId,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (vision) CapChip("📷")
+                    if (tools) CapChip("🔧")
+                    if (reasoning) CapChip("🧠")
+                }
+            }
+            if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                LabeledSwitch("支持图片输入（视觉）", vision, onToggleVision)
+                LabeledSwitch("支持工具调用", tools) { onToggleTools(it) }
+                LabeledSwitch("支持深度思考（推理）", reasoning, onToggleReasoning)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onRemove) {
+                        Text("移除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 极简能力小徽章 */
+@Composable
+private fun CapChip(text: String) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
         )
     }
 }
