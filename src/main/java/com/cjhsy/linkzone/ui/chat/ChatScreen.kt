@@ -666,6 +666,9 @@ private fun MessageList(
     // 版本节点视图：按分支约束解析出当前可见分支后渲染（切版本时下方整条分支联动切换）
     val nodes = remember(state.messages) { state.messages.toMessageNodes().resolveVisible() }
 
+    // 列表头部在有更多历史时多一个「加载更早」按钮项，node 的列表下标 = 节点下标 + 头部项数
+    val headerCount = if (state.hasMore) 1 else 0
+
     // 进软件 / 切换会话时首包到达：直接定位到最新消息（QQ 式），不是顶部
     // （普通 remember：进程重建后仍需重新定位；用 saveable 会残留导致不滚底）
     var scrolledFor by remember { mutableStateOf("") }
@@ -678,7 +681,7 @@ private fun MessageList(
         }
         if (scrolledFor != state.currentConvId) {
             scrolledFor = state.currentConvId
-            listState.scrollToItem(nodes.lastIndex)
+            listState.scrollToItem(nodes.lastIndex + (if (state.hasMore) 1 else 0))
         }
     }
 
@@ -686,7 +689,7 @@ private fun MessageList(
     LaunchedEffect(state.highlightMessageId) {
         val target = state.highlightMessageId ?: return@LaunchedEffect
         val idx = nodes.indexOfFirst { n -> n.versions.any { it.id == target } }
-        if (idx >= 0) listState.animateScrollToItem(idx)
+        if (idx >= 0) listState.animateScrollToItem(idx + (if (state.hasMore) 1 else 0))
     }
 
     // 翻页（加载更早）锚定：加载完成头部插入历史后，把首个可见消息恢复到原位置，
@@ -697,7 +700,6 @@ private fun MessageList(
         pendingAnchor = null
         val newIdx = nodes.indexOfFirst { it.anchorId == anchor.first }
         if (newIdx >= 0) {
-            val headerCount = if (state.hasMore) 1 else 0
             listState.scrollToItem(newIdx + headerCount, anchor.second)
         }
     }
@@ -707,10 +709,11 @@ private fun MessageList(
     val lastId = nodes.lastOrNull()?.selected?.id
     LaunchedEffect(lastId) {
         val last = nodes.lastOrNull() ?: return@LaunchedEffect
+        val bottomIndex = nodes.lastIndex + headerCount
         val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-        val nearBottom = lastVisible == null || lastVisible >= nodes.lastIndex - 1
+        val nearBottom = lastVisible == null || lastVisible >= bottomIndex - 1
         if (last.isSelf || nearBottom) {
-            listState.animateScrollToItem(nodes.lastIndex)
+            listState.animateScrollToItem(bottomIndex)
         }
     }
 
