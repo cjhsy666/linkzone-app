@@ -760,11 +760,13 @@ object ModelRegistry {
         modelId: String,
         selector: (ModelDefinition) -> Set<Modality>
     ): List<Modality> {
-        val modalities = resolveModels(modelId)
-            .flatMap { selector(it) }
-            .toSet()
+        val definitions = resolveModels(modelId)
+        val modalities = definitions.flatMap { selector(it) }.toSet()
         return if (modalities.isEmpty()) {
-            listOf(Modality.TEXT)
+            // registry 未匹配的自定义模型：默认全开（TEXT + IMAGE），
+            // 避免 applyOcrTransform 把图片静默替换成 [图片] 占位（用户感知为"AI 看不到图片"）
+            // 主流模型几乎都支持图片输入；纯文本模型 API 层会报错而非静默丢弃
+            listOf(Modality.TEXT, Modality.IMAGE)
         } else {
             listOf(Modality.TEXT, Modality.IMAGE).filter { it in modalities }
         }
