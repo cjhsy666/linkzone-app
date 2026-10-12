@@ -1597,7 +1597,9 @@ class ChatViewModel(
             localStore.touch(
                 convId,
                 finalText.ifBlank { if (imageUrls.isNotEmpty()) "[图片]" else "[思考中断]" }.take(NAME_MAX_LEN),
-                timestamp
+                // 会话排序用真实当前时间（旧消息重生成后会话应置顶）；
+                // 消息自身时间戳沿用锚点聚集值，仅用于版本排序/分页
+                System.currentTimeMillis() * 1000
             )
             // 首答完成：LLM 总结会话标题 + 生成回复建议（思考中断、无正文时不触发）
             if (finalText.isNotBlank()) {
