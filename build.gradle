@@ -32,6 +32,10 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.appSign
+            // 正式版出包通道：CI 固定跑 assembleDebug（workflow 文件受 token 权限限制
+            // 暂无法改为 assembleRelease）。debuggable=false + 同 keystore + 不混淆，
+            // 产物与 release 变体完全等效；release buildType 保留备用。
+            debuggable false
         }
         release {
             minifyEnabled false
