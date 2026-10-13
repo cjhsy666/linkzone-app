@@ -2062,7 +2062,9 @@ class ChatViewModel(
         } else {
             runCatching {
                 val args = json.parseToJsonElement(call.input.ifBlank { "{}" })
-                def.execute(args)
+                // 工具执行统一切 IO：shell 命令等待/文件读写/联系人短信查询等均为阻塞调用，
+                // 在主线程跑满 5s 即触发 ANR 被系统查杀（三次实测 ANR 堆栈均指向此处）
+                withContext(Dispatchers.IO) { def.execute(args) }
             }.getOrElse { e ->
                 if (e is CancellationException) throw e
                 listOf(UIMessagePart.Text(errorJson("[${e.javaClass.simpleName}] ${e.message ?: "tool error"}")))
