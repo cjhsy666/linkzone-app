@@ -28,6 +28,30 @@ import com.cjhsy.linkzone.ui.theme.LinkZoneTheme
 /**
  * 唯一 Activity：承载 Compose 导航宿主。
  */
+// #region debug-point chat-gen-crash
+/** 调试插桩：ApplicationExitInfo.reason → 可读名称 */
+private fun debugExitReasonName(reason: Int): String = when (reason) {
+    0 -> "UNKNOWN"
+    1 -> "EXIT_SELF"
+    2 -> "SIGNALED"
+    3 -> "LOW_MEMORY(系统低内存查杀)"
+    4 -> "CRASH(Java崩溃)"
+    5 -> "CRASH_NATIVE(原生崩溃)"
+    6 -> "ANR(无响应)"
+    7 -> "INITIALIZATION_FAILURE"
+    8 -> "PERMISSION_CHANGE"
+    9 -> "EXCESSIVE_RESOURCE_USAGE"
+    10 -> "USER_REQUESTED"
+    11 -> "USER_STOPPED"
+    12 -> "DEPENDENCY_DIED"
+    13 -> "OTHER"
+    14 -> "FREEZER"
+    15 -> "PACKAGE_STATE_CHANGE"
+    16 -> "PACKAGE_UPDATED"
+    else -> "code=$reason"
+}
+// #endregion
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,20 +69,46 @@ class MainActivity : ComponentActivity() {
                     AppNavHost()
                 }
                 // #region debug-point chat-gen-crash
-                // 调试插桩：上次崩溃若已落盘则弹窗展示，一键复制回传后删除文件
+                // 调试插桩：上次 Java 崩溃落盘 + 系统历史退出原因（识别低内存查杀/
+                // native 崩溃/ANR——这些不走 Java 异常通道，崩溃文件会缺失）
                 var debugCrash by remember { mutableStateOf<String?>(null) }
                 LaunchedEffect(Unit) {
-                    val f = java.io.File(filesDir, "debug_last_crash.txt")
-                    if (f.exists()) {
-                        debugCrash = runCatching { f.readText() }.getOrNull()
-                        f.delete()
-                    }
+                    debugCrash = runCatching {
+                        buildString {
+                            val f = java.io.File(filesDir, "debug_last_crash.txt")
+                            if (f.exists()) {
+                                append(f.readText())
+                                f.delete()
+                            }
+                            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                                val am = getSystemService(android.app.ActivityManager::class.java)
+                                val exits = am?.getHistoricalProcessExitReasons(packageName, 0, 5).orEmpty()
+                                exits.forEachIndexed { i, info ->
+                                    appendLine("---- exit#$i ----")
+                                    appendLine("reason=${debugExitReasonName(info.reason)} time=${
+                                        java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
+                                            .format(java.util.Date(info.timestamp))
+                                    }")
+                                    appendLine("pssMB=${info.pss / 1024} rssMB=${info.rss / 1024} importance=${info.importance} status=${info.status}")
+                                    info.description?.let { appendLine("desc=$it") }
+                                    if (info.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE ||
+                                        info.reason == android.app.ApplicationExitInfo.REASON_ANR
+                                    ) {
+                                        val trace = runCatching {
+                                            info.traceInputStream?.readBytes()?.let { String(it) }
+                                        }.getOrNull()
+                                        if (!trace.isNullOrBlank()) appendLine(trace.take(6000))
+                                    }
+                                }
+                            }
+                        }.ifBlank { null }
+                    }.getOrNull()
                 }
                 val debugClipboard = LocalClipboardManager.current
                 debugCrash?.let { report ->
                     AlertDialog(
                         onDismissRequest = { debugCrash = null },
-                        title = { Text("上次崩溃报告（请复制发给开发者）") },
+                        title = { Text("上次崩溃/退出报告（请复制发给开发者）") },
                         text = {
                             Text(
                                 text = report,
