@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -189,63 +190,77 @@ internal fun collectPillWidths(
     val out = HashMap<String, Float>()
     // 仅当文档真的含 <kbd> 时才预算键帽宽度（绝大多数消息无 kbd，零额外成本）
     val hasKbd = src.contains("<kbd>", ignoreCase = true)
-    fun budgetFootnote(number: Int) {
-        val text = number.toString()
-        out[pillWidthKey(10, text)] = measurePillSp(measurer, density, text, 10, 5f)
-    }
-    // 兄弟序列扫描：LBRACKET + TEXT("^id") + RBRACKET（脚注引用）
-    fun walkSeq(list: List<ASTNode>) {
-        var i = 0
-        while (i < list.size) {
-            if (footnotes != null) {
-                val ref = footnoteRefAt(list, i, src)
-                val num = ref?.let { footnotes.numbers[it.label] }
-                if (ref != null && num != null) {
-                    budgetFootnote(num)
-                    i += ref.consumed
-                    continue
-                }
-                // 兜底：整段引用落在单个 TEXT token 内
-                val n = list[i]
-                if (n.type == MarkdownTokenTypes.TEXT) {
-                    val t = n.nodeText(src)
-                    if (t.contains("[^")) {
-                        for (m in footnoteInlineRegex.findAll(t)) {
-                            footnotes.numbers[m.groupValues[1].lowercase()]?.let { budgetFootnote(it) }
-                        }
-                    }
-                }
-            }
-            walkNode(list[i])
-            i++
-        }
-    }
-    fun walkNode(n: ASTNode) {
-        when (n.type) {
-            MarkdownElementTypes.CODE_SPAN -> {
-                val code = codeSpanText(n, src)
-                if (code.isNotEmpty() && code.length <= 24) {
-                    out[pillWidthKey(13, code)] =
-                        measurePillSp(measurer, density, code, 13, MdSpace.inlineCodePadH.value)
-                }
-                return // 代码内不进兄弟扫描
-            }
-            // 行内容器/叶子：键帽候选（纯文本 token 预测量，成本极低）
-            MarkdownTokenTypes.TEXT -> {
-                if (hasKbd) {
-                    val text = n.nodeText(src)
-                    if (text.isNotBlank()) {
-                        out[pillWidthKey(12, text)] = measurePillSp(measurer, density, text, 12, 7f)
-                    }
-                }
-            }
-            GFMElementTypes.INLINE_MATH, MarkdownElementTypes.IMAGE -> return
-            else -> {}
-        }
-        walkSeq(n.children)
-    }
-    walkSeq(listOf(root))
+    val budget = PillBudget(out, src, density, measurer, footnotes, hasKbd)
+    pillBudgetList(budget, listOf(root))
     return out
+}
+
+/** 药丸宽度预算上下文（顶层互递归遍历用；局部函数无法前向引用/互递归） */
+private class PillBudget(
+    val out: HashMap<String, Float>,
+    val src: String,
+    val density: Density,
+    val measurer: TextMeasurer,
+    val footnotes: MdFootnotes?,
+    val hasKbd: Boolean
+)
+
+private fun pillBudgetFootnote(c: PillBudget, number: Int) {
+    val text = number.toString()
+    c.out[pillWidthKey(10, text)] = measurePillSp(c.measurer, c.density, text, 10, 5f)
+}
+
+/** 兄弟序列扫描：LBRACKET + TEXT("^id") + RBRACKET（脚注引用） */
+private fun pillBudgetList(c: PillBudget, list: List<ASTNode>) {
+    var i = 0
+    while (i < list.size) {
+        if (c.footnotes != null) {
+            val ref = footnoteRefAt(list, i, c.src)
+            val num = ref?.let { c.footnotes.numbers[it.label] }
+            if (ref != null && num != null) {
+                pillBudgetFootnote(c, num)
+                i += ref.consumed
+                continue
+            }
+            // 兜底：整段引用落在单个 TEXT token 内
+            val n = list[i]
+            if (n.type == MarkdownTokenTypes.TEXT) {
+                val t = n.nodeText(c.src)
+                if (t.contains("[^")) {
+                    for (m in footnoteInlineRegex.findAll(t)) {
+                        c.footnotes.numbers[m.groupValues[1].lowercase()]?.let { pillBudgetFootnote(c, it) }
+                    }
+                }
+            }
+        }
+        pillBudgetNode(c, list[i])
+        i++
+    }
+}
+
+private fun pillBudgetNode(c: PillBudget, n: ASTNode) {
+    when (n.type) {
+        MarkdownElementTypes.CODE_SPAN -> {
+            val code = codeSpanText(n, c.src)
+            if (code.isNotEmpty() && code.length <= 24) {
+                c.out[pillWidthKey(13, code)] =
+                    measurePillSp(c.measurer, c.density, code, 13, MdSpace.inlineCodePadH.value)
+            }
+            return // 代码内不进兄弟扫描
+        }
+        // 行内容器/叶子：键帽候选（纯文本 token 预测量，成本极低）
+        MarkdownTokenTypes.TEXT -> {
+            if (c.hasKbd) {
+                val text = n.nodeText(c.src)
+                if (text.isNotBlank()) {
+                    c.out[pillWidthKey(12, text)] = measurePillSp(c.measurer, c.density, text, 12, 7f)
+                }
+            }
+        }
+        GFMElementTypes.INLINE_MATH, MarkdownElementTypes.IMAGE -> return
+        else -> {}
+    }
+    pillBudgetList(c, n.children)
 }
 
 private fun measurePillSp(

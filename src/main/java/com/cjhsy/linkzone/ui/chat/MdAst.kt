@@ -136,7 +136,7 @@ internal fun ASTNode.taskChecked(src: String): Boolean? {
 // ---------- 标题锚点（TOC 预留，Task 3 / Task 10） ----------
 
 /** 文档顺序的标题条目：index（0 起，消息内顺序）/ level（1–6）/ 纯文本 */
-internal data class MdHeadingEntry(val index: Int, val level: Int, val text: String)
+data class MdHeadingEntry(val index: Int, val level: Int, val text: String)
 
 /**
  * 按文档顺序收集 h1–h6 标题（ATX / SETEXT），返回「(标题节点, 条目)」对。

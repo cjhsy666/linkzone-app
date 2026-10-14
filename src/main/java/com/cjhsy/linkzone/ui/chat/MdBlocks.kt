@@ -56,7 +56,7 @@ import org.intellij.markdown.flavours.gfm.GFMTokenTypes
  *   TOC 点击定位时由消息根坐标 `localBoundingBoxOf(anchorCoords).top` 计算像素偏移。
  * 传入 null 时渲染层不做任何锚点采集（零开销）。
  */
-internal class MdHeadingAnchors {
+class MdHeadingAnchors {
     val entries = mutableStateOf<List<MdHeadingEntry>>(emptyList())
     val coords = mutableStateMapOf<Int, LayoutCoordinates>()
 }
