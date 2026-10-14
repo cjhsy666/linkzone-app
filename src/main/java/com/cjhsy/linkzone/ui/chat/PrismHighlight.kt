@@ -101,7 +101,8 @@ private object AppPrismLocator : GrammarLocator {
         else -> null
     }
 
-    private fun create(prism4j: Prism4j, name: String): Prism4j.Grammar = when (name) {
+    // Prism_css_extras.create 带 @Nullable（原是 prism4j 的 @Modify 扩展）：整体返回可空
+    private fun create(prism4j: Prism4j, name: String): Prism4j.Grammar? = when (name) {
         "brainfuck" -> Prism_brainfuck.create(prism4j)
         "c" -> Prism_c.create(prism4j)
         "clike" -> Prism_clike.create(prism4j)

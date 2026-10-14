@@ -119,7 +119,7 @@ private fun MermaidWebView(code: String, dark: Boolean) {
                 settings.allowFileAccess = true
                 webView = this
                 // 模板内 __CODE__ / __THEME__ 为占位符
-                val template = assets.open("mermaid/view.html").bufferedReader().use { it.readText() }
+                val template = ctx.assets.open("mermaid/view.html").bufferedReader().use { it.readText() }
                 val html = template
                     .replace("/*__CODE__*/", code.toJsString())
                     .replace("__THEME__", if (dark) "dark" else "default")
@@ -139,4 +139,4 @@ private fun MermaidWebView(code: String, dark: Boolean) {
 private fun String.toJsString(): String = "`" + this
     .replace("\\", "\\\\")
     .replace("`", "\\`")
-    .replace("\${", "\\${") + "`"
+    .replace("\${", "\\\${") + "`"
