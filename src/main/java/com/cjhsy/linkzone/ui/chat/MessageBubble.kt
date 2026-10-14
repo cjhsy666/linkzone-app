@@ -31,15 +31,19 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,6 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
@@ -59,11 +64,14 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,6 +86,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.AnnotatedString
@@ -91,6 +101,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /** 纯视觉媒体段：任何一方都不套外层气泡（图片/闪照/动图/视频/语音） */
 private val BARE_MEDIA_TYPES = setOf("image", "flash", "animation", "video", "voice")
@@ -145,12 +156,22 @@ fun MessageItemView(
     versionCount: Int = 1,
     versionIndex: Int = 0,
     onSelectVersion: ((Int) -> Unit)? = null,
-    highlight: Boolean = false
+    highlight: Boolean = false,
+    /** TOC 定位回调：入参为标题相对消息根的像素偏移，由宿主滚动列表（Task 10） */
+    onNavigateToHeading: ((offsetPx: Int) -> Unit)? = null,
+    /** 消息项根（LazyColumn item 根，含时间分隔）在 root 空间的 top（px）；null 时回退本行坐标 */
+    itemRootTopProvider: (() -> Float?)? = null
 ) {
     // 长按弹出完整操作菜单；「自由复制」进入内联选择模式，点空白退出恢复原样
     var menuOpen by remember { mutableStateOf(false) }
     var freeCopy by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
+
+    // TOC：长文目录锚点收集器（AI 文档流标题 ≥3 时在操作行露出「目录」入口）
+    val headingAnchors = remember(message.id) { MdHeadingAnchors() }
+    // 消息根坐标：heading 相对消息根的 y 偏移 = 两者 positionInRoot 之差（滚动无关）
+    val rootCoords = remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var tocOpen by remember { mutableStateOf(false) }
 
     // 段提取统一走 MessageNodes 扩展（thinking→思考面板；sys.ver/sys.br→过滤；其余→正文）
     val thinkingText = remember(message.id, message.segments) { message.thinkingText() }
@@ -187,9 +208,13 @@ fun MessageItemView(
     // 生成中（内容未定稿）不弹菜单、不显示操作行
     val interactionsEnabled = !(streaming && !message.isSelf)
 
+    // TOC 条目：随标题增长实时刷新（流式中也更新），≥3 条时露出目录入口
+    val headingEntries = headingAnchors.entries.value
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { rootCoords.value = it }
             .then(if (freeCopy) Modifier.combinedClickable(
                 onClick = { freeCopy = false },
                 onLongClick = null
@@ -308,8 +333,10 @@ fun MessageItemView(
                             isSelf = false,
                             baseUrl = baseUrl,
                             freeCopy = freeCopy,
+                            streaming = streaming,
                             onMediaLongClick = { if (interactionsEnabled) menuOpen = true },
-                            onTextClick = { if (freeCopy) freeCopy = false }
+                            onTextClick = { if (freeCopy) freeCopy = false },
+                            headingAnchors = headingAnchors
                         )
                     } else if (message.content.isNotBlank()) {
                         // 无 segments 的兜底纯文本
@@ -320,7 +347,8 @@ fun MessageItemView(
                             baseUrl = baseUrl,
                             freeCopy = freeCopy,
                             onMediaLongClick = { if (interactionsEnabled) menuOpen = true },
-                            onTextClick = { if (freeCopy) freeCopy = false }
+                            onTextClick = { if (freeCopy) freeCopy = false },
+                            headingAnchors = headingAnchors
                         )
                     } else if (thinkingText.isBlank()) {
                         Text(
@@ -346,7 +374,8 @@ fun MessageItemView(
                         baseUrl = baseUrl,
                         freeCopy = freeCopy,
                         onMediaLongClick = { menuOpen = true },
-                        onTextClick = { if (freeCopy) freeCopy = false }
+                        onTextClick = { if (freeCopy) freeCopy = false },
+                        headingAnchors = headingAnchors
                     )
                 }
             }
@@ -389,9 +418,36 @@ fun MessageItemView(
                         timestamp = message.displayTimestamp(),
                         onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
                         onRegenerate = onRegenerate,
-                        onRegenerateWithModel = onRegenerateWithModel
+                        onRegenerateWithModel = onRegenerateWithModel,
+                        headingCount = headingEntries.size,
+                        onOpenToc = { tocOpen = true }
                     )
+                } else if (headingEntries.size >= 3) {
+                    // 流式生成中：操作行整体隐藏（消除布局抖动），仅保留轻量目录入口
+                    Row(modifier = Modifier.padding(top = 2.dp, start = 2.dp)) {
+                        ActionBarIcon(Icons.Filled.FormatListBulleted, "目录") { tocOpen = true }
+                    }
                 }
+            }
+
+            // ---------- 长文目录（TOC）底部弹层 ----------
+            if (tocOpen) {
+                MessageTocSheet(
+                    entries = headingEntries,
+                    onSelect = { idx ->
+                        val target = headingAnchors.coords[idx]
+                        val topY = target?.let {
+                            runCatching { it.positionInRoot().y }.getOrNull()
+                        }
+                        val baseY = itemRootTopProvider?.invoke()
+                            ?: runCatching { rootCoords.value?.positionInRoot()?.y }.getOrNull()
+                        if (topY != null && baseY != null) {
+                            onNavigateToHeading?.invoke((topY - baseY).roundToInt())
+                        }
+                        tocOpen = false
+                    },
+                    onDismiss = { tocOpen = false }
+                )
             }
 
             // ---------- 长按操作菜单（能力显隐，与引擎解耦） ----------
@@ -794,14 +850,21 @@ private fun MessageActionBar(
     timestamp: Long,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit,
-    onRegenerateWithModel: () -> Unit
+    onRegenerateWithModel: () -> Unit,
+    /** TOC：标题数 ≥3 时露出「目录」入口 */
+    headingCount: Int = 0,
+    onOpenToc: (() -> Unit)? = null
 ) {
-    if (!hasText && !canRegenerate && versionCount <= 1) return
+    val showToc = headingCount >= 3 && onOpenToc != null
+    if (!hasText && !canRegenerate && versionCount <= 1 && !showToc) return
     Row(
         modifier = Modifier.padding(top = 2.dp, start = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (showToc && onOpenToc != null) {
+            ActionBarIcon(Icons.Filled.FormatListBulleted, "目录", onOpenToc)
+        }
         if (hasText) ActionBarIcon(Icons.Filled.ContentCopy, "复制", onCopy)
         if (canRegenerate) {
             ActionBarIcon(Icons.Filled.Refresh, "重新生成", onRegenerate)
@@ -923,6 +986,95 @@ private fun VersionSwitcher(
                 .clickable(enabled = canNext) { onSelectVersion(versionIndex + 1) }
                 .padding(3.dp)
         )
+    }
+}
+
+/**
+ * 长文目录（TOC）底部弹层：层级缩进列表（h1 品牌色圆点，h2/h3 逐级缩进弱化），超长可滚动。
+ * 点击条目回调 [onSelect]（标题索引）→ 宿主按标题相对消息根的像素偏移滚动定位并关闭。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MessageTocSheet(
+    entries: List<MdHeadingEntry>,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Filled.FormatListBulleted,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "目录",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "${entries.size} 个标题",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 420.dp)
+                .navigationBarsPadding(),
+            contentPadding = PaddingValues(bottom = 14.dp)
+        ) {
+            itemsIndexed(entries) { _, entry ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(entry.index) }
+                        .padding(
+                            start = (20 + (entry.level - 1).coerceAtLeast(0) * 16).dp,
+                            end = 20.dp,
+                            top = 9.dp,
+                            bottom = 9.dp
+                        ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(if (entry.level <= 1) 5.dp else 4.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (entry.level <= 1) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outlineVariant
+                            )
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(
+                        text = entry.text.ifBlank { "（空标题）" },
+                        style = if (entry.level <= 1) MaterialTheme.typography.bodyMedium
+                        else MaterialTheme.typography.bodySmall,
+                        fontWeight = if (entry.level <= 1) FontWeight.Medium else null,
+                        color = if (entry.level <= 1) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
     }
 }
 

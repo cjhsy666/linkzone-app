@@ -40,27 +40,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.selection.SelectionContainer
 
 /**
- * 代码块卡片：圆角卡片 + 顶栏（语言标签 + 弹性复制按钮）+ Prism4j 语法高亮。
- * ≥8 行显示行号 gutter；>50 行默认折叠（底部渐变遮罩 + 展开按钮）；长行横向滚动。
+ * 代码块卡片：主题化卡面（[MdPalette.codeSurface]，明暗 × 文档流/气泡四套）+
+ * 顶栏（语言标签 + 弹性复制按钮）+ Prism4j 语法高亮。
+ * ≥8 行显示行号 gutter；>50 行默认折叠（底部渐变遮罩 + 展开按钮）；长行横向滚动；
+ * 代码区独立 SelectionContainer 支持片段选择（不与气泡长按菜单冲突）；
+ * 流式输出期间（streaming=true）强制展开，不折叠半截代码。
  */
 
 private const val LINE_NUMBER_THRESHOLD = 8
 private const val COLLAPSE_THRESHOLD = 50
+private const val COLLAPSED_MAX_HEIGHT_DP = 320
 
 @Composable
-internal fun MdCodeBlock(
-    lang: String,
-    code: String,
-    textColor: Color
-) {
+internal fun MdCodeBlock(lang: String, code: String, ctx: MdRenderContext) {
+    val p = ctx.palette
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) {
@@ -76,38 +74,38 @@ internal fun MdCodeBlock(
         label = "copyScale"
     )
 
-    val dark = textColor.luminance() > 0.5f
-    val bg = textColor.copy(alpha = 0.06f)
-    val border = textColor.copy(alpha = 0.14f)
-    val dim = textColor.copy(alpha = 0.65f)
-
     val lines = remember(code) { code.lines() }
     val lineCount = lines.size
     val showLineNumbers = lineCount >= LINE_NUMBER_THRESHOLD
-    val collapsible = lineCount > COLLAPSE_THRESHOLD
+    // 流式期间代码不断增长：禁止折叠，避免半截代码被遮罩盖住
+    val collapsible = lineCount > COLLAPSE_THRESHOLD && !ctx.streaming
     var expanded by remember { mutableStateOf(false) }
 
-    val highlighted = remember(code, lang, dark) { highlightWithPrism(code, lang, dark) }
+    // 高亮结果后台 tokenize + 缓存（key 含 内容+语言+调色板，主题切换自动重算）；
+    // 流式中防抖：半截代码先纯等宽兜底，停止后一次性最终高亮
+    val highlighted = rememberHighlightedCode(code, lang, p.code, ctx.streaming)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, border, RoundedCornerShape(12.dp))
-            .background(bg)
+            .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(MdSpace.codeRadius))
+            .border(1.dp, p.codeBorder, RoundedCornerShape(MdSpace.codeRadius))
+            .background(p.codeSurface)
     ) {
         // 顶栏：语言名 + 复制
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+                .background(p.codeHeaderBg)
+                .padding(start = 14.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = lang.ifBlank { "代码" },
+                // 无语法或未知语言统一显示"代码"（TR-5.2）
+                text = if (lang.isBlank() || !hasPrismGrammar(lang)) "代码" else lang,
                 style = MaterialTheme.typography.labelSmall,
-                color = dim,
+                color = p.dim,
                 modifier = Modifier.weight(1f)
             )
             TextButton(
@@ -121,62 +119,61 @@ internal fun MdCodeBlock(
                 Icon(
                     imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
                     contentDescription = if (copied) "已复制" else "复制",
-                    tint = dim,
+                    tint = p.dim,
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
                     text = if (copied) "已复制" else "复制",
                     style = MaterialTheme.typography.labelSmall,
-                    color = dim
+                    color = p.dim
                 )
             }
         }
-        HorizontalDivider(color = border, thickness = 0.7.dp)
+        HorizontalDivider(color = p.codeHeaderDivider, thickness = 0.7.dp)
 
-        // 代码区（可折叠）
+        // 代码区（可折叠；独立 SelectionContainer 支持片段选择）
         Box {
             val codeScroll = rememberScrollState()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(
-                        if (collapsible && !expanded) Modifier.heightIn(max = 320.dp) else Modifier
+                        if (collapsible && !expanded)
+                            Modifier.heightIn(max = COLLAPSED_MAX_HEIGHT_DP.dp) else Modifier
                     )
                     .horizontalScroll(codeScroll)
-                    .padding(vertical = 10.dp)
+                    .padding(vertical = MdSpace.codePadV)
             ) {
                 if (showLineNumbers) {
-                    // 行号 gutter（随代码区一起横向滚动，行高与代码行高严格一致 19sp）
+                    // 行号 gutter（与代码行高严格一致，不参与选择）
                     Column(
-                        modifier = Modifier.padding(start = 12.dp, end = 8.dp),
+                        modifier = Modifier.padding(start = MdSpace.codePadH, end = 8.dp),
                         horizontalAlignment = Alignment.End
                     ) {
                         repeat(lineCount) { i ->
                             Text(
                                 text = "${i + 1}",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    lineHeight = 19.sp
-                                ),
-                                color = dim.copy(alpha = 0.5f),
+                                style = mdCodeStyle,
+                                color = p.faint,
+                                fontSize = MdType.codeSize,
+                                lineHeight = MdType.codeLineHeight,
                                 maxLines = 1
                             )
                         }
                     }
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(8.dp))
                 }
-                Text(
-                    text = highlighted ?: AnnotatedString(code),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 19.sp
-                    ),
-                    color = textColor,
-                    modifier = Modifier.padding(end = 12.dp)
-                )
+                SelectionContainer(modifier = Modifier.padding(end = MdSpace.codePadH)) {
+                    Text(
+                        text = highlighted ?: AnnotatedString(code),
+                        style = mdCodeStyle.copy(color = p.code.codeText),
+                        fontSize = MdType.codeSize,
+                        lineHeight = MdType.codeLineHeight
+                    )
+                }
             }
-            // 折叠态底部渐变遮罩
+            // 折叠态底部渐变遮罩（渐隐到代码卡面色，非纯色硬边）
             if (collapsible && !expanded) {
                 Box(
                     modifier = Modifier
@@ -185,7 +182,7 @@ internal fun MdCodeBlock(
                         .align(Alignment.BottomCenter)
                         .background(
                             Brush.verticalGradient(
-                                listOf(Color.Transparent, bg.copy(alpha = 0.95f))
+                                listOf(androidx.compose.ui.graphics.Color.Transparent, p.codeFade)
                             )
                         )
                 )
@@ -194,7 +191,7 @@ internal fun MdCodeBlock(
 
         // 展开/收起条
         if (collapsible) {
-            HorizontalDivider(color = border, thickness = 0.7.dp)
+            HorizontalDivider(color = p.codeHeaderDivider, thickness = 0.7.dp)
             TextButton(
                 onClick = { expanded = !expanded },
                 contentPadding = PaddingValues(vertical = 2.dp),
@@ -203,14 +200,14 @@ internal fun MdCodeBlock(
                 Icon(
                     imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
                     contentDescription = if (expanded) "收起" else "展开",
-                    tint = dim,
+                    tint = p.dim,
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
                     text = if (expanded) "收起" else "展开全部 $lineCount 行",
                     style = MaterialTheme.typography.labelSmall,
-                    color = dim
+                    color = p.dim
                 )
             }
         }

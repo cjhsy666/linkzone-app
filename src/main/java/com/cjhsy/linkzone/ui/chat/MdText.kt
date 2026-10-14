@@ -7,9 +7,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -21,20 +23,28 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import org.intellij.markdown.MarkdownElementTypes
+import org.intellij.markdown.ast.ASTNode
 
 /**
  * 完整 Markdown 渲染（intellij-markdown AST 解析 + Compose 原生渲染）：
- * 标题层级（H1/H2 带分隔线）/ 段落 / 有序无序列表 / 任务列表 / 引用块（品牌色竖条卡片）/
+ * 标题层级 / 段落 / 有序无序列表 / 任务列表 / 引用块与 GFM Alerts /
  * 代码块（Prism4j 语法高亮 + 行号 + 折叠 + 复制）/ 行内代码（圆角药丸）/ 加粗、斜体、删除线 /
- * 链接（点击打开浏览器）/ 表格 / 行内与块级 LaTeX 公式 / Mermaid 图表（懒加载 WebView）。
+ * 链接（点击打开浏览器）/ 表格 / 行内与块级 LaTeX 公式 / Mermaid 图表（懒加载 WebView）/
+ * 脚注 / <kbd> 键帽。
+ *
+ * 视觉令牌见 [MdPalette]（明暗 × 文档流/气泡两套）；异步管线见 MdRenderPipeline；
+ * [localUseV2Renderer][MdRenderFlags] 关闭时整体回退到 [AutoLinkText] 基础渲染。
  *
  * 解析按内容 remember 缓存：流式期间历史气泡不重复解析；解析异常降级为纯文本，
  * 绝不在 composition 内抛出。
  *
- * 颜色随气泡适配：右侧品牌气泡传白色文字，左侧白气泡传深色文字。
+ * @param streaming 本地流式生成中的最后一条消息（纯文本直出 + 富渲染节流，见 Task2 管线）
+ * @param container 渲染容器：AI 文档流 / 自己消息品牌气泡（令牌不同）
+ * @param headingAnchors TOC 预留：传入 [MdHeadingAnchors] 时采集标题条目与节点坐标（Task 10 消费）
  */
 @Composable
 fun MarkdownContent(
@@ -47,38 +57,98 @@ fun MarkdownContent(
     /** 长按 Markdown 文本时回调（弹出消息操作菜单）；自由复制模式下传 null 让位给文本选择 */
     onLongClick: (() -> Unit)? = null,
     /** 点击 Markdown 文本（非链接处）回调（编辑重发 / 退出自由复制） */
-    onTextClick: (() -> Unit)? = null
+    onTextClick: (() -> Unit)? = null,
+    streaming: Boolean = false,
+    container: MdContainer = MdContainer.Document,
+    headingAnchors: MdHeadingAnchors? = null
 ) {
+    val context = LocalContext.current
+    MdRenderFlags.init(context)
+
+    // 边界：空串 / 纯空白内容不渲染空行（避免占位空高）
+    if (markdown.isBlank()) return
+
+    // Feature Flag 降级：V2 关闭时仅走基础纯文本渲染，富渲染树完全不构建
+    if (!MdRenderFlags.useV2Renderer) {
+        AutoLinkText(
+            text = markdown,
+            textColor = textColor,
+            linkColor = linkColor,
+            modifier = modifier,
+            onLongClick = onLongClick,
+            onTextClick = onTextClick,
+            alignMarkdownMetrics = true
+        )
+        return
+    }
+
     val density = LocalDensity.current
-    // 回调可能随重组变化（气泡菜单重建等），ctx 按内容缓存——回调经稳定引用传入
+    val textMeasurer = rememberTextMeasurer()
+    // 回调可能随重组变化（气泡菜单重建等），palette 按主题缓存——回调经稳定引用传入
     val latestLongClick = androidx.compose.runtime.rememberUpdatedState(onLongClick)
     val latestTextClick = androidx.compose.runtime.rememberUpdatedState(onTextClick)
 
-    // 解析 AST：按内容缓存；失败（畸形输入）整体降级为纯文本渲染
-    val ast = remember(markdown) {
-        runCatching { parseMarkdownAst(markdown) }.getOrNull()
-    }
+    val palette = rememberMdPalette(container, textColor, linkColor)
 
-    if (ast == null) {
+    // AST（含脚注预处理）：后台解析 + 全局 LRU（流式节流 ~120ms）；未就绪返回 null → 同版式纯文本兜底
+    val doc = rememberMarkdownAst(markdown, streaming)
+
+    if (doc == null) {
         Text(
             text = markdown,
-            style = bodyTextStyle,
+            style = mdBodyStyle,
             color = textColor,
             modifier = modifier
         )
         return
     }
 
-    val ctx = remember(markdown, textColor, linkColor, selectable) {
+    val ast = doc.ast
+    // node 偏移以预处理后的正文源为基准（脚注定义块已从正文移除）
+    val src = doc.cleaned
+    val footnotes = doc.footnotes
+
+    // 脚注双向定位：稳定锚点表 + 跳转协程作用域（registry 跨重组保留，流式中不丢锚点）
+    val footnoteScope = rememberCoroutineScope()
+    val footnoteNav = remember { MdFootnoteNav() }
+
+    // 行内药丸/键帽/脚注上标宽度：主线程 TextMeasurer 实测预算（后台构建期零竞态，中文/全角不截断）
+    val pillWidths = remember(ast, src, palette, density, textMeasurer, footnotes) {
+        collectPillWidths(ast, src, density, textMeasurer, footnotes)
+    }
+
+    // TOC 预留：标题条目（文档顺序）+ 节点→索引（IdentityHashMap，节点身份稳定）;
+    // 未传收集器时两者均为空，渲染层零开销
+    val headingList = remember(ast, src, headingAnchors) {
+        if (headingAnchors == null) emptyList() else collectHeadingEntries(ast, src)
+    }
+    val headingIndex: Map<ASTNode, Int> = remember(headingList) {
+        val map = java.util.IdentityHashMap<ASTNode, Int>()
+        headingList.forEach { (n, e) -> map[n] = e.index }
+        map
+    }
+    // entries 从组合副作用写入（避免组合期写状态）：流式中随 AST 更新标题列表实时增长
+    SideEffect {
+        headingAnchors?.entries?.value = headingList.map { it.second }
+    }
+
+    val ctx = remember(ast, src, palette, density, selectable, streaming, headingIndex, headingAnchors, footnotes, footnoteNav) {
         MdRenderContext(
-            src = markdown,
-            textColor = textColor,
-            linkColor = linkColor,
+            src = src,
+            palette = palette,
             selectable = selectable,
             onLongClick = { latestLongClick.value?.invoke() },
             onTextClick = { latestTextClick.value?.invoke() },
-            refLinks = collectLinkDefinitions(ast, markdown),
-            density = density
+            refLinks = collectLinkDefinitions(ast, src),
+            density = density,
+            streaming = streaming,
+            textMeasurer = textMeasurer,
+            pillWidths = pillWidths,
+            headingIndex = headingIndex,
+            headingAnchors = headingAnchors,
+            footnotes = footnotes,
+            footnoteNav = footnoteNav,
+            footnoteScope = footnoteScope
         )
     }
 
@@ -89,6 +159,8 @@ fun MarkdownContent(
         } else {
             MdBlock(ast, ctx)
         }
+        // 文末脚注区（细顶线分隔；点击条目回跳正文引用处）
+        if (footnotes != null) MdFootnoteSection(footnotes, ctx)
     }
 }
 
@@ -99,8 +171,8 @@ private val LINKIFY_PATTERNS = listOf(
     Regex("""(?:https?|ftp)://[^\s<>"')\]]+|www\.[^\s<>"')\]]+""") to "url",
     // 邮箱
     Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""") to "email",
-    // 手机号（中国大陆 11 位）
-    Regex("""1[3-9]\d{9}""") to "phone"
+    // 手机号（中国大陆 11 位）；前后加字母数字边界，避免订单号/长数字串/标识符中的误判
+    Regex("""(?<![A-Za-z0-9])1[3-9]\d{9}(?![A-Za-z0-9])""") to "phone"
 )
 
 /**
@@ -120,7 +192,9 @@ fun AutoLinkText(
     /** 长按文本（非链接处）回调（弹消息菜单）；自由复制模式下传 null 让位给外层选择手势 */
     onLongClick: (() -> Unit)? = null,
     /** 点击非链接区域回调（编辑重发 / 退出自由复制）；点链接仍优先打开链接 */
-    onTextClick: (() -> Unit)? = null
+    onTextClick: (() -> Unit)? = null,
+    /** 与 Markdown 富渲染同版式（15sp/1.7），Feature Flag 降级/流式兜底切换时零跳变 */
+    alignMarkdownMetrics: Boolean = false
 ) {
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
@@ -160,7 +234,8 @@ fun AutoLinkText(
 
     Text(
         text = annotated,
-        style = MaterialTheme.typography.bodyMedium.copy(color = textColor, lineHeight = 21.sp),
+        style = if (alignMarkdownMetrics) mdBodyStyle.copy(color = textColor)
+        else MaterialTheme.typography.bodyMedium.copy(color = textColor, lineHeight = 21.sp),
         onTextLayout = { layoutResult = it },
         modifier = modifier.pointerInput(annotated, onLongClick != null) {
             detectTapGestures(

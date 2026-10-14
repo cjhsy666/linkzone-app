@@ -7,6 +7,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import io.noties.prism4j.GrammarLocator
 import io.noties.prism4j.Prism4j
 import io.noties.prism4j.languages.Prism_brainfuck
+import io.noties.prism4j.languages.Prism_bash
 import io.noties.prism4j.languages.Prism_c
 import io.noties.prism4j.languages.Prism_clike
 import io.noties.prism4j.languages.Prism_clojure
@@ -33,36 +34,11 @@ import io.noties.prism4j.languages.Prism_swift
 import io.noties.prism4j.languages.Prism_yaml
 
 /**
- * Prism4j 语法高亮：真实语法规则（25 种语言 vendored 自 Prism4j 官方仓库），
+ * Prism4j 语法高亮：真实语法规则（26 种语言 vendored 自 Prism4j 官方仓库 + 自绘 bash），
  * 手写 GrammarLocator（替代官方 kapt bundler，更确定、CI 安全）。
  *
- * 调色板为 One Light / One Dark 风格（DeepSeek、豆包等主流应用同款方案）。
+ * 语法色统一取自 [MdCodePalette]（明暗 × 文档流/气泡共四套，见 MdStyle.kt）。
  */
-
-// ---------- One Light / One Dark 调色板 ----------
-
-private data class CodePalette(
-    val keyword: Color, val string: Color, val number: Color,
-    val comment: Color, val function: Color, val type: Color,
-    val operator: Color, val punctuation: Color, val tag: Color,
-    val attrName: Color, val selector: Color, val property: Color
-)
-
-private val ONE_LIGHT = CodePalette(
-    keyword = Color(0xFFA626A4), string = Color(0xFF50A14F), number = Color(0xFFB76B01),
-    comment = Color(0xFFA0A1A7), function = Color(0xFF4078F2), type = Color(0xFFC18401),
-    operator = Color(0xFF0184BC), punctuation = Color(0xFF383A42),
-    tag = Color(0xFFE45649), attrName = Color(0xFFC18401),
-    selector = Color(0xFFA626A4), property = Color(0xFFE45649)
-)
-
-private val ONE_DARK = CodePalette(
-    keyword = Color(0xFFC678DD), string = Color(0xFF98C379), number = Color(0xFFD19A66),
-    comment = Color(0xFF7F848E), function = Color(0xFF61AFEF), type = Color(0xFFE5C07B),
-    operator = Color(0xFF56B6C2), punctuation = Color(0xFFABB2BF),
-    tag = Color(0xFFE06C75), attrName = Color(0xFFE5C07B),
-    selector = Color(0xFFC678DD), property = Color(0xFFE06C75)
-)
 
 // ---------- GrammarLocator：语言名 → vendored 语法 ----------
 
@@ -73,6 +49,7 @@ private object AppPrismLocator : GrammarLocator {
 
     /** 围栏语言标识 → vendored 语言名；未知语言返回 null（不高亮，纯等宽兜底） */
     private fun realName(lang: String): String? = when (lang.lowercase().trim()) {
+        "bash", "sh", "shell", "zsh", "console", "shellsession" -> "bash"
         "brainfuck" -> "brainfuck"
         "c" -> "c"
         "clike" -> "clike"
@@ -103,6 +80,7 @@ private object AppPrismLocator : GrammarLocator {
 
     // Prism_css_extras.create 带 @Nullable（原是 prism4j 的 @Modify 扩展）：整体返回可空
     private fun create(prism4j: Prism4j, name: String): Prism4j.Grammar? = when (name) {
+        "bash" -> Prism_bash.create(prism4j)
         "brainfuck" -> Prism_brainfuck.create(prism4j)
         "c" -> Prism_c.create(prism4j)
         "clike" -> Prism_clike.create(prism4j)
@@ -140,8 +118,11 @@ private object AppPrismLocator : GrammarLocator {
         return g
     }
 
+    /** 该围栏语言是否有 vendored 语法（顶栏标签用：未知语言显示"代码"） */
+    fun supported(language: String): Boolean = realName(language) != null
+
     override fun languages(): Set<String> = setOf(
-        "brainfuck", "c", "clike", "clojure", "cpp", "csharp", "css", "css_extras",
+        "bash", "brainfuck", "c", "clike", "clojure", "cpp", "csharp", "css", "css_extras",
         "dart", "git", "go", "groovy", "java", "javascript", "json", "kotlin",
         "latex", "makefile", "markdown", "markup", "python", "scala", "sql", "swift", "yaml"
     )
@@ -149,10 +130,13 @@ private object AppPrismLocator : GrammarLocator {
 
 private val prism by lazy { Prism4j(AppPrismLocator) }
 
+/** 围栏语言是否有 vendored 语法（顶栏标签：未知/纯文本语言显示"代码"） */
+internal fun hasPrismGrammar(lang: String): Boolean = AppPrismLocator.supported(lang)
+
 // ---------- token 树 → AnnotatedString ----------
 
 /** token type → 调色板颜色；未映射类型返回 null（正文色） */
-private fun tokenColor(type: String, p: CodePalette): Color? = when (type) {
+private fun tokenColor(type: String, p: MdCodePalette): Color? = when (type) {
     "keyword", "important", "atrule", "rule", "directive" -> p.keyword
     "string", "char", "template-string", "regex", "attr-value", "url" -> p.string
     "number", "boolean", "constant", "symbol", "unit" -> p.number
@@ -164,11 +148,11 @@ private fun tokenColor(type: String, p: CodePalette): Color? = when (type) {
     "tag" -> p.tag
     "attr-name", "attribute" -> p.attrName
     "selector" -> p.selector
-    "property", "property-access" -> p.property
+    "property", "property-access", "variable" -> p.property
     else -> null
 }
 
-private fun walkNode(node: Prism4j.Node, p: CodePalette, out: AnnotatedString.Builder) {
+private fun walkNode(node: Prism4j.Node, p: MdCodePalette, out: AnnotatedString.Builder) {
     if (node.isSyntax) {
         val syntax = node as Prism4j.Syntax
         val color = tokenColor(syntax.type(), p)
@@ -189,11 +173,11 @@ private fun walkNode(node: Prism4j.Node, p: CodePalette, out: AnnotatedString.Bu
 /**
  * Prism4j 高亮代码块为 AnnotatedString；未知语言 / 超长代码（>20k，防正则回溯卡顿）
  * / 任何解析异常均返回 null，调用方按正文色纯文本渲染。
+ * 颜色由调用方按主题/容器传入（缓存 key 必须包含 palette 维度）。
  */
-internal fun highlightWithPrism(code: String, lang: String, dark: Boolean): AnnotatedString? {
+internal fun highlightWithPrism(code: String, lang: String, palette: MdCodePalette): AnnotatedString? {
     if (code.length > 20_000) return null
     val grammar = AppPrismLocator.grammar(prism, lang) ?: return null
-    val palette = if (dark) ONE_DARK else ONE_LIGHT
     return runCatching {
         val nodes = prism.tokenize(code, grammar)
         buildAnnotatedString { nodes.forEach { walkNode(it, palette, this) } }

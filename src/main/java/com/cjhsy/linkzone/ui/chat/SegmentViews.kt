@@ -53,7 +53,7 @@ import java.net.URI
 /**
  * 消息段渲染入口：
  * - [freeCopy] 为 true（自由复制模式）时文本段包在 [SelectionContainer] 里，长按出选区手柄；
- * - Markdown 段是原生 TextView，同样由 [freeCopy] 控制是否开启文本可选择；
+ * - Markdown 段走原生自绘渲染（[MarkdownContent]，intellij-markdown AST），同样由 [freeCopy] 控制是否开启文本可选择；
  * - 任何内容（文本/Markdown/媒体）长按都经 [onMediaLongClick] 上抛（弹消息操作菜单）；
  *   自由复制模式下长按让位给文本选择，不上抛。
  */
@@ -64,10 +64,16 @@ fun SegmentContent(
     isSelf: Boolean,
     baseUrl: String,
     freeCopy: Boolean = false,
+    /** 本地流式生成中的最后一条消息（富渲染节流/代码块强制展开等行为依赖） */
+    streaming: Boolean = false,
     onMediaLongClick: (() -> Unit)? = null,
     /** 点击文本/Markdown 非链接区域回调（编辑重发 / 退出自由复制） */
-    onTextClick: (() -> Unit)? = null
+    onTextClick: (() -> Unit)? = null,
+    /** TOC 锚点收集器（长文目录；null 时零开销，见 Task 10） */
+    headingAnchors: MdHeadingAnchors? = null
 ) {
+    // 自己消息走品牌气泡容器（白色阶表面/白字令牌），AI 与 IM 走文档流容器
+    val container = if (isSelf) MdContainer.Bubble else MdContainer.Document
     // 自己气泡的前景色跟随主题 onPrimary（暗色主题 primary 是亮青，配深字；浅色紫配白字），
     // 不要硬编码白——暗色下亮青底白字完全看不清
     val onSurface = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
@@ -95,8 +101,11 @@ fun SegmentContent(
                     baseUrl = baseUrl,
                     onSurface = onSurface,
                     freeCopy = freeCopy,
+                    streaming = streaming,
+                    container = container,
                     onMediaLongClick = longClick,
-                    onTextClick = onTextClick
+                    onTextClick = onTextClick,
+                    headingAnchors = headingAnchors
                 )
             }
         }
@@ -115,8 +124,11 @@ private fun SegmentView(
     baseUrl: String,
     onSurface: Color,
     freeCopy: Boolean = false,
+    streaming: Boolean = false,
+    container: MdContainer = MdContainer.Document,
     onMediaLongClick: (() -> Unit)? = null,
-    onTextClick: (() -> Unit)? = null
+    onTextClick: (() -> Unit)? = null,
+    headingAnchors: MdHeadingAnchors? = null
 ) {
     val muted = onSurface.copy(alpha = 0.72f)
     val context = LocalContext.current
@@ -147,7 +159,10 @@ private fun SegmentView(
                 modifier = Modifier.fillMaxWidth(),
                 selectable = freeCopy,
                 onLongClick = onMediaLongClick,
-                onTextClick = onTextClick
+                onTextClick = onTextClick,
+                streaming = streaming,
+                container = container,
+                headingAnchors = headingAnchors
             )
         }
 
@@ -723,7 +738,7 @@ private fun GenericCardText(seg: MessageSegment, onSurface: Color) {
     )
 }
 
-// Markdown 段渲染见 [MarkdownContent]（Markwon：表格/代码/任务列表/链接等完整语法）
+// Markdown 段渲染见 [MarkdownContent]（intellij-markdown AST + Compose 原生自绘：表格/代码/任务列表/链接等完整语法）
 
 private val xmlItemRegex = Regex("""item\s+name="([^"]+)"""")
 

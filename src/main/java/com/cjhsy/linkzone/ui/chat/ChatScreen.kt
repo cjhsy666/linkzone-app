@@ -114,6 +114,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -666,6 +668,8 @@ private fun MessageList(
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
+    // TOC 定位协程：点击目录条目时滚动到该消息内标题的像素偏移处（与消息项共用作用域）
+    val tocScope = rememberCoroutineScope()
 
     // 版本节点视图：按分支约束解析出当前可见分支后渲染（切版本时下方整条分支联动切换）
     val nodes = remember(state.messages) { state.messages.toMessageNodes().resolveVisible() }
@@ -807,11 +811,14 @@ private fun MessageList(
                 // 入场动画只给列表尾部的新消息播放（发/收消息体感不变）；
                 // 历史消息不挂动画状态（rememberSaveable + 动画），滚动更流畅
                 val isNew = index >= nodes.lastIndex - 2
+                // TOC：item 根坐标（含时间分隔），供标题像素偏移换算（仅点击时读取，不参与组合）
+                var itemRootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
                 Column(
                     modifier = Modifier
                         // 条目增删/位置变化平滑过渡（撤回/删除/版本切换不再瞬跳）；
                         // 关闭自带淡入淡出，避免与 messageEnter 叠加
                         .animateItem(fadeInSpec = null, fadeOutSpec = null)
+                        .onGloballyPositioned { itemRootCoords = it }
                         .then(if (isNew) Modifier.messageEnter() else Modifier)
                 ) {
                     val msg = node.selected
@@ -861,7 +868,14 @@ private fun MessageList(
                         onEdit = { onEdit(msg) },
                         onRegenerate = { onRegenerate(msg) },
                         onRegenerateWithModel = { onRegenerateWithModel(msg) },
-                        onContinue = onContinue.takeIf { isLocal && !streaming }
+                        onContinue = onContinue.takeIf { isLocal && !streaming },
+                        // TOC 定位：滚动该消息项使标题落在视口内（index + 头部偏移）
+                        onNavigateToHeading = { offsetPx ->
+                            tocScope.launch { listState.scrollToItem(index + headerCount, offsetPx) }
+                        },
+                        itemRootTopProvider = {
+                            itemRootCoords?.let { c -> runCatching { c.positionInRoot().y }.getOrNull() }
+                        }
                     )
                 }
             }
