@@ -36,6 +36,8 @@ object MdRenderFlags {
         }
     }
 
+    // @JvmName：属性委托生成的 setter 与本函数 JVM 签名相同（setUseV2Renderer(Z)V），需错开
+    @JvmName("setUseV2RendererFlag")
     fun setUseV2Renderer(enabled: Boolean) {
         useV2Renderer = enabled
         prefs?.edit()?.putBoolean(KEY_USE_V2, enabled)?.apply()
