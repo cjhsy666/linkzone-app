@@ -58,7 +58,7 @@ public class Prism_bash {
       // 函数定义：name() { 或 function name
       token("function",
         pattern(compile("^\\s*[A-Za-z_][A-Za-z0-9_.-]*(?=\\s*\\(\\s*\\))", MULTILINE)),
-        pattern(compile("(\\bfunction\\s+)[A-Za-z_][A-Za-z0-9_.-]*", true))
+        pattern(compile("(\\bfunction\\s+)[A-Za-z_][A-Za-z0-9_.-]*", CASE_INSENSITIVE))
       ),
       token("number", pattern(compile("\\b(?:0[xX][0-9a-fA-F]+|\\d+(?:\\.\\d+)?)\\b"))),
       token("operator", pattern(compile(
