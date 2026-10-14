@@ -135,7 +135,12 @@ dependencies {
     // Markdown：intellij-markdown（JetBrains，AST 解析）+ Compose 原生渲染
     implementation 'org.jetbrains:markdown-jvm:0.7.9'
     // 代码语法高亮：Prism4j（语法规则 vendored 于 io/noties/prism4j/languages/，手写 GrammarLocator）
-    implementation 'io.noties:prism4j:2.0.0'
+    // 排除传递依赖 annotations-java5：它与 kotlin-stdlib 带入的 org.jetbrains:annotations 是
+    // 同一套 org.intellij.lang.annotations 类的重复实现，会触发 checkDebugDuplicateClasses 打包失败；
+    // vendored 源码里的 @NotNull 由 org.jetbrains:annotations 提供
+    implementation('io.noties:prism4j:2.0.0') {
+        exclude group: 'org.jetbrains', module: 'annotations-java5'
+    }
     // LaTeX 数学公式：JLatexMath 的 Android 移植（Markwon ext-latex 同款底层库）
     implementation 'ru.noties:jlatexmath-android:0.2.0'
 
