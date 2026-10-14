@@ -132,18 +132,7 @@ dependencies {
     implementation 'androidx.media3:media3-exoplayer:1.11.1'
     implementation 'androidx.media3:media3-ui:1.11.1'
 
-    // 完整 Markdown 渲染（表格/代码块/任务列表/删除线/链接）
-    implementation 'io.noties.markwon:core:4.6.2'
-    implementation 'io.noties.markwon:ext-tables:4.6.2'
-    implementation 'io.noties.markwon:ext-strikethrough:4.6.2'
-    implementation 'io.noties.markwon:ext-tasklist:4.6.2'
-    implementation 'io.noties.markwon:html:4.6.2'
-    implementation 'io.noties.markwon:linkify:4.6.2'
-    // LaTeX 数学公式渲染（块级 $$...$$ + 行内；行内需 inline-parser）
-    implementation 'io.noties.markwon:ext-latex:4.6.2'
-    implementation 'io.noties.markwon:inline-parser:4.6.2'
-
-    // 新一代 Markdown 渲染底座（Compose 原生，GFM 全量；m3 组件/代码高亮/Coil2 图片）
+    // Markdown 渲染底座（Compose 原生，GFM 全量；m3 组件/代码高亮/Coil2 图片）
     implementation 'com.mikepenz:multiplatform-markdown-renderer-android:0.46.0'
     implementation 'com.mikepenz:multiplatform-markdown-renderer-m3-android:0.46.0'
     implementation 'com.mikepenz:multiplatform-markdown-renderer-code-android:0.46.0'

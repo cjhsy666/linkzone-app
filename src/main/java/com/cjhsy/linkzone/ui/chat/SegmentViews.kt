@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.cjhsy.linkzone.data.model.MessageSegment
+import com.cjhsy.linkzone.ui.chat.md.MarkdownContent
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -52,8 +53,7 @@ import java.net.URI
 
 /**
  * 消息段渲染入口：
- * - [freeCopy] 为 true（自由复制模式）时文本段包在 [SelectionContainer] 里，长按出选区手柄；
- * - Markdown 段是原生 TextView，同样由 [freeCopy] 控制是否开启文本可选择；
+ * - [freeCopy] 为 true（自由复制模式）时文本/Markdown 段包在 [SelectionContainer] 里，长按出选区手柄；
  * - 任何内容（文本/Markdown/媒体）长按都经 [onMediaLongClick] 上抛（弹消息操作菜单）；
  *   自由复制模式下长按让位给文本选择，不上抛。
  */
@@ -147,7 +147,8 @@ private fun SegmentView(
                 modifier = Modifier.fillMaxWidth(),
                 selectable = freeCopy,
                 onLongClick = onMediaLongClick,
-                onTextClick = onTextClick
+                onTextClick = onTextClick,
+                baseUrl = baseUrl
             )
         }
 
@@ -723,7 +724,7 @@ private fun GenericCardText(seg: MessageSegment, onSurface: Color) {
     )
 }
 
-// Markdown 段渲染见 [MarkdownContent]（Markwon：表格/代码/任务列表/链接等完整语法）
+// Markdown 段渲染见 [MarkdownContent]（ui.chat.md 包：multiplatform-markdown-renderer 纯 Compose 渲染）
 
 private val xmlItemRegex = Regex("""item\s+name="([^"]+)"""")
 
