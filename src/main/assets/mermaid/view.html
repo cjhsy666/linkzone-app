@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<script src="mermaid.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  #wrap { width: 100vw; overflow: auto; display: flex; justify-content: center; }
+  #err { color: #EF4444; font: 12px monospace; white-space: pre-wrap; padding: 12px; }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="graph"></div></div>
+<pre id="err" style="display:none"></pre>
+<script>
+  var code = /*__CODE__*/"";
+  mermaid.initialize({ startOnLoad: false, theme: "__THEME__", securityLevel: "loose" });
+  mermaid.render("graphSvg", code).then(function(r) {
+    document.getElementById("graph").innerHTML = r.svg;
+  }).catch(function(e) {
+    var el = document.getElementById("err");
+    el.style.display = "block";
+    el.textContent = "图表渲染失败\n" + (e && e.message ? e.message : String(e));
+  });
+</script>
+</body>
+</html>

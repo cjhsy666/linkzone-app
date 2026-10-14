@@ -1,73 +1,38 @@
 package com.cjhsy.linkzone.ui.chat
 
 import android.content.Intent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import android.widget.TextView
-import io.noties.markwon.AbstractMarkwonPlugin
-import io.noties.markwon.Markwon
-import io.noties.markwon.core.MarkwonTheme
-import io.noties.markwon.ext.latex.JLatexMathPlugin
-import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
-import io.noties.markwon.ext.tasklist.TaskListPlugin
-import io.noties.markwon.html.HtmlPlugin
-import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
-import io.noties.markwon.linkify.LinkifyPlugin
+import org.intellij.markdown.MarkdownElementTypes
 
 /**
- * 完整 Markdown 渲染（Markwon 驱动 TextView）：
- * 标题 / 段落 / 有序无序列表 / 引用 / 分割线 / 代码块 / 行内代码、加粗、斜体、删除线 /
- * 链接（点击打开浏览器）/ 表格 / 任务列表复选框 / 自动链接 / 基础内联 HTML /
- * LaTeX 数学公式（块级 $$...$$ 与行内 $...$）。
+ * 完整 Markdown 渲染（intellij-markdown AST 解析 + Compose 原生渲染）：
+ * 标题层级（H1/H2 带分隔线）/ 段落 / 有序无序列表 / 任务列表 / 引用块（品牌色竖条卡片）/
+ * 代码块（Prism4j 语法高亮 + 行号 + 折叠 + 复制）/ 行内代码（圆角药丸）/ 加粗、斜体、删除线 /
+ * 链接（点击打开浏览器）/ 表格 / 行内与块级 LaTeX 公式 / Mermaid 图表（懒加载 WebView）。
+ *
+ * 解析按内容 remember 缓存：流式期间历史气泡不重复解析；解析异常降级为纯文本，
+ * 绝不在 composition 内抛出。
  *
  * 颜色随气泡适配：右侧品牌气泡传白色文字，左侧白气泡传深色文字。
  */
@@ -84,487 +49,48 @@ fun MarkdownContent(
     /** 点击 Markdown 文本（非链接处）回调（编辑重发 / 退出自由复制） */
     onTextClick: (() -> Unit)? = null
 ) {
-    val context = LocalContext.current
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val latexTextSize = with(density) { 14.sp.toPx() }
+    val density = LocalDensity.current
+    // 回调可能随重组变化（气泡菜单重建等），ctx 按内容缓存——回调经稳定引用传入
+    val latestLongClick = androidx.compose.runtime.rememberUpdatedState(onLongClick)
+    val latestTextClick = androidx.compose.runtime.rememberUpdatedState(onTextClick)
 
-    val markwon = remember(linkColor, textColor) {
-        // 代码块 / 行内代码配色（随气泡文字色派生，无新依赖）
-        val inlineCodeBg = linkColor.copy(alpha = 0.12f).toArgb()
-        val blockCodeBg = textColor.copy(alpha = 0.06f).toArgb()
-        Markwon.builder(context)
-            .usePlugin(TaskListPlugin.create(context))
-            .usePlugin(StrikethroughPlugin.create())
-            .usePlugin(HtmlPlugin.create())
-            .usePlugin(LinkifyPlugin.create())
-            // 行内解析交给 inline-parser（行内 LaTeX 需要），同时启用行内 LaTeX
-            .usePlugin(MarkwonInlineParserPlugin.create())
-            .usePlugin(
-                JLatexMathPlugin.create(latexTextSize) { builder ->
-                    builder.inlinesEnabled(true)
-                    builder.theme().blockFitCanvas(true)
-                }
-            )
-            .usePlugin(object : AbstractMarkwonPlugin() {
-                override fun configureTheme(builder: MarkwonTheme.Builder) {
-                    builder
-                        .codeTextColor(linkColor.toArgb())
-                        .codeBackgroundColor(inlineCodeBg)
-                        .codeBlockTextColor(textColor.toArgb())
-                        .codeBlockBackgroundColor(blockCodeBg)
-                }
-            })
-            .build()
+    // 解析 AST：按内容缓存；失败（畸形输入）整体降级为纯文本渲染
+    val ast = remember(markdown) {
+        runCatching { parseMarkdownAst(markdown) }.getOrNull()
     }
 
-    // 拆分为文本段（Markwon）/ 表格段 / 代码块段（均 Compose 自绘）：
-    // Markwon 的表格 span 窄屏换行会溢出边框、代码块无卡片/复制/高亮，故两者自绘。
-    // 拆分失败（畸形输入）时整体退化为单个文本段，绝不在 composition 内抛出。
-    val segments = remember(markdown) {
-        runCatching { splitMarkdownBlocks(markdown) }
-            .getOrElse { listOf(MdSegment.Text(markdown)) }
-    }
-
-    // 长按/点击回调可能随重组变化，用稳定引用持有最新值（TextView 监听器只设置一次）
-    val latestLongClick = rememberUpdatedState(onLongClick)
-    val latestClick = rememberUpdatedState(onTextClick)
-
-    Column(modifier = modifier) {
-        segments.forEach { seg ->
-            when (seg) {
-                is MdSegment.Text -> MarkwonTextView(
-                    markwon = markwon,
-                    raw = seg.raw,
-                    textColor = textColor,
-                    linkColor = linkColor,
-                    selectable = selectable,
-                    latestLongClick = latestLongClick,
-                    latestClick = latestClick
-                )
-                is MdSegment.Table -> MarkdownTableBlock(
-                    rows = seg.rows,
-                    textColor = textColor,
-                    linkColor = linkColor
-                )
-                is MdSegment.Code -> MarkdownCodeBlock(
-                    lang = seg.lang,
-                    code = seg.code,
-                    textColor = textColor
-                )
-            }
-        }
-    }
-}
-
-/** Markwon 驱动的单段 Markdown 文本视图（从 MarkdownContent 抽出，便于表格分段复用） */
-@Composable
-private fun MarkwonTextView(
-    markwon: Markwon,
-    raw: String,
-    textColor: Color,
-    linkColor: Color,
-    selectable: Boolean,
-    latestLongClick: androidx.compose.runtime.State<(() -> Unit)?>,
-    latestClick: androidx.compose.runtime.State<(() -> Unit)?>
-) {
-    // 仅在内容变化时解析+渲染，避免列表重组反复解析整段 Markdown。
-    // 流式期间的半截 Markdown/LaTeX（未闭合 $$、残缺 HTML 等）可能触发
-    // Markwon/JLatexMath 插件抛异常——解析发生在 composition 内，一旦抛出
-    // 应用直接闪退。这里逐级降级：完整解析 → 不做 LaTeX 预处理解析 → 纯文本。
-    val rendered = remember(markwon, raw) {
-        runCatching { markwon.toMarkdown(preprocessLatex(raw)) }
-            .recoverCatching { markwon.toMarkdown(raw) }
-            .getOrElse { android.text.SpannableString(raw) }
-    }
-    AndroidView(
-        modifier = Modifier.fillMaxWidth(),
-        factory = { ctx ->
-            TextView(ctx).apply {
-                // 链接由 Markwon 的 LinkResolver 统一以 ACTION_VIEW 打开浏览器
-                movementMethod = android.text.method.LinkMovementMethod.getInstance()
-                // 自由复制模式由外层切换（菜单点"自由复制"进入，点气泡背景退出）
-                setTextIsSelectable(false)
-                // 排版：比例行高 1.45（长文阅读不局促），微弱字距提升呼吸感
-                setLineSpacing(0f, 1.45f)
-                letterSpacing = 0.01f
-                val pad = (4 * ctx.resources.displayMetrics.density).toInt()
-                setPadding(0, pad, 0, pad)
-                // 长按主动上报给外层弹消息菜单：
-                // TextView 会吞掉触摸流，外层 Compose 的 combinedClickable 收不到长按，
-                // 必须在这里桥接。返回 true 消费掉，避免触发系统的文本选择；
-                // 自由复制模式下外层传 null，返回 false 让位给系统选择
-                setOnLongClickListener {
-                    val cb = latestLongClick.value
-                    if (cb != null && !isTextSelectable) {
-                        cb()
-                        true
-                    } else false
-                }
-                // 设置 OnLongClickListener 后 TextView 会消费掉所有触摸事件（含点击），
-                // 外层气泡的点击（编辑重发/退出自由复制）收不到，这里桥接点击；
-                // 命中链接时 LinkMovementMethod 优先处理，不会触发该回调
-                setOnClickListener { latestClick.value?.invoke() }
-            }
-        },
-        update = { tv ->
-            tv.setTextColor(textColor.toArgb())
-            tv.setLinkTextColor(linkColor.toArgb())
-            tv.setTextIsSelectable(selectable)
-            tv.textSize = 15f
-            tv.text = rendered
-        }
-    )
-}
-
-// ---------- 表格：从 Markdown 拆出 + Compose 自绘（替代 Markwon TablePlugin） ----------
-
-/** 拆分出的渲染段：纯文本段（走 Markwon）或表格段（Compose 自绘） */
-internal sealed class MdSegment {
-    data class Text(val raw: String) : MdSegment()
-    /** rows[0] 为表头，其余为数据行 */
-    data class Table(val rows: List<List<String>>) : MdSegment()
-    /** 围栏代码块：lang 为语言标识（可为空），code 为代码内容 */
-    data class Code(val lang: String, val code: String) : MdSegment()
-}
-
-/** GFM 表格分隔行：| :--- | ---: | 之类（仅含 | : - 空格 且至少一段 --） */
-private fun isTableDivider(line: String): Boolean {
-    val t = line.trim()
-    if (t.isEmpty() || !t.contains('-')) return false
-    if (!t.all { it == '|' || it == ':' || it == '-' || it == ' ' || it == '\t' }) return false
-    return Regex("-{2,}").containsMatchIn(t)
-}
-
-/** 解析一行表格为单元格列表（剥首尾 |，处理 \| 转义） */
-private fun parseTableRow(line: String): List<String> {
-    var s = line.trim()
-    if (s.startsWith("|")) s = s.substring(1)
-    if (s.endsWith("|") && !s.endsWith("\\|")) s = s.substring(0, s.length - 1)
-    return s.split('|').map { it.trim().replace("\\|", "|") }
-}
-
-/**
- * 把 markdown 拆成文本段/表格段序列。
- * 表格判定：当前行含 | 且下一行是分隔行（GFM 规则），随后的含 | 非空行都归入表格。
- */
-internal fun splitMarkdownTables(markdown: String): List<MdSegment> {
-    val out = mutableListOf<MdSegment>()
-    val textBuf = StringBuilder()
-    val lines = markdown.lines()
-
-    fun flushText() {
-        if (textBuf.isNotBlank()) out.add(MdSegment.Text(textBuf.toString().trimEnd('\n')))
-        textBuf.clear()
-    }
-
-    var i = 0
-    while (i < lines.size) {
-        val line = lines[i]
-        val next = lines.getOrNull(i + 1)
-        if (line.contains('|') && next != null && isTableDivider(next)) {
-            flushText()
-            val rows = mutableListOf(parseTableRow(line)) // 表头
-            i += 2 // 跳过表头与分隔行
-            while (i < lines.size && lines[i].trim().isNotEmpty() &&
-                (lines[i].contains('|') || lines[i].trimStart().startsWith("|"))) {
-                rows.add(parseTableRow(lines[i]))
-                i++
-            }
-            // 规整为相同列数，避免渲染越界
-            val cols = rows.maxOf { it.size }.coerceAtLeast(2)
-            out.add(MdSegment.Table(rows.map { r ->
-                if (r.size >= cols) r else r + List(cols - r.size) { "" }
-            }))
-            continue
-        }
-        textBuf.append(line).append('\n')
-        i++
-    }
-    flushText()
-    return out
-}
-
-/**
- * 顶层拆分：先提取围栏代码块（代码块内可能包含表格样本文本，必须优先于表格提取），
- * 普通文本再交给 [splitMarkdownTables] 拆表格。
- */
-internal fun splitMarkdownBlocks(markdown: String): List<MdSegment> {
-    val out = mutableListOf<MdSegment>()
-    val buf = StringBuilder()
-    val lines = markdown.lines()
-
-    fun flush() {
-        if (buf.isNotBlank()) out.addAll(splitMarkdownTables(buf.toString().trimEnd('\n')))
-        buf.clear()
-    }
-
-    var i = 0
-    while (i < lines.size) {
-        val t = lines[i].trimStart()
-        val fenceChar = when {
-            t.startsWith("```") -> '`'
-            t.startsWith("~~~") -> '~'
-            else -> null
-        }
-        if (fenceChar != null) {
-            flush()
-            val lang = t.drop(3).trim()
-            val closePrefix = fenceChar.toString().repeat(3)
-            i++
-            val code = StringBuilder()
-            while (i < lines.size && !lines[i].trimStart().startsWith(closePrefix)) {
-                code.append(lines[i]).append('\n')
-                i++
-            }
-            if (i < lines.size) i++ // 跳过闭合围栏（未闭合则已到文件尾）
-            out.add(MdSegment.Code(lang, code.toString().trimEnd('\n')))
-            continue
-        }
-        buf.append(lines[i]).append('\n')
-        i++
-    }
-    flush()
-    return out
-}
-
-/** 去掉单元格内的常见行内 markdown 标记（粗体/斜体/行内代码/链接只留文本） */
-private fun cleanInlineMd(s: String): String = s
-    .replace(Regex("""\*\*([^*]+)\*\*"""), "$1")
-    .replace(Regex("""\*([^*]+)\*"""), "$1")
-    .replace(Regex("""`([^`]+)`"""), "$1")
-    .replace(Regex("""\[([^\]]+)]\([^)]*\)"""), "$1")
-
-/** Compose 自绘表格：自适应行高（内容换行不会溢出）、横向滚动（宽表格）、行分隔线 */
-@Composable
-private fun MarkdownTableBlock(
-    rows: List<List<String>>,
-    textColor: Color,
-    linkColor: Color
-) {
-    if (rows.isEmpty()) return
-    val header = rows.first()
-    val body = rows.drop(1)
-    val divider = textColor.copy(alpha = 0.2f)
-    val cellPad = 10.dp
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .horizontalScroll(rememberScrollState())
-            .clip(RoundedCornerShape(10.dp))
-            .border(1.dp, divider, RoundedCornerShape(10.dp))
-    ) {
-        // 表头（浅底色区分层级）
-        Row(modifier = Modifier.background(textColor.copy(alpha = 0.05f))) {
-            header.forEach { cell ->
-                Text(
-                    text = cleanInlineMd(cell),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = textColor,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .widthIn(min = 104.dp)
-                        .padding(horizontal = cellPad, vertical = 8.dp)
-                )
-            }
-        }
-        HorizontalDivider(color = divider, thickness = 1.dp)
-        // 数据行
-        body.forEachIndexed { ri, row ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                row.forEach { cell ->
-                    AutoLinkText(
-                        text = cleanInlineMd(cell),
-                        textColor = textColor,
-                        linkColor = linkColor,
-                        modifier = Modifier
-                            .widthIn(min = 104.dp)
-                            .padding(horizontal = cellPad, vertical = 7.dp)
-                    )
-                }
-            }
-            if (ri < body.lastIndex) HorizontalDivider(color = divider.copy(alpha = 0.6f), thickness = 0.7.dp)
-        }
-    }
-}
-
-// ---------- 代码块：Compose 卡片（语言标签 / 一键复制 / prism4j 语法高亮） ----------
-
-/** 一套代码高亮配色（随气泡文字明暗切换） */
-private data class CodePalette(
-    val keyword: Color, val string: Color, val number: Color,
-    val comment: Color, val function: Color, val type: Color, val operator: Color
-)
-
-private val LIGHT_CODE = CodePalette(
-    keyword = Color(0xFF7C4DFF), string = Color(0xFF2E7D32), number = Color(0xFFB25000),
-    comment = Color(0xFF9E9E9E), function = Color(0xFF0B7285), type = Color(0xFF00695C),
-    operator = Color(0xFF5D4037)
-)
-
-private val DARK_CODE = CodePalette(
-    keyword = Color(0xFFC792EA), string = Color(0xFFC3E88D), number = Color(0xFFF78C6C),
-    comment = Color(0xFF8B949E), function = Color(0xFF82AAFF), type = Color(0xFF4EC9B0),
-    operator = Color(0xFF89DDFF)
-)
-
-/** prism4j 零依赖替代：轻量正则高亮（注释/字符串/数字/关键字/注解/函数调用） */
-private val CODE_KEYWORDS = setOf(
-    "abstract", "as", "assert", "async", "await", "begin", "bool", "boolean", "break",
-    "byte", "case", "catch", "char", "class", "const", "constructor", "continue",
-    "debugger", "def", "default", "del", "delete", "do", "double", "echo", "elif", "else",
-    "end", "enum", "except", "extends", "false", "final", "finally", "float", "fn", "for",
-    "foreach", "from", "func", "function", "global", "go", "if", "impl", "implements",
-    "import", "in", "instanceof", "int", "interface", "internal", "is", "lambda", "let",
-    "local", "long", "match", "module", "mut", "namespace", "new", "nil", "none", "nonlocal",
-    "not", "null", "open", "operator", "or", "override", "package", "pass", "private",
-    "protected", "pub", "public", "raise", "readonly", "record", "require", "return",
-    "sealed", "self", "short", "signed", "static", "string", "struct", "super", "switch",
-    "synchronized", "template", "then", "this", "throw", "throws", "trait", "transient",
-    "true", "try", "type", "typedef", "typeof", "union", "unsigned", "use", "using",
-    "val", "var", "virtual", "void", "when", "where", "while", "with", "yield"
-)
-
-private val HASH_COMMENT_LANGS = setOf(
-    "python", "py", "bash", "sh", "shell", "zsh", "yaml", "yml", "ruby", "rb",
-    "makefile", "dockerfile", "toml", "r", "perl", "conf", "ini"
-)
-
-/** 分词正则：注释 | 字符串 | 数字 | 注解 | 关键字 | 函数调用（命名组判定类别） */
-private fun buildCodeTokenRegex(hashComment: Boolean): Regex {
-    val commentBranch = buildString {
-        append("(?<!:)//[^\\n]*|/\\*[\\s\\S]*?\\*/")
-        if (hashComment) append("|#[^\\n]*")
-    }
-    return Regex(
-        "(?<comment>$commentBranch)" +
-            "|(?<string>\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|\"(?:\\\\.|[^\"\\\\\\n])*\"|" +
-            "'(?:\\\\.|[^'\\\\\\n])*'|`(?:\\\\.|[^`\\\\])*`)" +
-            "|(?<number>\\b(?:0[xXbBoO][0-9a-fA-F_]+|\\d[\\d_]*(?:\\.[\\d_]+)?(?:[eE][+-]?\\d+)?)[fFlLdDuU]*\\b)" +
-            "|(?<annotation>@[A-Za-z_]\\w*)" +
-            "|(?<keyword>\\b(?:${CODE_KEYWORDS.sorted().joinToString("|")})\\b)" +
-            "|(?<func>\\b[A-Za-z_]\\w*(?=\\s*\\())"
-    )
-}
-
-private val CODE_TOKENS_PLAIN = buildCodeTokenRegex(false)
-private val CODE_TOKENS_HASH = buildCodeTokenRegex(true)
-
-/** 正则高亮为 AnnotatedString；无命中保持正文色 */
-private fun highlightCode(code: String, lang: String, dark: Boolean): AnnotatedString {
-    val palette = if (dark) DARK_CODE else LIGHT_CODE
-    val regex = if (lang.lowercase() in HASH_COMMENT_LANGS) CODE_TOKENS_HASH else CODE_TOKENS_PLAIN
-    return buildAnnotatedString {
-        append(code)
-        for (m in regex.findAll(code)) {
-            val color = when {
-                m.groups["comment"] != null -> palette.comment
-                m.groups["string"] != null -> palette.string
-                m.groups["number"] != null -> palette.number
-                m.groups["annotation"] != null -> palette.type
-                m.groups["keyword"] != null -> palette.keyword
-                m.groups["func"] != null -> palette.function
-                else -> null
-            }
-            if (color != null) addStyle(SpanStyle(color = color), m.range.first, m.range.last + 1)
-        }
-    }
-}
-
-/** 现代代码卡片：顶部语言标签 + 复制按钮、等宽代码区、横向滚动、随气泡明暗配色 */
-@Composable
-private fun MarkdownCodeBlock(
-    lang: String,
-    code: String,
-    textColor: Color
-) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) {
-        if (copied) {
-            kotlinx.coroutines.delay(1500)
-            copied = false
-        }
-    }
-    val dark = textColor.luminance() > 0.5f
-    val bg = textColor.copy(alpha = 0.06f)
-    val border = textColor.copy(alpha = 0.14f)
-    val dim = textColor.copy(alpha = 0.65f)
-    val highlighted = remember(code, lang, dark) { highlightCode(code, lang, dark) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, border, RoundedCornerShape(12.dp))
-            .background(bg)
-    ) {
-        // 顶栏：语言名 + 复制
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = lang.ifBlank { "代码" },
-                style = MaterialTheme.typography.labelSmall,
-                color = dim,
-                modifier = Modifier.weight(1f)
-            )
-            TextButton(
-                onClick = {
-                    clipboard.setText(AnnotatedString(code))
-                    copied = true
-                },
-                contentPadding = PaddingValues(horizontal = 8.dp),
-                modifier = Modifier.height(30.dp)
-            ) {
-                Icon(
-                    imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                    contentDescription = if (copied) "已复制" else "复制",
-                    tint = dim,
-                    modifier = Modifier.size(13.dp)
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = if (copied) "已复制" else "复制",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = dim
-                )
-            }
-        }
-        HorizontalDivider(color = border, thickness = 0.7.dp)
-        // 代码区：等宽字体 + 横向滚动（长行不换行折断，滑出查看）
+    if (ast == null) {
         Text(
-            text = highlighted,
-            style = MaterialTheme.typography.bodySmall.copy(
-                fontFamily = FontFamily.Monospace,
-                lineHeight = 19.sp
-            ),
+            text = markdown,
+            style = bodyTextStyle,
             color = textColor,
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+            modifier = modifier
+        )
+        return
+    }
+
+    val ctx = remember(markdown, textColor, linkColor, selectable) {
+        MdRenderContext(
+            src = markdown,
+            textColor = textColor,
+            linkColor = linkColor,
+            selectable = selectable,
+            onLongClick = { latestLongClick.value?.invoke() },
+            onTextClick = { latestTextClick.value?.invoke() },
+            refLinks = collectLinkDefinitions(ast, markdown),
+            density = density
         )
     }
-}
 
-// ---------- 行内 LaTeX 预处理：把单美元 $...$ 转为 Markwon 的 $$...$$ ----------
-// Markwon 行内公式语法是 $$...$$，而模型通常输出 $...$；
-// 仅当内容具备 LaTeX 特征（反斜杠命令/上下标/花括号/等号/frac）才转换，避免误伤货币金额。
-private val SINGLE_DOLLAR_LATEX = Regex("""(?<!\$)\$(?!\$)(?!\s)([^\$\n]{1,200}?)\$(?!\$)""")
-
-private fun preprocessLatex(markdown: String): String =
-    SINGLE_DOLLAR_LATEX.replace(markdown) { m ->
-        val inner = m.groupValues[1]
-        val looksLikeLatex = inner.contains('\\') || inner.contains('^') || inner.contains('_') ||
-            inner.contains('{') || inner.contains('=') || inner.contains("frac")
-        if (looksLikeLatex) "\$\$$inner\$\$" else m.value
+    Column(modifier = modifier.fillMaxWidth()) {
+        // 顶层 MARKDOWN_FILE：直接渲染其子块
+        if (ast.type == MarkdownElementTypes.MARKDOWN_FILE) {
+            MdBlockChildren(ast, ctx)
+        } else {
+            MdBlock(ast, ctx)
+        }
     }
+}
 
 // ---------- 纯文本消息：网址 / 邮箱 / 电话 自动识别为可点链接（纯 Compose 实现） ----------
 
