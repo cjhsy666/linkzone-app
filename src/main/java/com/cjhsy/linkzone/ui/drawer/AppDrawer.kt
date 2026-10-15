@@ -19,16 +19,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
@@ -46,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -68,7 +69,7 @@ private const val LOCAL_BOT_PREFIX = "bot-local-"
 /**
  * 左侧抽屉菜单（豆包式）：
  * - 顶部会话搜索框 + 唯一云端主会话（固定置顶，不可删/不可置顶）+ 本地会话历史列表
- * - 本地会话按智能体二级 tab 分组（「全部」+ 各智能体），长按可重命名/置顶/删除
+ * - 本地会话按智能体可折叠分组（组头：图标+名称+数量+箭头），长按会话可重命名/置顶/删除
  * - 底部：设置 + 渐变资料卡（点击进入「我的」）
  * - 新建对话入口在聊天页顶栏右上角（仅本地智能体；云端唯一主会话不可新建）
  */
@@ -99,30 +100,56 @@ fun AppDrawer(
     var renamingConv by remember { mutableStateOf<ConvItem?>(null) }
     // 会话搜索关键词（按会话名过滤）
     var searchQuery by remember { mutableStateOf("") }
-    // 选中的智能体 tab（null = 全部）
-    var selectedAgentId by remember { mutableStateOf<String?>(null) }
+    // 收起的智能体分组（默认全部展开）
+    val collapsedAgents = remember { mutableStateListOf<String>() }
 
     /** conv.target_id（bot-local-{agentId}）→ agentId */
     fun agentIdOf(conv: ConvItem): String =
         conv.target_id.removePrefix(LOCAL_BOT_PREFIX).substringBefore(':')
 
-    // 有会话的智能体才显示 tab（按智能体清单顺序）
-    val agentTabs = remember(conversations, agents) {
-        val used = conversations.mapTo(mutableSetOf()) { agentIdOf(it) }
-        agents.filter { it.id in used }
-    }
-
-    // 仅在搜索词/会话列表/tab 变化时重新过滤，避免每次重组都重算
-    val filtered = remember(searchQuery, conversations, selectedAgentId, agentTabs) {
-        conversations.filter { conv ->
-            val matchesSearch = searchQuery.isBlank() ||
-                conv.name.contains(searchQuery, ignoreCase = true)
-            val matchesTab = selectedAgentId == null || agentIdOf(conv) == selectedAgentId
-            matchesSearch && matchesTab
-        }
+    // 仅在搜索词或会话列表变化时重新过滤，避免每次重组都重算
+    val filtered = remember(searchQuery, conversations) {
+        if (searchQuery.isBlank()) conversations
+        else conversations.filter { it.name.contains(searchQuery, ignoreCase = true) }
     }
     val pinned = remember(filtered) { filtered.filter { it.pinned } }
     val normal = remember(filtered) { filtered.filter { !it.pinned } }
+
+    // 智能体分组（按智能体清单顺序；智能体已删除的会话归入「其他会话」组）
+    val agentGroups = remember(filtered, agents) {
+        val byId = filtered.groupBy { agentIdOf(it) }
+        val known = agents.mapTo(mutableSetOf()) { it.id }
+        val named = agents.mapNotNull { a ->
+            byId[a.id]?.let { AgentGroup(a.id, a.name.ifBlank { "智能体" }, it) }
+        }
+        val orphans = byId.filterKeys { it !in known }
+            .map { AgentGroup(it.key, "其他会话", it.value) }
+        named + orphans
+    }
+
+    // 会话行渲染：搜索拍平与智能体分组两种模式共用
+    val convRow: @Composable (ConvItem) -> Unit = { conv ->
+        ConversationDrawerItem(
+            conv = conv,
+            selected = conv.id == currentConvId,
+            onClick = { onSwitchConversation(conv.id) },
+            onLongClick = { menuConv = conv },
+            menuOpen = menuConv?.id == conv.id,
+            onDismissMenu = { menuConv = null },
+            onRename = {
+                menuConv = null
+                renamingConv = conv
+            },
+            onPin = {
+                menuConv = null
+                onPinConversation(conv.id, !conv.pinned)
+            },
+            onDelete = {
+                menuConv = null
+                pendingDelete = conv
+            }
+        )
+    }
 
     Column(
         modifier = modifier
@@ -180,31 +207,7 @@ fun AppDrawer(
 
         SectionLabel(if (searchQuery.isBlank()) "本地会话" else "搜索结果")
 
-        // ---------- 二级 tab：按智能体分组（搜索时隐藏，避免与搜索结果混淆） ----------
-        if (searchQuery.isBlank() && agentTabs.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                AgentChip(
-                    label = "全部",
-                    selected = selectedAgentId == null,
-                    onClick = { selectedAgentId = null }
-                )
-                agentTabs.forEach { agent ->
-                    AgentChip(
-                        label = agent.name.ifBlank { "智能体" },
-                        selected = selectedAgentId == agent.id,
-                        onClick = { selectedAgentId = agent.id }
-                    )
-                }
-            }
-        }
-
-        // ---------- 会话区 ----------
+        // ---------- 会话区（搜索时拍平；否则按智能体分组折叠） ----------
         if (filtered.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -213,11 +216,7 @@ fun AppDrawer(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = when {
-                        searchQuery.isNotBlank() -> "没有匹配的会话"
-                        selectedAgentId != null -> "该智能体暂无会话"
-                        else -> "暂无本地会话"
-                    },
+                    text = if (searchQuery.isBlank()) "暂无本地会话" else "没有匹配的会话",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -229,64 +228,42 @@ fun AppDrawer(
                     .padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                // 置顶分组
-                if (pinned.isNotEmpty()) {
-                    items(pinned, key = { "p-" + it.id }) { conv ->
-                        ConversationDrawerItem(
-                            conv = conv,
-                            selected = conv.id == currentConvId,
-                            onClick = { onSwitchConversation(conv.id) },
-                            onLongClick = { menuConv = conv },
-                            menuOpen = menuConv?.id == conv.id,
-                            onDismissMenu = { menuConv = null },
-                            onRename = {
-                                menuConv = null
-                                renamingConv = conv
-                            },
-                            onPin = {
-                                menuConv = null
-                                onPinConversation(conv.id, !conv.pinned)
-                            },
-                            onDelete = {
-                                menuConv = null
-                                pendingDelete = conv
-                            }
-                        )
-                    }
-                }
-                // 普通分组
-                if (normal.isNotEmpty()) {
+                if (searchQuery.isNotBlank()) {
+                    // 搜索结果拍平展示（置顶优先）
                     if (pinned.isNotEmpty()) {
-                        item(key = "divider") {
-                            Text(
-                                text = "全部会话",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)
+                        items(pinned, key = { "p-" + it.id }) { conv -> convRow(conv) }
+                    }
+                    if (normal.isNotEmpty()) {
+                        if (pinned.isNotEmpty()) {
+                            item(key = "divider") {
+                                Text(
+                                    text = "全部会话",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)
+                                )
+                            }
+                        }
+                        items(normal, key = { it.id }) { conv -> convRow(conv) }
+                    }
+                } else {
+                    // 智能体分组：组头可点击折叠/展开，组内会话置顶优先
+                    agentGroups.forEach { group ->
+                        val expanded = group.agentId !in collapsedAgents
+                        item(key = "g-" + group.agentId) {
+                            AgentGroupHeader(
+                                name = group.name,
+                                count = group.convs.size,
+                                expanded = expanded,
+                                onClick = {
+                                    if (expanded) collapsedAgents.add(group.agentId)
+                                    else collapsedAgents.remove(group.agentId)
+                                }
                             )
                         }
-                    }
-                    items(normal, key = { it.id }) { conv ->
-                        ConversationDrawerItem(
-                            conv = conv,
-                            selected = conv.id == currentConvId,
-                            onClick = { onSwitchConversation(conv.id) },
-                            onLongClick = { menuConv = conv },
-                            menuOpen = menuConv?.id == conv.id,
-                            onDismissMenu = { menuConv = null },
-                            onRename = {
-                                menuConv = null
-                                renamingConv = conv
-                            },
-                            onPin = {
-                                menuConv = null
-                                onPinConversation(conv.id, !conv.pinned)
-                            },
-                            onDelete = {
-                                menuConv = null
-                                pendingDelete = conv
-                            }
-                        )
+                        if (expanded) {
+                            items(group.convs, key = { it.id }) { conv -> convRow(conv) }
+                        }
                     }
                 }
             }
@@ -364,28 +341,54 @@ private fun SectionLabel(text: String) {
     )
 }
 
-/** 智能体分组二级 tab 小胶囊（选中主色底，未选中淡灰底） */
+/** 智能体分组头：机器人图标 + 名称 + 会话数 + 展开/收起箭头（点击折叠/展开组内会话） */
 @Composable
-private fun AgentChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
+private fun AgentGroupHeader(name: String, count: Int, expanded: Boolean, onClick: () -> Unit) {
+    Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            )
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(
+            imageVector = Icons.Filled.SmartToy,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(17.dp)
+        )
+        Spacer(Modifier.width(10.dp))
         Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
+            text = name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1,
-            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-            else MaterialTheme.colorScheme.onSurfaceVariant
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+        )
+        Spacer(Modifier.width(6.dp))
+        Icon(
+            imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+            contentDescription = if (expanded) "收起" else "展开",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp)
         )
     }
 }
+
+/** 抽屉本地会话的智能体分组 */
+private data class AgentGroup(
+    val agentId: String,
+    val name: String,
+    val convs: List<ConvItem>
+)
 
 /** 手动重命名标题上限（与 ChatViewModel.RENAME_MAX_LEN 一致） */
 private const val RENAME_MAX_LEN = 50
