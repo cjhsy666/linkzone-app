@@ -34,4 +34,6 @@ fun mdComponents(textColor: Color, highlightsBuilder: Highlights.Builder): Markd
             }
         },
         checkbox = { MarkdownCheckBox(it.content, it.node, it.typography.text) },
+        // 库默认表格全部左对齐，换成支持 `:---:` 对齐语法的自家表格
+        table = { MdAlignedTable(it.content, it.node, it.typography.table) },
     )
