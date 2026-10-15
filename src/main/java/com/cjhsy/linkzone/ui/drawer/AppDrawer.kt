@@ -19,13 +19,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
@@ -38,6 +41,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cjhsy.linkzone.data.model.ConvItem
+import com.cjhsy.linkzone.data.model.LlmAgent
 import com.cjhsy.linkzone.data.model.UserProfile
 
 /** 本地智能体会话 bot_id 前缀（与 ChatViewModel 保持一致） */
@@ -63,6 +68,7 @@ private const val LOCAL_BOT_PREFIX = "bot-local-"
 /**
  * 左侧抽屉菜单（豆包式）：
  * - 顶部会话搜索框 + 唯一云端主会话（固定置顶，不可删/不可置顶）+ 本地会话历史列表
+ * - 本地会话按智能体二级 tab 分组（「全部」+ 各智能体），长按可重命名/置顶/删除
  * - 底部：设置 + 渐变资料卡（点击进入「我的」）
  * - 新建对话入口在聊天页顶栏右上角（仅本地智能体；云端唯一主会话不可新建）
  */
@@ -73,26 +79,46 @@ fun AppDrawer(
     /** 唯一云端主会话（固定置顶项；null 时显示占位，点击触发重建） */
     mainConv: ConvItem?,
     conversations: List<ConvItem>,
+    /** 本地智能体清单（二级 tab 分组用，按 id → 名称映射） */
+    agents: List<LlmAgent> = emptyList(),
     currentConvId: String,
     connected: Boolean,
     onOpenMainConversation: () -> Unit,
     onSwitchConversation: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
     onPinConversation: (String, Boolean) -> Unit = { _, _ -> },
+    onRenameConversation: (String, String) -> Unit = { _, _ -> },
     onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     // 待确认删除的会话（非空时弹确认框）
     var pendingDelete by remember { mutableStateOf<ConvItem?>(null) }
-    // 长按菜单打开的会话（置顶/删除）
+    // 长按菜单打开的会话（重命名/置顶/删除）
     var menuConv by remember { mutableStateOf<ConvItem?>(null) }
+    // 重命名对话框目标（非空时弹输入框）
+    var renamingConv by remember { mutableStateOf<ConvItem?>(null) }
     // 会话搜索关键词（按会话名过滤）
     var searchQuery by remember { mutableStateOf("") }
+    // 选中的智能体 tab（null = 全部）
+    var selectedAgentId by remember { mutableStateOf<String?>(null) }
 
-    // 仅在搜索词或会话列表变化时重新过滤，避免每次重组都重算
-    val filtered = remember(searchQuery, conversations) {
-        conversations.filter {
-            searchQuery.isBlank() || it.name.contains(searchQuery, ignoreCase = true)
+    /** conv.target_id（bot-local-{agentId}）→ agentId */
+    fun agentIdOf(conv: ConvItem): String =
+        conv.target_id.removePrefix(LOCAL_BOT_PREFIX).substringBefore(':')
+
+    // 有会话的智能体才显示 tab（按智能体清单顺序）
+    val agentTabs = remember(conversations, agents) {
+        val used = conversations.mapTo(mutableSetOf()) { agentIdOf(it) }
+        agents.filter { it.id in used }
+    }
+
+    // 仅在搜索词/会话列表/tab 变化时重新过滤，避免每次重组都重算
+    val filtered = remember(searchQuery, conversations, selectedAgentId, agentTabs) {
+        conversations.filter { conv ->
+            val matchesSearch = searchQuery.isBlank() ||
+                conv.name.contains(searchQuery, ignoreCase = true)
+            val matchesTab = selectedAgentId == null || agentIdOf(conv) == selectedAgentId
+            matchesSearch && matchesTab
         }
     }
     val pinned = remember(filtered) { filtered.filter { it.pinned } }
@@ -154,6 +180,30 @@ fun AppDrawer(
 
         SectionLabel(if (searchQuery.isBlank()) "本地会话" else "搜索结果")
 
+        // ---------- 二级 tab：按智能体分组（搜索时隐藏，避免与搜索结果混淆） ----------
+        if (searchQuery.isBlank() && agentTabs.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                AgentChip(
+                    label = "全部",
+                    selected = selectedAgentId == null,
+                    onClick = { selectedAgentId = null }
+                )
+                agentTabs.forEach { agent ->
+                    AgentChip(
+                        label = agent.name.ifBlank { "智能体" },
+                        selected = selectedAgentId == agent.id,
+                        onClick = { selectedAgentId = agent.id }
+                    )
+                }
+            }
+        }
+
         // ---------- 会话区 ----------
         if (filtered.isEmpty()) {
             Box(
@@ -163,7 +213,11 @@ fun AppDrawer(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (searchQuery.isBlank()) "暂无本地会话" else "没有匹配的会话",
+                    text = when {
+                        searchQuery.isNotBlank() -> "没有匹配的会话"
+                        selectedAgentId != null -> "该智能体暂无会话"
+                        else -> "暂无本地会话"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -185,6 +239,10 @@ fun AppDrawer(
                             onLongClick = { menuConv = conv },
                             menuOpen = menuConv?.id == conv.id,
                             onDismissMenu = { menuConv = null },
+                            onRename = {
+                                menuConv = null
+                                renamingConv = conv
+                            },
                             onPin = {
                                 menuConv = null
                                 onPinConversation(conv.id, !conv.pinned)
@@ -216,6 +274,10 @@ fun AppDrawer(
                             onLongClick = { menuConv = conv },
                             menuOpen = menuConv?.id == conv.id,
                             onDismissMenu = { menuConv = null },
+                            onRename = {
+                                menuConv = null
+                                renamingConv = conv
+                            },
                             onPin = {
                                 menuConv = null
                                 onPinConversation(conv.id, !conv.pinned)
@@ -252,6 +314,35 @@ fun AppDrawer(
             )
         }
 
+        // 重命名会话对话框（默认标题 = 首条用户消息，可随时改）
+        renamingConv?.let { conv ->
+            var nameInput by remember(conv.id) { mutableStateOf(conv.name) }
+            AlertDialog(
+                onDismissRequest = { renamingConv = null },
+                title = { Text("重命名会话") },
+                text = {
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it.take(RENAME_MAX_LEN) },
+                        singleLine = true,
+                        placeholder = { Text("会话标题") }
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = nameInput.isNotBlank(),
+                        onClick = {
+                            renamingConv = null
+                            onRenameConversation(conv.id, nameInput)
+                        }
+                    ) { Text("保存") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { renamingConv = null }) { Text("取消") }
+                }
+            )
+        }
+
         // ---------- 底部资料卡（点头像/昵称进入「我的」，右上角设置图标进入设置） ----------
         DrawerHeader(
             profile = profile,
@@ -273,7 +364,33 @@ private fun SectionLabel(text: String) {
     )
 }
 
-/** 抽屉中的历史会话项（点击切换，长按置顶/删除菜单） */
+/** 智能体分组二级 tab 小胶囊（选中主色底，未选中淡灰底） */
+@Composable
+private fun AgentChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** 手动重命名标题上限（与 ChatViewModel.RENAME_MAX_LEN 一致） */
+private const val RENAME_MAX_LEN = 50
+
+/** 抽屉中的历史会话项（点击切换，长按重命名/置顶/删除菜单） */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationDrawerItem(
@@ -283,6 +400,7 @@ private fun ConversationDrawerItem(
     onLongClick: () -> Unit,
     menuOpen: Boolean = false,
     onDismissMenu: () -> Unit = {},
+    onRename: () -> Unit = {},
     onPin: () -> Unit = {},
     onDelete: () -> Unit = {}
 ) {
@@ -358,8 +476,19 @@ private fun ConversationDrawerItem(
             }
         }
 
-        // 长按菜单：置顶/取消置顶 + 删除（锚定到会话项）
+        // 长按菜单：重命名 + 置顶/取消置顶 + 删除（锚定到会话项）
         DropdownMenu(expanded = menuOpen, onDismissRequest = onDismissMenu) {
+            DropdownMenuItem(
+                text = { Text("重命名") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                },
+                onClick = onRename
+            )
             DropdownMenuItem(
                 text = { Text(if (conv.pinned) "取消置顶" else "置顶") },
                 leadingIcon = {

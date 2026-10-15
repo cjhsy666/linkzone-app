@@ -1619,14 +1619,8 @@ class ChatViewModel(
                 // 消息自身时间戳沿用锚点聚集值，仅用于版本排序/分页
                 System.currentTimeMillis() * 1000
             )
-            // 首答完成：LLM 总结会话标题 + 生成回复建议（思考中断、无正文时不触发）
+            // 首答完成：生成回复建议（思考中断、无正文时不触发）
             if (finalText.isNotBlank()) {
-                maybeGenerateLlmTitle(
-                    convId = convId,
-                    agent = agent,
-                    userText = _state.value.messages.firstOrNull { it.isSelf }?.content.orEmpty(),
-                    aiText = finalText
-                )
                 maybeGenerateSuggestions(agent, model, finalText)
             }
             return
@@ -2223,14 +2217,24 @@ class ChatViewModel(
         _state.value = _state.value.copy(replyTo = null)
     }
 
-    /** 首条消息后用消息摘要重命名会话（豆包式）：云端走 REST；本地会话改由首答完成后 LLM 总结标题。
+    /** 首条消息后用消息摘要重命名会话（豆包式）：默认标题 = 首条用户消息截断，本地/云端同规则。
      *  云端主会话是固定入口，名字不随消息变化，跳过重命名。 */
     private fun maybeNameConversation(firstText: String) {
         val s = _state.value
         if (s.currentName != NEW_CONV_NAME) return
-        if (isLocalConvId(s.currentConvId)) return
         if (isMainConv(s.currentConvId)) return
         val name = firstText.take(NAME_MAX_LEN)
+        if (name.isBlank()) return
+        if (isLocalConvId(s.currentConvId)) {
+            // 本地会话：默认标题 = 首条用户消息截断（用户可长按手动改名）
+            viewModelScope.launch {
+                localStore.rename(s.currentConvId, name)
+                if (_state.value.currentConvId == s.currentConvId) {
+                    _state.value = _state.value.copy(currentName = name)
+                }
+            }
+            return
+        }
         viewModelScope.launch {
             chatRepository.updateConversation(s.currentConvId, name = name)
             _state.value = _state.value.copy(currentName = name)
@@ -2239,61 +2243,17 @@ class ChatViewModel(
     }
 
     /**
-     * 本地会话首答完成后用 LLM 总结会话标题（RikkaHub TitleSummary 式），
-     * 失败/无模型时回退用首条用户消息截断。仅当会话名仍是默认「新对话」时执行一次。
+     * 手动重命名本地会话（抽屉长按菜单「重命名」）。
+     * 改的是当前会话时同步顶部标题。
      */
-    private fun maybeGenerateLlmTitle(
-        convId: String,
-        agent: LlmAgent,
-        userText: String,
-        aiText: String
-    ) {
+    fun renameConversation(convId: String, name: String) {
+        if (!isLocalConvId(convId)) return
+        val trimmed = name.trim().take(RENAME_MAX_LEN)
+        if (trimmed.isBlank()) return
         viewModelScope.launch {
-            val conv = localStore.getConversation(convId)
-            if (conv == null || (conv.name.isNotBlank() && conv.name != NEW_CONV_NAME)) return@launch
-            val fallback = userText.take(NAME_MAX_LEN).ifBlank { aiText.take(NAME_MAX_LEN) }
-            if (fallback.isBlank()) return@launch
-            val title = runCatching {
-                val (setting, model) = resolveChatModel(agent) ?: return@runCatching null
-                val content = buildString {
-                    append("用户：").appendLine(userText.take(600))
-                    append("助手：").append(aiText.take(600))
-                }
-                val result = providerManager.getProviderByType(setting).generateText(
-                    providerSetting = setting,
-                    messages = listOf(
-                        UIMessage.user(
-                            """
-                            I will give you some dialogue content in the `<content>` block.
-                            You need to summarize the conversation between user and assistant into a short title.
-                            1. The title language should be consistent with the user's primary language
-                            2. Do not use punctuation or other special symbols
-                            3. Reply directly with the title
-                            4. The title should not exceed 10 characters
-
-                            <content>
-                            $content
-                            </content>
-                            """.trimIndent()
-                        )
-                    ),
-                    params = TextGenerationParams(
-                        model = model,
-                        temperature = 0.3f,
-                        maxTokens = 100
-                    )
-                )
-                result.message.parts
-                    .filterIsInstance<UIMessagePart.Text>()
-                    .joinToString("") { it.text }
-                    .trim()
-            }.getOrNull().orEmpty()
-                .trim('"', '\'', '「', '」', '『', '』', '。', '.', ' ', '\n')
-            val finalTitle = title.take(NAME_MAX_LEN).ifBlank { fallback }
-            localStore.rename(convId, finalTitle)
-            // 本地会话不进 serverConvs；抽屉列表经 observeConversations 流自动刷新
+            localStore.rename(convId, trimmed)
             if (_state.value.currentConvId == convId) {
-                _state.value = _state.value.copy(currentName = finalTitle)
+                _state.value = _state.value.copy(currentName = trimmed)
             }
         }
     }
@@ -2964,6 +2924,8 @@ class ChatViewModel(
         /** 流式生成 UI 刷新节流（毫秒） */
         private const val THROTTLE_MS = 80L
         private const val NAME_MAX_LEN = 12
+        /** 手动重命名标题上限（抽屉长按「重命名」） */
+        private const val RENAME_MAX_LEN = 50
         /** 与服务端 handleUpload 限制一致（20MB） */
         private const val MAX_UPLOAD_BYTES = 20L * 1024 * 1024
     }

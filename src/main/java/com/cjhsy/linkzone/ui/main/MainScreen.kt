@@ -92,6 +92,7 @@ fun MainScreen(
                     profile = profile,
                     mainConv = drawerMainConv,
                     conversations = drawerConversations,
+                    agents = localAgents,
                     currentConvId = drawerChat.currentConvId,
                     connected = drawerChat.connected,
                     onOpenMainConversation = {
@@ -107,6 +108,9 @@ fun MainScreen(
                     },
                     onPinConversation = { convId, pinned ->
                         chatViewModel.pinConversation(convId, pinned)
+                    },
+                    onRenameConversation = { convId, name ->
+                        chatViewModel.renameConversation(convId, name)
                     },
                     onNavigate = { route ->
                         closeDrawer()
