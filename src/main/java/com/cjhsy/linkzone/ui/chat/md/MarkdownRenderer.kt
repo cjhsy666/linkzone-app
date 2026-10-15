@@ -1,7 +1,9 @@
 package com.cjhsy.linkzone.ui.chat.md
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -67,7 +69,7 @@ fun MarkdownContent(
         if (baseUrl.isBlank()) Coil2ImageTransformerImpl else BaseUrlImageTransformer(baseUrl)
     }
 
-    Column(modifier = modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         blocks.forEach { block ->
             // 逐块解析缓存：前序块字符串不变 → remember 命中零开销，仅尾部增长块重解析；
             // 解析失败（罕见，parser 自身容错极高）→ 转义后按纯文本再解析兜底
@@ -75,18 +77,23 @@ fun MarkdownContent(
                 val parsed = parseMarkdown(block)
                 if (parsed is State.Error) parseMarkdown(escapeMarkdown(block)) else parsed
             }
-            Markdown(
-                state = state,
-                colors = colors,
-                typography = typography,
-                // 库默认 fillMaxSize，气泡内必须 fillMaxWidth，否则 LazyColumn item 测量异常
-                modifier = Modifier.fillMaxWidth(),
-                padding = mdPadding(),
-                dimens = mdDimens(),
-                imageTransformer = imageTransformer,
-                components = components,
-                animations = mdAnimations(),
-            )
+            if (state is State.Error) {
+                // 兜底也失败：绝不让内容不可见，直接纯文本展示
+                Text(text = block, style = typography.text)
+            } else {
+                Markdown(
+                    state = state,
+                    colors = colors,
+                    typography = typography,
+                    // 库默认 fillMaxSize，气泡内必须 fillMaxWidth，否则 LazyColumn item 测量异常
+                    modifier = Modifier.fillMaxWidth(),
+                    padding = mdPadding(),
+                    dimens = mdDimens(),
+                    imageTransformer = imageTransformer,
+                    components = components,
+                    animations = mdAnimations(),
+                )
+            }
         }
     }
 }
