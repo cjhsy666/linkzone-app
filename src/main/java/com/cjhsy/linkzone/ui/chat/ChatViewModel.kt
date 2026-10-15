@@ -818,27 +818,88 @@ class ChatViewModel(
         val allLocal = if (replySeg != null) listOf(replySeg) + localSegs else localSegs
         val preview = extractPreview(allLocal)
 
-        // 本地会话：不上传、不经 WS，file:// 段直接落本地库
+        // 本地会话：不经 WS，直接落本地库
         if (isLocalConvId(s.currentConvId)) {
+            // 无附件：纯文本直接落库
+            if (attachments.isEmpty()) {
+                val isFirst = s.messages.none { it.isSelf }
+                val msg = MessageItem(
+                    id = UUID.randomUUID().toString(),
+                    convId = s.currentConvId,
+                    senderId = myId,
+                    senderName = "我",
+                    segments = activeBranchConstraints() + allLocal,
+                    content = preview,
+                    isSelf = true,
+                    timestamp = System.currentTimeMillis() * 1000
+                )
+                appendMessage(msg)
+                if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
+                viewModelScope.launch {
+                    localStore.insertMessage(msg)
+                    localStore.touch(s.currentConvId, preview, msg.timestamp)
+                }
+                if (replySeg != null) _state.value = _state.value.copy(replyTo = null)
+                maybeDispatchLocal()
+                return
+            }
+
+            // 有附件：先 file:// 上屏预览，后台上传服务端拿 URL 后替换段再发 AI。
+            // 落库存服务端 URL，AI 上下文直接拿到可访问的图片链接（不再 base64）。
+            val clientId = UUID.randomUUID().toString()
             val isFirst = s.messages.none { it.isSelf }
-            val msg = MessageItem(
-                id = UUID.randomUUID().toString(),
+            appendMessage(MessageItem(
+                id = clientId,
                 convId = s.currentConvId,
                 senderId = myId,
                 senderName = "我",
                 segments = activeBranchConstraints() + allLocal,
                 content = preview,
                 isSelf = true,
-                timestamp = System.currentTimeMillis() * 1000
-            )
-            appendMessage(msg)
+                timestamp = System.currentTimeMillis() * 1000,
+                uploading = true
+            ))
             if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
-            viewModelScope.launch {
-                localStore.insertMessage(msg)
-                localStore.touch(s.currentConvId, preview, msg.timestamp)
-            }
             if (replySeg != null) _state.value = _state.value.copy(replyTo = null)
-            maybeDispatchLocal()
+
+            viewModelScope.launch {
+                // 逐个上传附件，拿到服务端 URL 替换对应段
+                val uploadedSegs = mutableListOf<MessageSegment>()
+                if (replySeg != null) uploadedSegs.add(replySeg)
+                if (trimmed.isNotEmpty()) uploadedSegs.add(Segments.text(trimmed))
+                var allOk = true
+                for (att in attachments) {
+                    val result = chatRepository.uploadFile(att.file)
+                    if (result.isFailure) {
+                        allOk = false
+                        _state.value = _state.value.copy(
+                            error = result.exceptionOrNull()?.message ?: "图片上传失败"
+                        )
+                        break
+                    }
+                    val upload = result.getOrThrow()
+                    val segType = att.type ?: upload.segType.ifBlank { guessSegType(att.file) }
+                    uploadedSegs.add(buildMediaSeg(segType, upload.url, upload.name, upload.size, 0L))
+                }
+                // 上传完成：替换消息段为服务端 URL 并落库，AI 上下文即可拿到 URL
+                val finalSegs = activeBranchConstraints() + uploadedSegs
+                _state.value = _state.value.copy(
+                    messages = _state.value.messages.map { m ->
+                        if (m.id == clientId) m.copy(
+                            segments = finalSegs,
+                            uploading = false,
+                            uploadFailed = !allOk
+                        ) else m
+                    }
+                )
+                if (allOk) {
+                    val finalPreview = extractPreview(uploadedSegs)
+                    val msg = _state.value.messages.firstOrNull { it.id == clientId } ?: return@launch
+                    localStore.insertMessage(msg)
+                    localStore.touch(s.currentConvId, finalPreview, msg.timestamp)
+                    maybeDispatchLocal()
+                }
+            }
             return
         }
 
@@ -922,8 +983,14 @@ class ChatViewModel(
         val s = _state.value
         if (!s.ready || s.currentConvId.isBlank()) return
 
-        // 本地会话：不上传、无 20MB 限制，file:// 直接落本地库
+        // 本地会话：先 file:// 上屏预览，后台上传服务端拿 URL 后替换段再发 AI。
+        // 落库存服务端 URL，AI 上下文直接拿到可访问的图片链接（不再 base64）。
         if (isLocalConvId(s.currentConvId)) {
+            if (file.length() > MAX_UPLOAD_BYTES) {
+                _state.value = _state.value.copy(error = "文件过大，限制 20MB")
+                return
+            }
+            val clientId = UUID.randomUUID().toString()
             val localType = forcedType ?: guessSegType(file)
             val localSeg = buildMediaSeg(localType, "file://" + file.absolutePath, file.name, file.length(), durationSec)
             val replySeg = s.replyTo?.let {
@@ -937,26 +1004,48 @@ class ChatViewModel(
             val localSegs = if (replySeg != null) listOf(replySeg, localSeg) else listOf(localSeg)
             val preview = localSeg.display
             val isFirst = s.messages.none { it.isSelf }
-            val msg = MessageItem(
-                id = UUID.randomUUID().toString(),
+            appendMessage(MessageItem(
+                id = clientId,
                 convId = s.currentConvId,
                 senderId = myId,
                 senderName = "我",
                 segments = activeBranchConstraints() + localSegs,
                 content = preview,
                 isSelf = true,
-                timestamp = System.currentTimeMillis() * 1000
-            )
-            appendMessage(msg)
+                timestamp = System.currentTimeMillis() * 1000,
+                uploading = true
+            ))
             if (isFirst || s.currentName == NEW_CONV_NAME) maybeNameConversation(preview)
-            viewModelScope.launch {
-                localStore.insertMessage(msg)
-                localStore.touch(s.currentConvId, preview, msg.timestamp)
-            }
             if (replySeg != null) {
                 _state.value = _state.value.copy(replyTo = null)
             }
-            maybeDispatchLocal()
+
+            viewModelScope.launch {
+                val result = chatRepository.uploadFile(file)
+                if (result.isFailure) {
+                    _state.value = _state.value.copy(
+                        messages = _state.value.messages.map { m ->
+                            if (m.id == clientId) m.copy(uploading = false, uploadFailed = true) else m
+                        },
+                        error = result.exceptionOrNull()?.message ?: "上传失败"
+                    )
+                    return@launch
+                }
+                val upload = result.getOrThrow()
+                val segType = forcedType ?: upload.segType.ifBlank { localType }
+                val remoteSeg = buildMediaSeg(segType, upload.url, upload.name, upload.size, durationSec)
+                val remoteSegs = if (replySeg != null) listOf(replySeg, remoteSeg) else listOf(remoteSeg)
+                val finalSegs = activeBranchConstraints() + remoteSegs
+                _state.value = _state.value.copy(
+                    messages = _state.value.messages.map { m ->
+                        if (m.id == clientId) m.copy(segments = finalSegs, uploading = false) else m
+                    }
+                )
+                val msg = _state.value.messages.firstOrNull { it.id == clientId } ?: return@launch
+                localStore.insertMessage(msg)
+                localStore.touch(s.currentConvId, remoteSeg.display, msg.timestamp)
+                maybeDispatchLocal()
+            }
             return
         }
 
