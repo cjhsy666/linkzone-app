@@ -115,6 +115,11 @@ fun MainScreen(
                     onClearMainConversation = {
                         chatViewModel.clearMainConversation()
                     },
+                    onNewLocalConversation = {
+                        closeDrawer()
+                        pickerForNew = true
+                        showEnginePicker = true
+                    },
                     onNavigate = { route ->
                         closeDrawer()
                         onNavigate(route)

@@ -246,13 +246,8 @@ fun ChatScreen(
                     if (it.isBlank() || it == ChatViewModel.NEW_CONV_NAME) "新对话" else it
                 },
                 avatarEmoji = agent?.avatarEmoji.orEmpty(),
-                modelLabel = agent?.chatModelId?.substringAfterLast('/')?.ifBlank { null }
-                    ?: "默认模型",
                 connected = state.connected,
                 onOpenDrawer = onOpenDrawer,
-                onClickCloudTitle = onOpenEnginePicker,
-                onClickLocalTitle = { showModelSheet = true },
-                onNewConversation = onNewConversation,
                 onOpenSearch = viewModel::openSearch
             )
 
@@ -494,12 +489,8 @@ private fun ChatTopBar(
     cloudTitle: String,
     agentName: String,
     avatarEmoji: String,
-    modelLabel: String,
     connected: Boolean,
     onOpenDrawer: () -> Unit,
-    onClickCloudTitle: () -> Unit,
-    onClickLocalTitle: () -> Unit,
-    onNewConversation: () -> Unit,
     onOpenSearch: () -> Unit
 ) {
     Column {
@@ -515,12 +506,10 @@ private fun ChatTopBar(
             IconButton(onClick = onOpenDrawer) {
                 Icon(Icons.Filled.Menu, contentDescription = "菜单")
             }
-            // 标题区：云端=标题 chip；本地=头像 + 名称/模型副标题。点击行为按引擎分流
+            // 标题区：居中、不可点击。云端=纯标题；本地=头像 + 名称（模型选择去 AI 扩展）
             Row(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable(onClick = if (isLocal) onClickLocalTitle else onClickCloudTitle)
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
@@ -528,24 +517,13 @@ private fun ChatTopBar(
                 if (isLocal) {
                     AgentAvatar(avatarEmoji, size = 30.dp, iconSize = 18.dp)
                     Spacer(Modifier.width(8.dp))
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = agentName,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = modelLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = agentName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 } else {
                     Text(
                         text = cloudTitle,
@@ -555,14 +533,6 @@ private fun ChatTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Icon(
-                    imageVector = Icons.Filled.KeyboardArrowDown,
-                    contentDescription = if (isLocal) "切换模型" else "切换引擎",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .padding(start = 2.dp)
-                        .size(16.dp)
-                )
             }
             // 连接状态指示点（颜色平滑过渡）；断线时展开"未连接"提示。
             // 本地智能体会话不依赖服务端连接，隐藏全部连接指示
@@ -575,10 +545,6 @@ private fun ChatTopBar(
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 新建对话（云端/本地引擎选择器）
-                IconButton(onClick = onNewConversation) {
-                    Icon(Icons.Filled.Add, contentDescription = "新建对话")
-                }
                 // 会话内搜索
                 IconButton(onClick = onOpenSearch) {
                     Icon(Icons.Filled.Search, contentDescription = "搜索")
