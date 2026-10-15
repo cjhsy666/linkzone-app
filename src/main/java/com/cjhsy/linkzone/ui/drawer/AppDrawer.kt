@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,7 +36,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.outlined.PushPin
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -43,6 +44,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,9 +62,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.cjhsy.linkzone.data.model.ConvItem
 import com.cjhsy.linkzone.data.model.LlmAgent
 import com.cjhsy.linkzone.data.model.UserProfile
+import com.cjhsy.linkzone.ui.components.LzConfirmDialog
 
 /** 本地智能体会话 bot_id 前缀（与 ChatViewModel 保持一致） */
 private const val LOCAL_BOT_PREFIX = "bot-local-"
@@ -214,7 +218,11 @@ fun AppDrawer(
                 },
                 onLongClick = { showMainMenu = true }
             )
-            DropdownMenu(expanded = showMainMenu, onDismissRequest = { showMainMenu = false }) {
+            DropdownMenu(
+                expanded = showMainMenu,
+                onDismissRequest = { showMainMenu = false },
+                shape = RoundedCornerShape(16.dp)
+            ) {
                 DropdownMenuItem(
                     text = { Text("清空聊天记录", color = MaterialTheme.colorScheme.error) },
                     leadingIcon = {
@@ -235,21 +243,16 @@ fun AppDrawer(
 
         // 清空云端主会话确认框
         if (pendingClearMain) {
-            AlertDialog(
-                onDismissRequest = { pendingClearMain = false },
-                title = { Text("清空聊天记录") },
-                text = { Text("确定清空「LinkZone 对话」的全部聊天记录吗？此操作不可恢复，但对话本身会保留。") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        pendingClearMain = false
-                        onClearMainConversation()
-                    }) {
-                        Text("清空", color = MaterialTheme.colorScheme.error)
-                    }
+            LzConfirmDialog(
+                title = "清空聊天记录",
+                message = "确定清空「LinkZone 对话」的全部聊天记录吗？此操作不可恢复，但对话本身会保留。",
+                confirmText = "清空",
+                danger = true,
+                onConfirm = {
+                    pendingClearMain = false
+                    onClearMainConversation()
                 },
-                dismissButton = {
-                    TextButton(onClick = { pendingClearMain = false }) { Text("取消") }
-                }
+                onDismiss = { pendingClearMain = false }
             )
         }
 
@@ -312,53 +315,70 @@ fun AppDrawer(
 
         // 删除会话确认框
         pendingDelete?.let { conv ->
-            AlertDialog(
-                onDismissRequest = { pendingDelete = null },
-                title = { Text("删除会话") },
-                text = { Text("确定删除「${conv.name.ifBlank { "新对话" }}」吗？会话内的消息将一并删除。") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        pendingDelete = null
-                        onDeleteConversation(conv.id)
-                    }) {
-                        Text("删除", color = MaterialTheme.colorScheme.error)
-                    }
+            LzConfirmDialog(
+                title = "删除会话",
+                message = "确定删除「${conv.name.ifBlank { "新对话" }}」吗？会话内的消息将一并删除。",
+                confirmText = "删除",
+                danger = true,
+                onConfirm = {
+                    pendingDelete = null
+                    onDeleteConversation(conv.id)
                 },
-                dismissButton = {
-                    TextButton(onClick = { pendingDelete = null }) {
-                        Text("取消")
-                    }
-                }
+                onDismiss = { pendingDelete = null }
             )
         }
 
         // 重命名会话对话框（默认标题 = 首条用户消息，可随时改）
         renamingConv?.let { conv ->
             var nameInput by remember(conv.id) { mutableStateOf(conv.name) }
-            AlertDialog(
-                onDismissRequest = { renamingConv = null },
-                title = { Text("重命名会话") },
-                text = {
-                    OutlinedTextField(
-                        value = nameInput,
-                        onValueChange = { nameInput = it.take(RENAME_MAX_LEN) },
-                        singleLine = true,
-                        placeholder = { Text("会话标题") }
-                    )
-                },
-                confirmButton = {
-                    TextButton(
-                        enabled = nameInput.isNotBlank(),
-                        onClick = {
-                            renamingConv = null
-                            onRenameConversation(conv.id, nameInput)
+            Dialog(onDismissRequest = { renamingConv = null }) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    Column(Modifier.padding(horizontal = 22.dp, vertical = 20.dp)) {
+                        Text(
+                            text = "重命名会话",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        OutlinedTextField(
+                            value = nameInput,
+                            onValueChange = { nameInput = it.take(RENAME_MAX_LEN) },
+                            singleLine = true,
+                            placeholder = { Text("会话标题") },
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { renamingConv = null }) {
+                                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    renamingConv = null
+                                    onRenameConversation(conv.id, nameInput)
+                                },
+                                enabled = nameInput.isNotBlank(),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.heightIn(min = 40.dp)
+                            ) {
+                                Text("保存", fontWeight = FontWeight.Medium)
+                            }
                         }
-                    ) { Text("保存") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { renamingConv = null }) { Text("取消") }
+                    }
                 }
-            )
+            }
         }
 
         // ---------- 底部资料卡（点头像/昵称进入「我的」，右上角设置图标进入设置） ----------
@@ -586,7 +606,11 @@ private fun ConversationDrawerItem(
         }
 
         // 长按菜单：重命名 + 置顶/取消置顶 + 删除（锚定到会话项）
-        DropdownMenu(expanded = menuOpen, onDismissRequest = onDismissMenu) {
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = onDismissMenu,
+            shape = RoundedCornerShape(16.dp)
+        ) {
             DropdownMenuItem(
                 text = { Text("重命名") },
                 leadingIcon = {
