@@ -34,3 +34,4 @@ Thumbs.db
 
 # ===== 日志 =====
 *.log
+src/main/java/com/cjhsy/linkzone/ui/*.zip
