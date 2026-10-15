@@ -55,6 +55,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -163,10 +164,10 @@ data class ChatModelOption(
 )
 
 /**
- * 聊天 ViewModel —— 与 LinkZone 适配器直连的多会话模型。
+ * 聊天 ViewModel —— 与 LinkZone 适配器直连的会话模型。
  *
- * 会话用 bot_id 区分：每个会话对应一个独立虚拟 bot（sess-<uuid>），
- * conv_id 规则为 conv-{myId}-{botId}。
+ * 云端有且只有一个主会话：bot_id 固定为 [MAIN_BOT_ID]（main），
+ * conv_id 规则为 conv-{myId}-main；启动时幂等清理其它云端会话。
  * - 发送：经 [ChatSocketManager] WS 发给适配器（receiver_id = 本人），
  *   框架内部如何处理（智能体/插件/不回复）由框架决定，本层不关心
  * - 接收：按 WS payload 的 conv_id 路由——属于当前会话则展示并已读，
@@ -200,11 +201,21 @@ class ChatViewModel(
     /** 服务器会话列表（本地会话由 [localStore] 独立供流，两者合并为 [conversations]） */
     private val serverConvs = MutableStateFlow<List<ConvItem>>(emptyList())
 
-    /** 会话列表 = 服务器会话 + 本地会话（抽屉展示，置顶优先按最近时间倒序） */
+    /** 会话列表 = 服务器会话 + 本地会话（置顶优先按最近时间倒序） */
     val conversations: StateFlow<List<ConvItem>> =
         combine(serverConvs, localStore.observeConversations()) { srv, loc ->
             sortConvs(srv + loc)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 唯一云端主会话（抽屉固定置顶项，独立于历史列表） */
+    val mainConv: StateFlow<ConvItem?> = conversations
+        .map { list -> list.firstOrNull { isMainConv(it.id) } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** 本地智能体会话列表（抽屉历史区；云端主会话不进历史列表） */
+    val localConversations: StateFlow<List<ConvItem>> = conversations
+        .map { list -> list.filterNot { isMainConv(it.id) } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 本地智能体列表（抽屉「新建本地对话」选择器用） */
     val localAgents: StateFlow<List<LlmAgent>> = llmRepository.observeAgents()
@@ -349,19 +360,24 @@ class ChatViewModel(
 
     // ============ 会话管理 ============
 
-    /** 启动：加载会话列表，有则打开最近会话，无则创建首个会话 */
+    /**
+     * 启动：云端有且只有一个主会话（conv-{myId}-main，bot=main）。
+     * 先幂等清理历史遗留的其它云端会话（keep_main=1），再确保主会话存在并打开；
+     * 主会话不可用（网络失败等）时回退打开最近的本地会话。
+     */
     private suspend fun bootstrapConversations() {
         _state.value = _state.value.copy(loading = true, error = null)
-        val server = chatRepository.loadConversations().getOrNull()
-            ?.filter { it.type == "private" }
-            ?: emptyList()
-        serverConvs.value = sortConvs(server)
+        chatRepository.deleteAllConversations(keepMain = true)
+        val main = chatRepository.ensureConversation(myId, MAIN_BOT_ID, MAIN_CONV_NAME).getOrNull()
+        refreshConvList()
 
-        val merged = sortConvs(server + localStore.getConversations())
-        if (merged.isNotEmpty()) {
-            openConv(merged.first())
+        val target = main
+            ?: serverConvs.value.firstOrNull { isMainConv(it.id) }
+            ?: localStore.getConversations().maxByOrNull { it.lastTime }
+        if (target != null) {
+            openConv(target)
         } else {
-            createConversation()
+            _state.value = _state.value.copy(loading = false, error = "云端主会话不可用，请检查网络后重试")
         }
     }
 
@@ -370,27 +386,22 @@ class ChatViewModel(
         convs.sortedWith(compareByDescending<ConvItem> { it.pinned }.thenByDescending { it.lastTime })
 
     /**
-     * 新建会话：生成新 bot_id（sess-<uuid>）并切换。
-     * 若当前已经是一个没有任何消息的空会话，则不重复创建。
+     * 打开唯一云端主会话：列表里已有则直接切换；缺失（被清理/未创建）则重新 ensure 后打开。
+     * 已在主会话时为 no-op，避免重复加载。云端不再支持"新建对话"，一切云端入口都汇聚到此。
      */
-    fun newConversation() {
-        if (myId.isBlank()) return
-        val s = _state.value
-        if (s.ready && s.currentName == NEW_CONV_NAME && s.messages.isEmpty()) return
-        viewModelScope.launch { createConversation() }
-    }
-
-    private suspend fun createConversation() {
-        val botId = SESSION_BOT_PREFIX + UUID.randomUUID()
-        val result = chatRepository.ensureConversation(myId, botId, NEW_CONV_NAME)
-        result.onSuccess { conv ->
-            refreshConvList()
-            openConv(conv)
-        }.onFailure {
-            _state.value = _state.value.copy(
-                loading = false,
-                error = it.message ?: "创建会话失败"
-            )
+    fun openMainConversation() {
+        viewModelScope.launch {
+            val existing = serverConvs.value.firstOrNull { isMainConv(it.id) }
+            if (existing != null) {
+                if (existing.id != _state.value.currentConvId) openConv(existing)
+                return@launch
+            }
+            chatRepository.ensureConversation(myId, MAIN_BOT_ID, MAIN_CONV_NAME).onSuccess { conv ->
+                refreshConvList()
+                openConv(conv)
+            }.onFailure { e ->
+                _state.value = _state.value.copy(error = e.message ?: "打开云端对话失败")
+            }
         }
     }
 
@@ -438,24 +449,21 @@ class ChatViewModel(
     }
 
     /**
-     * 删除会话（长按抽屉会话项）：
-     * 本地会话删本地库；服务器会话走 REST 连同消息一起删除。
-     * 删的是当前会话时，自动切换到列表中下一个会话（没有则新建云端会话）。
+     * 删除会话（长按抽屉会话项）：仅允许删除本地会话；
+     * 云端主会话是唯一云端入口，不可删除。
+     * 删的是当前会话时，自动切换到下一个本地会话（没有则回到云端主会话）。
      */
     fun deleteConversation(convId: String) {
+        if (!isLocalConvId(convId)) {
+            _state.value = _state.value.copy(error = "云端对话不可删除")
+            return
+        }
         viewModelScope.launch {
             val wasCurrent = _state.value.currentConvId == convId
-            if (isLocalConvId(convId)) {
-                localStore.deleteConversation(convId)
-            } else {
-                chatRepository.deleteConversation(convId).onFailure { e ->
-                    _state.value = _state.value.copy(error = e.message ?: "删除会话失败")
-                    return@launch
-                }
-            }
+            localStore.deleteConversation(convId)
             if (wasCurrent) {
-                val remaining = conversations.value.filter { it.id != convId }
-                remaining.firstOrNull()?.let { openConv(it) } ?: createConversation()
+                val remaining = conversations.value.filter { it.id != convId && isLocalConvId(it.id) }
+                remaining.firstOrNull()?.let { openConv(it) } ?: openMainConversation()
             }
         }
     }
@@ -2215,11 +2223,13 @@ class ChatViewModel(
         _state.value = _state.value.copy(replyTo = null)
     }
 
-    /** 首条消息后用消息摘要重命名会话（豆包式）：云端走 REST；本地会话改由首答完成后 LLM 总结标题 */
+    /** 首条消息后用消息摘要重命名会话（豆包式）：云端走 REST；本地会话改由首答完成后 LLM 总结标题。
+     *  云端主会话是固定入口，名字不随消息变化，跳过重命名。 */
     private fun maybeNameConversation(firstText: String) {
         val s = _state.value
         if (s.currentName != NEW_CONV_NAME) return
         if (isLocalConvId(s.currentConvId)) return
+        if (isMainConv(s.currentConvId)) return
         val name = firstText.take(NAME_MAX_LEN)
         viewModelScope.launch {
             chatRepository.updateConversation(s.currentConvId, name = name)
@@ -2457,6 +2467,9 @@ class ChatViewModel(
 
     /** 是否本地智能体会话（发送落库/重新生成/多模型重答/编辑重发仅本地会话可用） */
     private fun isLocalConv(): Boolean = isLocalConvId(_state.value.currentConvId)
+
+    /** 当前登录用户的云端唯一主会话判定（conv-{myId}-main） */
+    private fun isMainConv(convId: String): Boolean = isMainConvId(myId, convId)
 
     /** 消息可编辑文本（text/markdown 段拼接，回退 content）；纯媒体消息返回空 */
     private fun editableText(m: MessageItem): String {
@@ -2826,30 +2839,10 @@ class ChatViewModel(
         }
     }
 
-    /**
-     * 顶栏引擎切换 → 云端：
-     * 云端会话由服务端代理，无法预填本地上下文，直接新开一个云端会话。
-     */
-    fun switchEngineToCloud() {
-        if (!isLocalConvId(_state.value.currentConvId)) return
-        newConversation()
-    }
-
-    /** 置顶/取消置顶会话：本地会话写本地库，云端走服务端 PATCH + 本地重排 */
+    /** 置顶/取消置顶会话：仅本地会话支持（云端主会话固定在抽屉最上面，不可置顶） */
     fun pinConversation(convId: String, pinned: Boolean) {
-        if (isLocalConvId(convId)) {
-            viewModelScope.launch { localStore.setPinned(convId, pinned) }
-            return
-        }
-        viewModelScope.launch {
-            chatRepository.updateConversation(convId, pinned = pinned)
-                .onSuccess { saved ->
-                    updateConvInList(convId) { it.copy(pinned = saved.pinned) }
-                }
-                .onFailure { e ->
-                    _state.value = _state.value.copy(error = e.message ?: "置顶失败")
-                }
-        }
+        if (!isLocalConvId(convId)) return
+        viewModelScope.launch { localStore.setPinned(convId, pinned) }
     }
 
     // ============ 会话内搜索 ============
@@ -2941,6 +2934,15 @@ class ChatViewModel(
     companion object {
         const val NEW_CONV_NAME = "新对话"
 
+        /** 云端唯一主会话固定 bot id（会话 id 规则 conv-{ownerId}-main） */
+        const val MAIN_BOT_ID = "main"
+        /** 云端唯一主会话固定名称（固定入口，不随消息自动命名） */
+        const val MAIN_CONV_NAME = "LinkZone 对话"
+
+        /** 主会话 id 判定（UI 层可用）：conv-{ownerId}-main */
+        fun isMainConvId(ownerId: String, convId: String): Boolean =
+            convId == "conv-$ownerId-$MAIN_BOT_ID"
+
         /** SharedPreferences 键：最近使用的聊天模型 id 列表 */
         private const val KEY_RECENT = "recent_chat_model_ids"
 
@@ -2949,7 +2951,6 @@ class ChatViewModel(
             "You are an OCR and image description engine. Extract all readable text from the image " +
                 "verbatim (preserve layout with line breaks where possible), and briefly describe the " +
                 "non-text visual content. Reply in the same language as the text in the image."
-        const val SESSION_BOT_PREFIX = "sess-"
         /** 本地智能体会话 bot_id 前缀（bot-local-{agentId}） */
         const val LOCAL_BOT_PREFIX = LocalChatStore.BOT_PREFIX
         /** 本地会话 id 前缀（会话归属判定的唯一依据） */

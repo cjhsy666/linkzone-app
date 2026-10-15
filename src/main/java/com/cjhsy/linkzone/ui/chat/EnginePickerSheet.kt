@@ -78,7 +78,7 @@ fun EnginePickerSheet(
             // ---------- 云端入口 ----------
             EngineRow(
                 title = "LinkZone 云端对话",
-                subtitle = "服务端代理 · 走 LinkZone 适配器",
+                subtitle = "唯一云端对话 · 服务端代理",
                 selected = !currentIsLocal,
                 onClick = onPickCloud,
                 leading = {

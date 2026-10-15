@@ -58,7 +58,9 @@ fun MainScreen(
     // 只订阅抽屉/引擎选择器所需的少量字段（distinctUntilChanged 去重），
     // 消息流/sending 等高频变化不会引起本层重组
     val chatViewModel: ChatViewModel = koinViewModel()
-    val drawerConversations by chatViewModel.conversations.collectAsStateWithLifecycle()
+    // 抽屉固定置顶的唯一云端主会话 + 本地会话历史列表
+    val drawerMainConv by chatViewModel.mainConv.collectAsStateWithLifecycle()
+    val drawerConversations by chatViewModel.localConversations.collectAsStateWithLifecycle()
     val drawerChat by remember(chatViewModel) {
         chatViewModel.state
             .map { DrawerChatData(it.currentConvId, it.currentAgent?.id, it.connected) }
@@ -88,9 +90,14 @@ fun MainScreen(
             ) {
                 AppDrawer(
                     profile = profile,
+                    mainConv = drawerMainConv,
                     conversations = drawerConversations,
                     currentConvId = drawerChat.currentConvId,
                     connected = drawerChat.connected,
+                    onOpenMainConversation = {
+                        closeDrawer()
+                        chatViewModel.openMainConversation()
+                    },
                     onSwitchConversation = { convId ->
                         closeDrawer()
                         chatViewModel.switchConversation(convId)
@@ -140,7 +147,8 @@ fun MainScreen(
             currentAgentId = currentPickerAgentId,
             onPickCloud = {
                 showEnginePicker = false
-                if (pickerForNew) chatViewModel.newConversation() else chatViewModel.switchEngineToCloud()
+                // 云端有且只有一个主会话：无论"新建"还是"切换"，都回到主会话
+                chatViewModel.openMainConversation()
             },
             onPickLocal = { agent ->
                 showEnginePicker = false

@@ -62,17 +62,20 @@ private const val LOCAL_BOT_PREFIX = "bot-local-"
 
 /**
  * 左侧抽屉菜单（豆包式）：
- * - 顶部会话搜索框 + 历史会话列表（选中高亮 + 未读角标 + 置顶）
+ * - 顶部会话搜索框 + 唯一云端主会话（固定置顶，不可删/不可置顶）+ 本地会话历史列表
  * - 底部：设置 + 渐变资料卡（点击进入「我的」）
- * - 新建对话入口在聊天页顶栏右上角（云端/本地两个页面均有）
+ * - 新建对话入口在聊天页顶栏右上角（仅本地智能体；云端唯一主会话不可新建）
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun AppDrawer(
     profile: UserProfile?,
+    /** 唯一云端主会话（固定置顶项；null 时显示占位，点击触发重建） */
+    mainConv: ConvItem?,
     conversations: List<ConvItem>,
     currentConvId: String,
     connected: Boolean,
+    onOpenMainConversation: () -> Unit,
     onSwitchConversation: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
     onPinConversation: (String, Boolean) -> Unit = { _, _ -> },
@@ -137,7 +140,19 @@ fun AppDrawer(
             )
         }
 
-        SectionLabel(if (searchQuery.isBlank()) "历史会话" else "搜索结果")
+        // ---------- 固定置顶：唯一云端主会话（搜索不影响它，始终可见） ----------
+        val mainItem = mainConv ?: ConvItem(id = "__main_placeholder__", name = "LinkZone 对话")
+        ConversationDrawerItem(
+            conv = mainItem,
+            selected = mainConv != null && mainConv.id == currentConvId,
+            onClick = {
+                if (mainConv != null) onSwitchConversation(mainConv.id) else onOpenMainConversation()
+            },
+            // 云端主会话是固定入口：无长按菜单（不可删/不可置顶）
+            onLongClick = {}
+        )
+
+        SectionLabel(if (searchQuery.isBlank()) "本地会话" else "搜索结果")
 
         // ---------- 会话区 ----------
         if (filtered.isEmpty()) {
@@ -148,7 +163,7 @@ fun AppDrawer(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (searchQuery.isBlank()) "暂无历史会话" else "没有匹配的会话",
+                    text = if (searchQuery.isBlank()) "暂无本地会话" else "没有匹配的会话",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

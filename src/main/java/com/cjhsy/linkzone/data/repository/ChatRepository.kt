@@ -65,6 +65,13 @@ class ChatRepository(
     suspend fun deleteConversation(convId: String): Result<Unit> =
         runUnitEnvelope(tokenHolder) { chatApi.deleteConversation(convId) }
 
+    /**
+     * 批量删除我的所有云端会话（连同各自消息）；keepMain=true 保留唯一主会话 conv-{ownerId}-main。
+     * 用于启动迁移：云端有且只有一个主会话，幂等可重复调用。
+     */
+    suspend fun deleteAllConversations(keepMain: Boolean = true): Result<Unit> =
+        runUnitEnvelope(tokenHolder) { chatApi.deleteAllConversations(if (keepMain) 1 else null) }
+
     /** 拉取历史消息（向上翻页） */
     suspend fun loadHistory(convId: String, before: Long? = null, limit: Int = 50): Result<MessagesResponse> =
         runEnvelope(tokenHolder) { chatApi.getMessages(convId, before = before, limit = limit) }
