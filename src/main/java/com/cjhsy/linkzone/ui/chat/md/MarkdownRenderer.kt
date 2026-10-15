@@ -130,7 +130,3 @@ fun MarkdownContent(
         )
     }
 }
-
-/** 防御性 escape：解析器遇到罕见输入（未闭合围栏/畸形 HTML）时转义后再试一次 */
-private fun escapeMarkdown(raw: String): String =
-    raw.replace("\n", "\n\\")

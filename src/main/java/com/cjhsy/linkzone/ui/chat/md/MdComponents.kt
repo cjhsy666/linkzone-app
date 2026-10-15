@@ -94,7 +94,7 @@ fun mdComponents(textColor: Color, highlightsBuilder: Highlights.Builder): Markd
  * 无 INLINE_MATH 的段落委托库默认 MarkdownParagraph，行为完全不变。
  */
 @Composable
-private fun MdInlineMathParagraph(model: MarkdownComponentModel) {
+internal fun MdInlineMathParagraph(model: MarkdownComponentModel) {
     val mathNodes = remember(model.content, model.node) {
         model.node.children.mapIndexedNotNull { index, child ->
             if (child.type == GFMElementTypes.INLINE_MATH) {
