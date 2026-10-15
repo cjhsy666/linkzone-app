@@ -19,6 +19,8 @@ dependencyResolutionManagement {
         }
         google()
         mavenCentral()
+        // jitpack：RikkaHub markdown fork（含 GFM 数学扩展）与 jlatexmath-android
+        maven { url 'https://jitpack.io' }
     }
 }
 

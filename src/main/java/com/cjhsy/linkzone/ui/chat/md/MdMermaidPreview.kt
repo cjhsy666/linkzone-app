@@ -35,13 +35,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.webkit.WebViewAssetLoader
-import com.mikepenz.markdown.compose.LocalMarkdownTypography
 import org.json.JSONObject
 
 /** 预览弹窗固定浅色主题（图表/代码卡片均渲染在白底上，与气泡配色解耦） */
@@ -99,7 +99,7 @@ fun MdMermaidPreviewDialog(
                         MdCodeCard(
                             code = code,
                             language = "mermaid",
-                            style = LocalMarkdownTypography.current.code,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                             textColor = PREVIEW_TEXT,
                             highlightsBuilder = rememberMdHighlightsBuilder(dark = false),
                         )
@@ -135,7 +135,7 @@ private fun MdMermaidPreviewIsland(code: String, modifier: Modifier = Modifier) 
         MdCodeCard(
             code = code,
             language = "mermaid",
-            style = LocalMarkdownTypography.current.code,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             textColor = PREVIEW_TEXT,
             highlightsBuilder = rememberMdHighlightsBuilder(dark = false),
         )

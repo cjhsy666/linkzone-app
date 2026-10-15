@@ -3,6 +3,8 @@ package com.cjhsy.linkzone.ui.chat
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.cjhsy.linkzone.ui.components.AutoAIIcon
+import com.cjhsy.linkzone.ui.components.computeAIIconByName
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
@@ -206,8 +208,13 @@ fun MessageItemView(
         if (!message.isSelf) {
             // 云端沿用 36dp 头像规格，本地智能体 32dp
             val avatarSize = if (isLocal) 32.dp else 36.dp
+            // 本地智能体：模型 id 能匹配到厂商图标（RikkaHub 图标库）就用模型头像，否则回退 emoji 头像
+            val modelIconMatched = remember(modelName) {
+                isLocal && modelName.isNotBlank() && computeAIIconByName(modelName) != null
+            }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                if (isLocal) AgentAvatar(agentEmoji, size = avatarSize)
+                if (modelIconMatched) AutoAIIcon(modelName, size = avatarSize)
+                else if (isLocal) AgentAvatar(agentEmoji, size = avatarSize)
                 else SenderAvatar(message.senderName, size = avatarSize)
             }
             Spacer(Modifier.width(8.dp))
@@ -223,10 +230,11 @@ fun MessageItemView(
             modifier = middleModifier,
             horizontalAlignment = if (message.isSelf) Alignment.End else Alignment.Start
         ) {
-            // AI 署名：智能体名 · 模型名（Rikka 式——模型头像旁标注模型来源）
+            // AI 署名：智能体名 · 模型名（Rikka 式——模型头像旁标注模型来源；modelName 传完整模型 id，显示取末段）
             if (!message.isSelf && message.senderName.isNotBlank()) {
-                val label = if (modelName.isNotBlank() && !message.senderName.contains(modelName)) {
-                    "${message.senderName} · $modelName"
+                val displayModel = modelName.substringAfterLast('/')
+                val label = if (displayModel.isNotBlank() && !message.senderName.contains(displayModel)) {
+                    "${message.senderName} · $displayModel"
                 } else {
                     message.senderName
                 }

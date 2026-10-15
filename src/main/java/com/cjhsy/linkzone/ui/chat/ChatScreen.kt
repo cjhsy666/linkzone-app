@@ -70,6 +70,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -287,7 +288,8 @@ fun ChatScreen(
                     modifier = Modifier.weight(1f),
                     userName = userProfile?.username.orEmpty(),
                     userAvatarUrl = userProfile?.avatarUrl.orEmpty(),
-                    modelName = agent?.chatModelId?.substringAfterLast('/').orEmpty()
+                    // 传完整模型 id：头像图标匹配用全量 id，署名显示取末段
+                    modelName = agent?.chatModelId.orEmpty()
                 )
             }
 
@@ -367,6 +369,9 @@ fun ChatScreen(
                 onCancelReply = viewModel::clearReplyTo,
                 onSendCombined = { text, attachments ->
                     viewModel.sendCombined(text, attachments)
+                },
+                onUploadPending = { file, onDone ->
+                    viewModel.uploadPending(file, onDone)
                 },
                 onSendLocation = { lat, lon ->
                     viewModel.sendSegments(
@@ -981,11 +986,19 @@ private fun EmptyState(
 /** 录音手势状态（云端/本地聊天界面共用） */
 internal enum class RecordUi { IDLE, RECORDING, WILL_CANCEL }
 
-/** 待发送附件：文件 + 类型（image/video/file），发送后清除 */
+/** 待发送附件上传状态（选中即预上传） */
+internal enum class MediaUploadState { UPLOADING, UPLOADED, FAILED }
+
+/** 待发送附件：文件 + 类型（image/video/file）+ 预上传状态/服务端 URL，发送后清除 */
 internal data class PendingMedia(
     val file: java.io.File,
     val type: String?,
-    val id: Long = System.nanoTime()
+    val id: Long = System.nanoTime(),
+    val uploadState: MediaUploadState = MediaUploadState.UPLOADING,
+    val remoteUrl: String? = null,
+    val remoteSegType: String = "",
+    val remoteName: String = "",
+    val remoteSize: Long = 0L
 )
 
 /**
@@ -1143,6 +1156,8 @@ internal fun ChatInputBar(
     onCancelReply: () -> Unit,
     onSendCombined: (String, List<PendingMediaItem>) -> Unit,
     onSendLocation: (Double, Double) -> Unit,
+    /** 附件预上传：选中入列后立即调用，完成回调更新条目状态 */
+    onUploadPending: (java.io.File, (Result<com.cjhsy.linkzone.data.model.UploadResponse>) -> Unit) -> Unit,
     extensionChips: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -1152,6 +1167,32 @@ internal fun ChatInputBar(
 
     // 待发送附件列表（豆包式：选中不直接发，浮在输入区上方）
     var pendingAttachments by remember { mutableStateOf(listOf<PendingMedia>()) }
+
+    /**
+     * 附件选中即预上传（DeepSeek/豆包式）：先入列显示上传动画，
+     * 后台上传完成后回填服务端 URL / 标记失败，发送时直接引用免二次上传。
+     */
+    fun addAttachment(file: java.io.File, type: String?) {
+        val item = PendingMedia(file = file, type = type)
+        pendingAttachments = pendingAttachments + item
+        onUploadPending(file) { result ->
+            pendingAttachments = pendingAttachments.map {
+                if (it.id != item.id) it
+                else result.fold(
+                    onSuccess = { up ->
+                        it.copy(
+                            uploadState = MediaUploadState.UPLOADED,
+                            remoteUrl = up.url,
+                            remoteSegType = up.segType,
+                            remoteName = up.name,
+                            remoteSize = up.size
+                        )
+                    },
+                    onFailure = { it.copy(uploadState = MediaUploadState.FAILED) }
+                )
+            }
+        }
+    }
 
     val recorder = remember { VoiceRecorder(context.applicationContext) }
     var recordState by remember { mutableStateOf(RecordUi.IDLE) }
@@ -1194,7 +1235,7 @@ internal fun ChatInputBar(
         val file = pendingCapture[0]
         pendingCapture[0] = null
         if (success && file != null && file.exists() && file.length() > 0) {
-            pendingAttachments = pendingAttachments + PendingMedia(file, "image")
+            addAttachment(file, "image")
         } else {
             file?.delete()
         }
@@ -1203,7 +1244,22 @@ internal fun ChatInputBar(
     /** 组合发送：文字 + 附件合并为单条消息 */
     fun doSend() {
         val text = input.trim()
-        val items = pendingAttachments.map { PendingMediaItem(it.file, it.type) }
+        // 预上传未完成/失败时不允许发送（DeepSeek/豆包同款约束）
+        if (pendingAttachments.any { it.uploadState == MediaUploadState.UPLOADING }) {
+            Toast.makeText(context, "附件上传中，请稍候", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (pendingAttachments.any { it.uploadState == MediaUploadState.FAILED }) {
+            Toast.makeText(context, "附件上传失败，请移除后重试", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val items = pendingAttachments.map {
+            PendingMediaItem(
+                file = it.file, type = it.type,
+                remoteUrl = it.remoteUrl, remoteSegType = it.remoteSegType,
+                remoteName = it.remoteName, remoteSize = it.remoteSize
+            )
+        }
         onSendCombined(text, items)
         input = ""
         pendingAttachments = emptyList()
@@ -1562,7 +1618,7 @@ internal fun ChatInputBar(
                     AttachPanel(
                         enabled = enabled && !sending,
                         onSendMedia = { file, forcedType ->
-                            pendingAttachments = pendingAttachments + PendingMedia(file, forcedType)
+                            addAttachment(file, forcedType)
                         },
                         onSendLocation = onSendLocation
                     )
@@ -1576,7 +1632,7 @@ internal fun ChatInputBar(
     }
 }
 
-/** 待发送附件预览条：图片/视频/文件缩略卡 + X 移除（豆包式） */
+/** 待发送附件预览条：图片/视频/文件缩略卡 + X 移除 + 上传动画（豆包式） */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun PendingMediaStrip(
@@ -1584,6 +1640,16 @@ internal fun PendingMediaStrip(
     onRemove: (PendingMedia) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 图片点击全屏预览（本地 file:// 直接可开）
+    var preview by remember { mutableStateOf<PendingMedia?>(null) }
+    preview?.let { item ->
+        ZoomableImageDialog(
+            rawUrl = "file://" + item.file.absolutePath,
+            baseUrl = "",
+            onDismiss = { preview = null }
+        )
+    }
+
     LazyRow(
         modifier = modifier
             .fillMaxWidth()
@@ -1608,7 +1674,9 @@ internal fun PendingMediaStrip(
                                 model = item.file,
                                 contentDescription = null,
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clickable { preview = item }
                             )
                         }
                         "video" -> {
@@ -1665,6 +1733,35 @@ internal fun PendingMediaStrip(
                                 )
                             }
                         }
+                    }
+                    // 上传中：半透明遮罩 + 进度圈；失败：遮罩 + 红色错误角标
+                    when (item.uploadState) {
+                        MediaUploadState.UPLOADING -> Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.35f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        MediaUploadState.FAILED -> Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.45f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.ErrorOutline,
+                                contentDescription = "上传失败",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        MediaUploadState.UPLOADED -> Unit
                     }
                 }
                 // 右上角 X 移除

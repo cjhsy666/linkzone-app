@@ -83,23 +83,23 @@ fun AttachPanel(
     }
 
     val galleryLauncher = rememberLauncherForActivityResult(
-        // Photo Picker：图片+视频；无 Google 服务的设备由 androidx 回退到
-        // ACTION_OPEN_DOCUMENT 系统选择器，国产 ROM 同样可用
-        ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            // 返回 content://，上传需要真实文件：复制到缓存后按 mime 判型
+        // Photo Picker 多选：图片+视频；无 Google 服务的设备由 androidx 回退到
+        // ACTION_OPEN_DOCUMENT 系统选择器（回退路径不支持多选），国产 ROM 同样可用
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9)
+    ) { uris ->
+        // 返回 content:// 列表，上传需要真实文件：逐个复制到缓存后按 mime 判型
+        uris.forEach { uri ->
             val cached = runCatching { uri.copyToCache(context) }.getOrNull()
             if (cached != null) onSendMedia(cached, null)
         }
     }
 
     val fileLauncher = rememberLauncherForActivityResult(
-        // OpenDocument：系统「文件」应用完整页面（可浏览全部目录、最近文件、各云盘），
-        // 与 RikkaHub 上传文件一致的体验
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
+        // OpenMultipleDocuments：系统「文件」应用完整页面（可浏览全部目录、最近文件、
+        // 各云盘），长按即可多选，与 RikkaHub 上传文件一致的体验
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        uris.forEach { uri ->
             val cached = runCatching { uri.copyToCache(context) }.getOrNull()
             if (cached != null) onSendMedia(cached, "file")
         }

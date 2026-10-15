@@ -127,27 +127,25 @@ dependencies {
     implementation 'io.coil-kt:coil-compose:2.7.0'
     // GIF / WebP 动图解码（coil 默认仅静态帧；image 段的 .gif 与 animation 段需要）
     implementation 'io.coil-kt:coil-gif:2.7.0'
+    // SVG 解码（模型/厂商图标 assets/icons/*.svg，素材来自 RikkaHub）
+    implementation 'io.coil-kt:coil-svg:2.7.0'
 
     // 视频内联播放（Media3 ExoPlayer，类 QQ 气泡内播放 + 全屏）
     implementation 'androidx.media3:media3-exoplayer:1.11.1'
     implementation 'androidx.media3:media3-ui:1.11.1'
 
-    // WebView 小岛（Mermaid 图 / LaTeX 块级公式，离线 assets + WebViewAssetLoader）
+    // WebView 小岛（Mermaid 图，离线 assets + WebViewAssetLoader）
     implementation 'androidx.webkit:webkit:1.17.1'
 
-    // Markdown 渲染底座（Compose 原生，GFM 全量；m3 组件/代码高亮/Coil2 图片）
-    implementation 'com.mikepenz:multiplatform-markdown-renderer-android:0.46.0'
-    implementation 'com.mikepenz:multiplatform-markdown-renderer-m3-android:0.46.0'
-    implementation 'com.mikepenz:multiplatform-markdown-renderer-code-android:0.46.0'
-    implementation 'com.mikepenz:multiplatform-markdown-renderer-coil2-android:0.46.0'
-
-    constraints {
-        // multiplatform-markdown-renderer 0.46.0 api 声明 kotlin-stdlib 2.4.21，
-        // 但 KSP 最新 2.3.12 决定项目不能升 Kotlin 2.4（2.4 元数据不可读），压回 2.3.20
-        implementation('org.jetbrains.kotlin:kotlin-stdlib:2.3.20') {
-            because 'multiplatform-markdown-renderer 需要 stdlib>=2.2；与 Kotlin 插件 2.3.20 对齐'
-        }
-    }
+    // Markdown 渲染底座（RikkaHub 方案：AST 后台解析 + 分块渲染，长文滚动不卡）
+    // RikkaHub fork 的 intellij-markdown（含 GFM 数学扩展 INLINE_MATH/BLOCK_MATH）
+    implementation 'com.github.rikkahub:markdown:d79a97cc8e'
+    // HTML 片段解析（含 HTML 的 markdown 走 Jsoup DOM 渲染）
+    implementation 'org.jsoup:jsoup:1.18.3'
+    // LaTeX 原生渲染（jlatexmath-android，无 WebView）
+    implementation 'com.github.rikkahub.jlatexmath-android:jlatexmath:1.5'
+    implementation 'com.github.rikkahub.jlatexmath-android:jlatexmath-font-greek:1.5'
+    implementation 'com.github.rikkahub.jlatexmath-android:jlatexmath-font-cyrillic:1.5'
 
     // PDF 文档文本提取（本地 AI 附件解析；DOCX/PPTX/XLSX/EPUB 走内置 Zip+XmlPullParser 零依赖）
     implementation 'com.tom-roush:pdfbox-android:2.0.27.0'

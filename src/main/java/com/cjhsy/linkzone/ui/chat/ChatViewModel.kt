@@ -87,7 +87,12 @@ import java.util.UUID
 /** 待发送附件（UI 层 → ViewModel 层传递用） */
 data class PendingMediaItem(
     val file: File,
-    val type: String?
+    val type: String?,
+    /** 选中即预上传完成后的服务端 URL；非空时发送直接引用，跳过重复上传 */
+    val remoteUrl: String? = null,
+    val remoteSegType: String = "",
+    val remoteName: String = "",
+    val remoteSize: Long = 0L
 )
 
 /** ask_user 追问中的一道问题（模型 ask_user 工具入参的 UI 形态） */
@@ -789,6 +794,14 @@ class ChatViewModel(
     }
 
     /**
+     * 附件选中即预上传（DeepSeek/豆包式）：输入栏附件入列后立即调用，
+     * 完成后回调结果；发送时 remoteUrl 非空直接引用，免二次上传。
+     */
+    fun uploadPending(file: File, onDone: (Result<com.cjhsy.linkzone.data.model.UploadResponse>) -> Unit) {
+        viewModelScope.launch { onDone(chatRepository.uploadFile(file)) }
+    }
+
+    /**
      * 组合发送（豆包式）：文字 + 多个附件合并为**单条多段消息**。
      * 先乐观上屏（本地 file:// 地址立即可见），后台逐个上传，
      * 全部上传完成后经 WS 发送完整段列表，服务端确认后回显替换。
@@ -869,6 +882,15 @@ class ChatViewModel(
                 if (trimmed.isNotEmpty()) uploadedSegs.add(Segments.text(trimmed))
                 var allOk = true
                 for (att in attachments) {
+                    // 预上传已完成：直接引用服务端 URL，跳过重复上传
+                    if (att.remoteUrl != null) {
+                        val segType = att.type ?: att.remoteSegType.ifBlank { guessSegType(att.file) }
+                        uploadedSegs.add(buildMediaSeg(
+                            segType, att.remoteUrl,
+                            att.remoteName.ifBlank { att.file.name }, att.remoteSize, 0L
+                        ))
+                        continue
+                    }
                     val result = chatRepository.uploadFile(att.file)
                     if (result.isFailure) {
                         allOk = false
@@ -942,6 +964,15 @@ class ChatViewModel(
                 if (clientId in cancelledUploads) {
                     cancelledUploads.remove(clientId)
                     return@launch
+                }
+                // 预上传已完成：直接引用服务端 URL，跳过重复上传
+                if (att.remoteUrl != null) {
+                    val segType = att.type ?: att.remoteSegType.ifBlank { guessSegType(att.file) }
+                    remoteSegs.add(buildMediaSeg(
+                        segType, att.remoteUrl,
+                        att.remoteName.ifBlank { att.file.name }, att.remoteSize, 0L
+                    ))
+                    continue
                 }
                 val result = chatRepository.uploadFile(att.file)
                 if (result.isFailure) {
