@@ -474,6 +474,26 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * 清空云端主会话聊天记录（保留会话本身）。
+     * 清空后当前消息列表置空，会话列表该会话摘要复位。
+     */
+    fun clearMainConversation() {
+        val convId = serverConvs.value.firstOrNull { isMainConv(it.id) }?.id
+            ?: _state.value.currentConvId.takeIf { isMainConv(it) }
+            ?: return
+        viewModelScope.launch {
+            chatRepository.clearMessages(convId)
+                .onSuccess {
+                    if (_state.value.currentConvId == convId) {
+                        _state.value = _state.value.copy(messages = emptyList())
+                    }
+                    updateConvInList(convId) { it.copy(lastMsg = "", unread = 0) }
+                }
+                .onFailure { _state.value = _state.value.copy(error = it.message ?: "清空失败") }
+        }
+    }
+
     /** 打开会话：切换当前状态 + 加载历史 + 已读 + 刷新列表未读 */
     private suspend fun openConv(conv: ConvItem) {
         if (isLocalConvId(conv.id)) {

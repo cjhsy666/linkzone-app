@@ -88,6 +88,10 @@ class ChatRepository(
     suspend fun recall(convId: String, msgId: String): Result<Unit> =
         runUnitEnvelope(tokenHolder) { chatApi.recallMessage(convId, RecallRequest(msgId)) }
 
+    /** 清空会话全部消息（保留会话） */
+    suspend fun clearMessages(convId: String): Result<Unit> =
+        runUnitEnvelope(tokenHolder) { chatApi.clearMessages(convId) }
+
     /** 删除消息 */
     suspend fun deleteMessage(convId: String, msgId: String): Result<Unit> =
         runUnitEnvelope(tokenHolder) { chatApi.deleteMessage(convId, msgId) }

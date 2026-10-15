@@ -112,6 +112,9 @@ fun MainScreen(
                     onRenameConversation = { convId, name ->
                         chatViewModel.renameConversation(convId, name)
                     },
+                    onClearMainConversation = {
+                        chatViewModel.clearMainConversation()
+                    },
                     onNavigate = { route ->
                         closeDrawer()
                         onNavigate(route)

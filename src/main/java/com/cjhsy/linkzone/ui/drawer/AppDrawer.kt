@@ -90,6 +90,7 @@ fun AppDrawer(
     onDeleteConversation: (String) -> Unit,
     onPinConversation: (String, Boolean) -> Unit = { _, _ -> },
     onRenameConversation: (String, String) -> Unit = { _, _ -> },
+    onClearMainConversation: () -> Unit = {},
     onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -202,19 +203,53 @@ fun AppDrawer(
             }
         }
 
-        // ---------- 固定标题：LinkZone 对话（不可点击，纯标识） ----------
-        LinkZoneSectionHeader()
-
-        // 云端主会话：可点进入（固定置顶，无长按菜单）
+        // ---------- LinkZone 对话：点击进入云端主会话，长按仅「清空聊天记录」（不可删除） ----------
+        var showMainMenu by remember { mutableStateOf(false) }
+        var pendingClearMain by remember { mutableStateOf(false) }
         Box(Modifier.padding(horizontal = 12.dp)) {
-            ConversationDrawerItem(
-                conv = mainConv ?: ConvItem(id = "__main__", name = "云端对话"),
+            LinkZoneMainCard(
                 selected = mainConv != null && mainConv.id == currentConvId,
-                leadingDot = false,
                 onClick = {
                     if (mainConv != null) onSwitchConversation(mainConv.id) else onOpenMainConversation()
                 },
-                onLongClick = {}
+                onLongClick = { showMainMenu = true }
+            )
+            DropdownMenu(expanded = showMainMenu, onDismissRequest = { showMainMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("清空聊天记录", color = MaterialTheme.colorScheme.error) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    },
+                    onClick = {
+                        showMainMenu = false
+                        pendingClearMain = true
+                    }
+                )
+            }
+        }
+
+        // 清空云端主会话确认框
+        if (pendingClearMain) {
+            AlertDialog(
+                onDismissRequest = { pendingClearMain = false },
+                title = { Text("清空聊天记录") },
+                text = { Text("确定清空「LinkZone 对话」的全部聊天记录吗？此操作不可恢复，但对话本身会保留。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingClearMain = false
+                        onClearMainConversation()
+                    }) {
+                        Text("清空", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingClearMain = false }) { Text("取消") }
+                }
             )
         }
 
@@ -348,16 +383,22 @@ private fun SectionLabel(text: String) {
 }
 
 /**
- * 「LinkZone 对话」固定标题：主色图标盒 + 主标题 + 副标题。
- * 不可点击——它只是一个区域标识，云端主会话入口在聊天页顶栏。
+ * 「LinkZone 对话」主会话卡片：40dp 主色图标盒 + 主标题 + 「云端助手」副标题。
+ * 点击进入云端主会话；长按弹「清空聊天记录」菜单（不可删除）。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LinkZoneSectionHeader() {
+private fun LinkZoneMainCard(selected: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp)
-            .padding(vertical = 6.dp),
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                else Color.Transparent
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -380,7 +421,8 @@ private fun LinkZoneSectionHeader() {
                 text = "LinkZone 对话",
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(1.dp))
             Text(

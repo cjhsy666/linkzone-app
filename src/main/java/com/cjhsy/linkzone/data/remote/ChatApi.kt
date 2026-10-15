@@ -109,6 +109,10 @@ interface ChatApi {
         @Body body: RecallRequest
     ): ApiEnvelope<EmptyData?>
 
+    /** 清空会话全部消息（保留会话），用于「清空聊天记录」 */
+    @DELETE("api/v1/linkzone/chat/msgs/{convId}")
+    suspend fun clearMessages(@Path("convId") convId: String): ApiEnvelope<EmptyData?>
+
     /** 删除消息 */
     @DELETE("api/v1/linkzone/chat/msgs/{convId}/{msgId}")
     suspend fun deleteMessage(
