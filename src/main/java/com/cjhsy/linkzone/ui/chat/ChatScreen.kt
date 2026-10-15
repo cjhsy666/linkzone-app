@@ -284,7 +284,10 @@ fun ChatScreen(
                     },
                     onContinue = viewModel::continueGeneration,
                     onSelectVersion = viewModel::selectVersion,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    userName = userProfile?.username.orEmpty(),
+                    userAvatarUrl = userProfile?.avatarUrl.orEmpty(),
+                    modelName = agent?.chatModelId?.substringAfterLast('/').orEmpty()
                 )
             }
 
@@ -630,7 +633,11 @@ private fun MessageList(
     onRegenerateWithModel: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onContinue: () -> Unit = {},
     onSelectVersion: (String, Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** 当前用户昵称/头像 + 当前模型名（消息气泡署名显示用） */
+    userName: String = "",
+    userAvatarUrl: String = "",
+    modelName: String = ""
 ) {
     val listState = rememberLazyListState()
 
@@ -829,9 +836,9 @@ private fun MessageList(
                         onRegenerate = { onRegenerate(msg) },
                         onRegenerateWithModel = { onRegenerateWithModel(msg) },
                         onContinue = onContinue.takeIf { isLocal && !streaming },
-                        userName = userProfile?.username.orEmpty(),
-                        userAvatarUrl = userProfile?.avatarUrl.orEmpty(),
-                        modelName = agent?.chatModelId?.substringAfterLast('/').orEmpty()
+                        userName = userName,
+                        userAvatarUrl = userAvatarUrl,
+                        modelName = modelName
                     )
                 }
             }
