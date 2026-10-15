@@ -17,6 +17,8 @@ import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.webkit.WebViewAssetLoader
 import kotlinx.coroutines.delay
@@ -42,8 +44,13 @@ object MdOffscreen {
         data object Failed : Result
     }
 
-    /** 缓存/状态表 key（页面 + 渲染函数 + 内容三元组） */
-    fun keyOf(page: String, renderFn: String, content: String) = "$page|$renderFn|$content"
+    /** 缓存/状态表 key（页面 + 渲染函数 + 着色 + 内容）：着色不同（深浅气泡）需分别缓存 */
+    fun keyOf(page: String, renderFn: String, content: String, tint: Color? = null): String =
+        if (tint == null) "$page|$renderFn|$content"
+        else "$page|$renderFn|${hexOf(tint)}|$content"
+
+    /** Compose 颜色 → JS 可用 #RRGGBB */
+    private fun hexOf(color: Color): String = "#%06X".format(0xFFFFFF and color.toArgb())
 
     private const val TIMEOUT_MS = 8000L
     // 几何上报后等一短拍再截屏：等字体加载/布局稳定，期间如有更新几何以最新为准
@@ -66,9 +73,11 @@ object MdOffscreen {
 
     private class Job(
         val key: String,
-        val renderFn: String,
-        val content: String,
+        /** 已拼好的 JS 调用（含引号安全的内容与可选着色参数） */
+        val jsCall: String,
         val maxWidthPx: Int,
+        /** true=透明底（公式浮在气泡背景上）；false=白底（图表等自带配色的内容） */
+        val transparent: Boolean,
     )
 
     /** 每页面一个 runner：懒建共享 WebView + 串行队列 */
@@ -95,6 +104,8 @@ object MdOffscreen {
             wv.settings.javaScriptEnabled = true
             wv.settings.allowFileAccess = false
             wv.settings.allowContentAccess = false
+            // 透明底色：页面自身不画底的区域（公式）保持透明，浮在气泡背景上
+            wv.setBackgroundColor(AndroidColor.TRANSPARENT)
             // 软件层：保证 draw(Canvas) 到位图可靠且白底可信
             wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             wv.webViewClient = object : WebViewClient() {
@@ -164,7 +175,7 @@ object MdOffscreen {
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
             )
             wv.layout(0, 0, wv.measuredWidth, wv.measuredHeight)
-            wv.evaluateJavascript("window.${job.renderFn}(${JSONObject.quote(job.content) ?: "\"\""})", null)
+            wv.evaluateJavascript(job.jsCall, null)
             handler.postDelayed(timeoutRunnable, TIMEOUT_MS)
         }
 
@@ -191,7 +202,8 @@ object MdOffscreen {
                 wv.layout(0, 0, w, h)
                 Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { bmp ->
                     val canvas = Canvas(bmp)
-                    canvas.drawColor(AndroidColor.WHITE)
+                    // 透明任务不铺底：公式字形直接画在透明画布上
+                    canvas.drawColor(if (job.transparent) AndroidColor.TRANSPARENT else AndroidColor.WHITE)
                     wv.draw(canvas)
                 }
             }.getOrNull()
@@ -220,10 +232,26 @@ object MdOffscreen {
 
     private val runners = HashMap<String, Runner>()
 
-    /** 请求渲染（任意线程可调；已缓存/在途自动去重） */
-    fun request(context: Context, page: String, renderFn: String, content: String, maxWidthPx: Int) {
+    /** 请求渲染（任意线程可调；已缓存/在途自动去重）。
+     *  @param tint 非空时作为第二个 JS 参数传给渲染函数（内容着色），并计入缓存 key
+     *  @param transparent true=透明底位图（公式），false=白底位图（图表） */
+    fun request(
+        context: Context,
+        page: String,
+        renderFn: String,
+        content: String,
+        maxWidthPx: Int,
+        tint: Color? = null,
+        transparent: Boolean = false,
+    ) {
         if (content.isBlank()) return
-        val job = Job(keyOf(page, renderFn, content), renderFn, content, maxWidthPx)
+        val quoted = JSONObject.quote(content) ?: "\"\""
+        val jsCall = if (tint == null) {
+            "window.$renderFn($quoted)"
+        } else {
+            "window.$renderFn($quoted, \"${hexOf(tint)}\")"
+        }
+        val job = Job(keyOf(page, renderFn, content, tint), jsCall, maxWidthPx, transparent)
         if (Looper.myLooper() != Looper.getMainLooper()) {
             val app = context.applicationContext
             handler.post { runnerFor(page).request(app, job) }
@@ -247,11 +275,13 @@ fun rememberOffscreenRender(
     renderFn: String,
     content: String,
     maxWidthPx: Int,
+    tint: Color? = null,
+    transparent: Boolean = false,
 ): MdOffscreen.Result? {
     val context = LocalContext.current
-    LaunchedEffect(page, renderFn, content) {
+    LaunchedEffect(page, renderFn, content, tint, transparent) {
         delay(300)
-        MdOffscreen.request(context.applicationContext, page, renderFn, content, maxWidthPx)
+        MdOffscreen.request(context.applicationContext, page, renderFn, content, maxWidthPx, tint, transparent)
     }
-    return MdOffscreen.results[MdOffscreen.keyOf(page, renderFn, content)]
+    return MdOffscreen.results[MdOffscreen.keyOf(page, renderFn, content, tint)]
 }

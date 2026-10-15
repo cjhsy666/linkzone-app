@@ -5,16 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="katex.min.css">
 <style>
-  html, body { margin: 0; padding: 0; background: #ffffff; }
+  /* 页面透明底：公式位图不带任何底板，字形直接浮在气泡背景上（豆包风格） */
+  html, body { margin: 0; padding: 0; background: transparent; }
+  /* shrink-to-fit：块级公式容器宽 = 公式本体宽，位图即公式本体，不被拉伸为整块白板 */
   #c {
-    width: 100%;
+    display: inline-block;
     box-sizing: border-box;
-    padding: 12px 8px;
-    overflow-x: auto;
     text-align: center;
     font-size: 19px;
     color: #1F2328;
   }
+  /* 去掉 KaTeX display 模式上下 margin：位图高度 = 公式本体高度，无多余留白 */
+  #c .katex-display { margin: 0; }
   /* 行内公式离屏渲染容器：脱离文档流（不影响 #c 高度上报）、零 padding、白底深字、不换行 */
   #i {
     position: absolute;
@@ -35,12 +37,13 @@
 <div id="c"></div>
 <div id="i"></div>
 <script>
-  // 块级公式离屏渲染（原生 MdOffscreen 调用）：渲染进 #c 后上报物理像素宽高。
-  // 宽取容器与内容较大者：短公式位图=容器宽（CSS 居中随位图保留），
-  // 溢出长公式位图=内容实际宽（截屏前原生按该宽 EXACTLY 重测，内容完整不丢）
-  window.renderBlock = function (tex) {
+  // 块级公式离屏渲染（原生 MdOffscreen 调用，第二参为字形颜色）：
+  // 只上报公式本体尺寸（#c 已 shrink-to-fit 且 display margin 为 0），
+  // 原生按此尺寸截取透明底位图并在气泡内居中 —— 公式浮在背景上，无任何底板
+  window.renderBlock = function (tex, color) {
     try {
       var c = document.getElementById('c');
+      c.style.color = color || '#1F2328';
       katex.render(tex, c, {
         displayMode: true,
         throwOnError: true,
@@ -48,15 +51,9 @@
       });
       var dpr = window.devicePixelRatio || 1;
       var r = c.getBoundingClientRect();
-      var wCss = Math.max(r.width, c.scrollWidth);
-      var k = c.querySelector('.katex');
-      if (k) {
-        var kr = k.getBoundingClientRect();
-        if (kr.width > wCss) wCss = kr.width;
-      }
       if (window.LinkZone) {
         LinkZone.onSize(JSON.stringify({
-          w: Math.ceil(wCss * dpr),
+          w: Math.ceil(Math.max(r.width, c.scrollWidth) * dpr),
           h: Math.ceil(r.height * dpr)
         }));
       }
