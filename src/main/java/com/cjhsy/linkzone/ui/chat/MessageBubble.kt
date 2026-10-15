@@ -145,7 +145,12 @@ fun MessageItemView(
     versionCount: Int = 1,
     versionIndex: Int = 0,
     onSelectVersion: ((Int) -> Unit)? = null,
-    highlight: Boolean = false
+    highlight: Boolean = false,
+    /** 当前用户昵称/头像（用户消息显示在右侧头像旁） */
+    userName: String = "",
+    userAvatarUrl: String = "",
+    /** 当前模型名（AI 消息署名显示「智能体名 · 模型名」） */
+    modelName: String = ""
 ) {
     // 长按弹出完整操作菜单；「自由复制」进入内联选择模式，点空白退出恢复原样
     var menuOpen by remember { mutableStateOf(false) }
@@ -197,15 +202,18 @@ fun MessageItemView(
         horizontalArrangement = if (message.isSelf) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Top
     ) {
+        // ---------- 左侧：AI/模型头像 + 模型名（AI 消息靠左） ----------
         if (!message.isSelf) {
             // 云端沿用 36dp 头像规格，本地智能体 32dp
             val avatarSize = if (isLocal) 32.dp else 36.dp
-            if (isLocal) AgentAvatar(agentEmoji, size = avatarSize)
-            else SenderAvatar(message.senderName, size = avatarSize)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (isLocal) AgentAvatar(agentEmoji, size = avatarSize)
+                else SenderAvatar(message.senderName, size = avatarSize)
+            }
             Spacer(Modifier.width(8.dp))
         }
 
-        // 对方消息占满剩余宽度（文档流需要）；气泡自身在内部限宽 62%
+        // 对方消息占满剩余宽度（文档流需要）；用户消息靠右限宽
         val middleModifier = if (message.isSelf) {
             Modifier.widthIn(max = LocalConfiguration.current.screenWidthDp.dp * MAX_BUBBLE_WIDTH_RATIO)
         } else {
@@ -215,66 +223,60 @@ fun MessageItemView(
             modifier = middleModifier,
             horizontalAlignment = if (message.isSelf) Alignment.End else Alignment.Start
         ) {
-            // 发送者署名：云端一直显示；本地仅换模型重答的「名字 · 模型」署名显示
-            if (!message.isSelf) {
-                val showName = message.senderName.isNotBlank() &&
-                    (isLocal && message.senderName.contains("·") || !isLocal)
-                if (showName) {
-                    Text(
-                        text = message.senderName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp)
-                    )
+            // AI 署名：智能体名 · 模型名（Rikka 式——模型头像旁标注模型来源）
+            if (!message.isSelf && message.senderName.isNotBlank()) {
+                val label = if (modelName.isNotBlank() && !message.senderName.contains(modelName)) {
+                    "${message.senderName} · $modelName"
+                } else {
+                    message.senderName
                 }
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp)
+                )
             }
 
             if (message.recalled) {
                 RecalledChip()
             } else if (message.isSelf) {
+                // ---------- 用户消息：右上昵称，下方右对齐文档流（去气泡） ----------
+                if (userName.isNotBlank()) {
+                    Text(
+                        text = userName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(end = 4.dp, bottom = 2.dp)
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SendStatusIndicator(message)
-                    if (selfPureMedia) {
-                        Box(
-                            modifier = Modifier
-                                .highlightBackground(highlightColor)
-                                .combinedClickable(
-                                    onClick = { if (freeCopy) freeCopy = false },
-                                    onLongClick = { if (!freeCopy) menuOpen = true }
-                                )
-                        ) {
-                            SegmentContent(
-                                segments = contentSegs.ifEmpty { null },
-                                fallback = message.content,
-                                isSelf = true,
-                                baseUrl = baseUrl,
-                                freeCopy = freeCopy,
-                                onMediaLongClick = { menuOpen = true },
-                                onTextClick = { if (freeCopy) freeCopy = false }
+                    // 去气泡：全部内容右对齐文档流（媒体裸渲染，文本右对齐无底色）
+                    Box(
+                        modifier = Modifier
+                            .highlightBackground(highlightColor)
+                            .combinedClickable(
+                                onClick = {
+                                    if (freeCopy) freeCopy = false else if (hasText && isLocal && !selfPureMedia) onEdit()
+                                },
+                                onLongClick = { if (!freeCopy) menuOpen = true }
                             )
-                        }
-                    } else {
-                        ChatBubble(
-                            isSelf = true,
-                            highlightColor = highlightColor,
-                            uploading = message.uploading,
-                            onClick = {
-                                if (freeCopy) freeCopy = false else if (hasText && isLocal) onEdit()
-                            },
-                            onLongClick = { if (!freeCopy) menuOpen = true }
-                        ) {
-                            SegmentContent(
-                                segments = contentSegs.ifEmpty { null },
-                                fallback = message.content,
-                                isSelf = true,
-                                baseUrl = baseUrl,
-                                freeCopy = freeCopy,
-                                onMediaLongClick = { menuOpen = true },
-                                onTextClick = { if (!freeCopy && hasText && isLocal) onEdit() }
-                            )
-                        }
+                    ) {
+                        // 去气泡：传 isSelf=false，让文本/链接走普通 onSurface 配色（白字是为气泡底设计的）
+                        SegmentContent(
+                            segments = contentSegs.ifEmpty { null },
+                            fallback = message.content,
+                            isSelf = false,
+                            baseUrl = baseUrl,
+                            freeCopy = freeCopy,
+                            onMediaLongClick = { menuOpen = true },
+                            onTextClick = { if (freeCopy) freeCopy = false else if (hasText && isLocal && !selfPureMedia) onEdit() }
+                        )
                     }
                 }
             } else if (incomingDocument) {
@@ -475,7 +477,12 @@ fun MessageItemView(
 
         if (message.isSelf) {
             Spacer(Modifier.width(8.dp))
-            SelfAvatar(size = if (isLocal) 32.dp else 36.dp)
+            SelfAvatar(
+                size = if (isLocal) 32.dp else 36.dp,
+                name = userName,
+                avatarUrl = userAvatarUrl,
+                baseUrl = baseUrl
+            )
         }
     }
 }
@@ -578,9 +585,20 @@ private fun RecalledChip() {
     }
 }
 
-/** 用户头像：品牌色圆形，显示"我" */
+/**
+ * 用户头像：优先显示网络头像（avatarUrl，baseUrl 解析相对路径），
+ * 无图时回退主色圆形 + 昵称首字符。
+ */
 @Composable
-private fun SelfAvatar(size: androidx.compose.ui.unit.Dp) {
+private fun SelfAvatar(size: androidx.compose.ui.unit.Dp, name: String, avatarUrl: String, baseUrl: String) {
+    val fullUrl = remember(avatarUrl, baseUrl) {
+        when {
+            avatarUrl.isBlank() -> ""
+            avatarUrl.startsWith("http://") || avatarUrl.startsWith("https://") -> avatarUrl
+            avatarUrl.startsWith("/") -> baseUrl.trimEnd('/') + avatarUrl
+            else -> avatarUrl
+        }
+    }
     Box(
         modifier = Modifier
             .size(size)
@@ -588,12 +606,23 @@ private fun SelfAvatar(size: androidx.compose.ui.unit.Dp) {
             .background(MaterialTheme.colorScheme.primary),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = "我",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onPrimary
-        )
+        if (fullUrl.isNotBlank()) {
+            coil.compose.AsyncImage(
+                model = fullUrl,
+                contentDescription = "我的头像",
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier
+                    .size(size)
+                    .clip(CircleShape)
+            )
+        } else {
+            Text(
+                text = name.take(1).ifBlank { "我" },
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+        }
     }
 }
 

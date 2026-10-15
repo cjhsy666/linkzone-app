@@ -198,6 +198,9 @@ class ChatViewModel(
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
+    /** 当前用户资料（消息气泡显示昵称/头像用），直接透传 UserRepository 的流 */
+    val userProfile: StateFlow<com.cjhsy.linkzone.data.model.UserProfile?> = userRepository.profile
+
     /** 服务器会话列表（本地会话由 [localStore] 独立供流，两者合并为 [conversations]） */
     private val serverConvs = MutableStateFlow<List<ConvItem>>(emptyList())
 

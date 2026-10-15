@@ -183,6 +183,7 @@ fun ChatScreen(
     val allPrompts by viewModel.allPrompts.collectAsStateWithLifecycle()
     val allLorebooks by viewModel.allLorebooks.collectAsStateWithLifecycle()
     val allQuickMessages by viewModel.allQuickMessages.collectAsStateWithLifecycle()
+    val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
 
     // 多模型重答选择器开关（本地）
     var showModelPicker by remember { mutableStateOf(false) }
@@ -827,7 +828,10 @@ private fun MessageList(
                         onEdit = { onEdit(msg) },
                         onRegenerate = { onRegenerate(msg) },
                         onRegenerateWithModel = { onRegenerateWithModel(msg) },
-                        onContinue = onContinue.takeIf { isLocal && !streaming }
+                        onContinue = onContinue.takeIf { isLocal && !streaming },
+                        userName = userProfile?.username.orEmpty(),
+                        userAvatarUrl = userProfile?.avatarUrl.orEmpty(),
+                        modelName = agent?.chatModelId?.substringAfterLast('/').orEmpty()
                     )
                 }
             }
