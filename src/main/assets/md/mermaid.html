@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  #c { width: 100%; overflow: hidden; }
+  #c svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+</style>
+<script src="mermaid.min.js"></script>
+</head>
+<body>
+<div id="c"></div>
+<script>
+  mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
+
+  function reportHeight() {
+    var h = document.getElementById('c').getBoundingClientRect().height;
+    if (h > 0 && window.LinkZone) {
+      // 上报物理像素：css px * devicePixelRatio，原生侧按 density 转回 dp
+      LinkZone.onHeight(Math.ceil(h * (window.devicePixelRatio || 1)));
+    }
+  }
+
+  function cleanupStale() {
+    // mermaid.render 失败时可能残留同 id 临时节点，导致下次渲染报 duplicate id
+    var stale = document.getElementById('g');
+    if (stale) stale.parentNode.removeChild(stale);
+    var dm = document.querySelectorAll('div[id^="dmermaid"], [id^="mermaid-"]');
+    for (var i = 0; i < dm.length; i++) {
+      if (dm[i].id !== 'c' && dm[i].parentNode) dm[i].parentNode.removeChild(dm[i]);
+    }
+  }
+
+  var rendering = false;
+
+  window.renderDiagram = async function (code) {
+    if (rendering) return;
+    rendering = true;
+    try {
+      cleanupStale();
+      var result = await mermaid.render('g', code);
+      document.getElementById('c').innerHTML = result.svg;
+      reportHeight();
+      // 字体/布局稳定后再报一次，避免首次高度偏小
+      setTimeout(reportHeight, 50);
+    } catch (e) {
+      cleanupStale();
+      if (window.LinkZone) LinkZone.onError(String((e && e.message) || e));
+    } finally {
+      rendering = false;
+    }
+  };
+
+  if (window.ResizeObserver) {
+    new ResizeObserver(reportHeight).observe(document.getElementById('c'));
+  }
+</script>
+</body>
+</html>

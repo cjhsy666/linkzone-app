@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="katex.min.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  #c {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 6px;
+    overflow-x: auto;
+    text-align: center;
+    font-size: 17px;
+    color: #1F2328;
+  }
+</style>
+<script src="katex.min.js"></script>
+</head>
+<body>
+<div id="c"></div>
+<script>
+  function reportHeight() {
+    var h = document.getElementById('c').getBoundingClientRect().height;
+    if (h > 0 && window.LinkZone) {
+      // 上报物理像素：css px * devicePixelRatio，原生侧按 density 转回 dp
+      LinkZone.onHeight(Math.ceil(h * (window.devicePixelRatio || 1)));
+    }
+  }
+
+  window.renderFormula = function (tex) {
+    try {
+      katex.render(tex, document.getElementById('c'), {
+        displayMode: true,
+        throwOnError: true,
+        output: 'html'
+      });
+      reportHeight();
+      setTimeout(reportHeight, 50);
+    } catch (e) {
+      if (window.LinkZone) LinkZone.onError(String((e && e.message) || e));
+    }
+  };
+
+  if (window.ResizeObserver) {
+    new ResizeObserver(reportHeight).observe(document.getElementById('c'));
+  }
+</script>
+</body>
+</html>

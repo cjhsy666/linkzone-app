@@ -132,6 +132,9 @@ dependencies {
     implementation 'androidx.media3:media3-exoplayer:1.11.1'
     implementation 'androidx.media3:media3-ui:1.11.1'
 
+    // WebView 小岛（Mermaid 图 / LaTeX 块级公式，离线 assets + WebViewAssetLoader）
+    implementation 'androidx.webkit:webkit:1.17.1'
+
     // Markdown 渲染底座（Compose 原生，GFM 全量；m3 组件/代码高亮/Coil2 图片）
     implementation 'com.mikepenz:multiplatform-markdown-renderer-android:0.46.0'
     implementation 'com.mikepenz:multiplatform-markdown-renderer-m3-android:0.46.0'
