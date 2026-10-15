@@ -15,11 +15,25 @@
     font-size: 19px;
     color: #1F2328;
   }
+  /* 行内公式离屏渲染容器：脱离文档流（不影响 #c 高度上报）、零 padding、白底深字、不换行 */
+  #i {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: inline-block;
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+    color: #1F2328;
+    white-space: nowrap;
+    font-size: 16px;
+  }
 </style>
 <script src="katex.min.js"></script>
 </head>
 <body>
 <div id="c"></div>
+<div id="i"></div>
 <script>
   function reportHeight() {
     var h = document.getElementById('c').getBoundingClientRect().height;
@@ -40,6 +54,35 @@
       setTimeout(reportHeight, 50);
     } catch (e) {
       if (window.LinkZone) LinkZone.onError(String((e && e.message) || e));
+    }
+  };
+
+  // 行内公式离屏渲染：渲染进脱离文档流的 #i，精确上报几何（css px，原生侧按 density 换算）
+  // depth = 内容底边相对文字基线的下沉量（可为负/0），供原生侧位图底部留白做基线对齐
+  window.renderInline = function (tex) {
+    try {
+      var el = document.getElementById('i');
+      el.innerHTML = '';
+      var holder = document.createElement('span');
+      // 同线零尺寸参照元素：其 bottom 即公式行基线位置
+      var ref = document.createElement('span');
+      ref.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+      el.appendChild(holder);
+      el.appendChild(ref);
+      katex.render(tex, holder, {
+        displayMode: false,
+        throwOnError: true,
+        output: 'html'
+      });
+      var contentRect = el.getBoundingClientRect();
+      var refRect = ref.getBoundingClientRect();
+      LinkZone.onInline(JSON.stringify({
+        w: Math.ceil(contentRect.width),
+        h: Math.ceil(contentRect.height),
+        depth: contentRect.bottom - refRect.bottom
+      }));
+    } catch (e) {
+      if (window.LinkZone) LinkZone.onInlineError(String((e && e.message) || e));
     }
   };
 
