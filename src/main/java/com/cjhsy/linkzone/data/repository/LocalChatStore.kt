@@ -54,12 +54,14 @@ class LocalChatStore(
     suspend fun getConversation(convId: String): ConvItem? =
         dao.getConversation(convId)?.toConvItem()
 
-    /** 新建本地会话：id = local-conv-{uuid}，botId = bot-local-{agentId} */
+    /** 新建本地会话：id = local-conv-{uuid}，botId = bot-local-{agentId}。
+     *  名称留空（UI 层兜底显示「新对话」），等首条消息/AI 标题再命名，
+     *  避免 ChatViewModel.maybeNameConversation 因名字非默认而跳过。 */
     suspend fun createConversation(agent: LlmAgent, name: String? = null): ConvItem {
         val now = System.currentTimeMillis()
         val entity = LocalConversationEntity(
             id = CONV_PREFIX + UUID.randomUUID(),
-            name = name ?: agent.name.ifBlank { "AI 对话" },
+            name = name.orEmpty(),
             agentId = agent.id,
             botId = BOT_PREFIX + agent.id,
             pinned = false,

@@ -2230,10 +2230,11 @@ class ChatViewModel(
     }
 
     /** 首条消息后用消息摘要重命名会话（豆包式）：默认标题 = 首条用户消息截断，本地/云端同规则。
-     *  云端主会话是固定入口，名字不随消息变化，跳过重命名。 */
+     *  云端主会话是固定入口，名字不随消息变化，跳过重命名。
+     *  可命名条件：名称为空（新建未命名）或仍是「新对话」兜底。 */
     private fun maybeNameConversation(firstText: String) {
         val s = _state.value
-        if (s.currentName != NEW_CONV_NAME) return
+        if (s.currentName.isNotBlank() && !s.currentName.startsWith(NEW_CONV_NAME)) return
         if (isMainConv(s.currentConvId)) return
         val name = firstText.take(NAME_MAX_LEN)
         if (name.isBlank()) return
