@@ -166,8 +166,8 @@ data class ChatModelOption(
 /**
  * 聊天 ViewModel —— 与 LinkZone 适配器直连的会话模型。
  *
- * 云端有且只有一个主会话：bot_id 固定为 [MAIN_BOT_ID]（main），
- * conv_id 规则为 conv-{myId}-main；启动时幂等清理其它云端会话。
+ * 云端有且只有一个主会话：bot_id 固定为 [MAIN_BOT_ID]（linkzone-bot），
+ * conv_id 规则为 conv-{myId}-linkzone-bot；启动时幂等清理其它云端会话。
  * - 发送：经 [ChatSocketManager] WS 发给适配器（receiver_id = 本人），
  *   框架内部如何处理（智能体/插件/不回复）由框架决定，本层不关心
  * - 接收：按 WS payload 的 conv_id 路由——属于当前会话则展示并已读，
@@ -361,7 +361,7 @@ class ChatViewModel(
     // ============ 会话管理 ============
 
     /**
-     * 启动：云端有且只有一个主会话（conv-{myId}-main，bot=main）。
+     * 启动：云端有且只有一个主会话（conv-{myId}-linkzone-bot，bot=linkzone-bot）。
      * 先幂等清理历史遗留的其它云端会话（keep_main=1），再确保主会话存在并打开；
      * 主会话不可用（网络失败等）时回退打开最近的本地会话。
      */
@@ -2468,7 +2468,7 @@ class ChatViewModel(
     /** 是否本地智能体会话（发送落库/重新生成/多模型重答/编辑重发仅本地会话可用） */
     private fun isLocalConv(): Boolean = isLocalConvId(_state.value.currentConvId)
 
-    /** 当前登录用户的云端唯一主会话判定（conv-{myId}-main） */
+    /** 当前登录用户的云端唯一主会话判定（conv-{myId}-linkzone-bot） */
     private fun isMainConv(convId: String): Boolean = isMainConvId(myId, convId)
 
     /** 消息可编辑文本（text/markdown 段拼接，回退 content）；纯媒体消息返回空 */
@@ -2934,12 +2934,12 @@ class ChatViewModel(
     companion object {
         const val NEW_CONV_NAME = "新对话"
 
-        /** 云端唯一主会话固定 bot id（会话 id 规则 conv-{ownerId}-main） */
-        const val MAIN_BOT_ID = "main"
+        /** 云端唯一主会话固定 bot id（会话 id 规则 conv-{ownerId}-linkzone-bot） */
+        const val MAIN_BOT_ID = "linkzone-bot"
         /** 云端唯一主会话固定名称（固定入口，不随消息自动命名） */
         const val MAIN_CONV_NAME = "LinkZone 对话"
 
-        /** 主会话 id 判定（UI 层可用）：conv-{ownerId}-main */
+        /** 主会话 id 判定（UI 层可用）：conv-{ownerId}-linkzone-bot */
         fun isMainConvId(ownerId: String, convId: String): Boolean =
             convId == "conv-$ownerId-$MAIN_BOT_ID"
 

@@ -66,7 +66,7 @@ class ChatRepository(
         runUnitEnvelope(tokenHolder) { chatApi.deleteConversation(convId) }
 
     /**
-     * 批量删除我的所有云端会话（连同各自消息）；keepMain=true 保留唯一主会话 conv-{ownerId}-main。
+     * 批量删除我的所有云端会话（连同各自消息）；keepMain=true 保留唯一主会话 conv-{ownerId}-linkzone-bot。
      * 用于启动迁移：云端有且只有一个主会话，幂等可重复调用。
      */
     suspend fun deleteAllConversations(keepMain: Boolean = true): Result<Unit> =

@@ -71,7 +71,7 @@ interface ChatApi {
     suspend fun deleteConversation(@Path("id") convId: String): ApiEnvelope<EmptyData?>
 
     /**
-     * 批量删除我的所有云端会话（连同各自消息）；keepMain=true 保留唯一主会话 conv-{ownerId}-main。
+     * 批量删除我的所有云端会话（连同各自消息）；keepMain=true 保留唯一主会话 conv-{ownerId}-linkzone-bot。
      * 客户端固定唯一云端对话：启动时幂等清理历史遗留会话。
      */
     @DELETE("api/v1/linkzone/chat/convs")
