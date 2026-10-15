@@ -11,12 +11,18 @@ import android.webkit.WebViewClient
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -160,17 +167,43 @@ private fun MdWebIsland(
     }
 }
 
-/** Mermaid 图表小岛（```mermaid 代码围栏）；失败回退为源码卡片 */
+/** Mermaid 图表小岛（```mermaid 代码围栏）；失败回退为源码卡片；点击弹全屏预览 */
 @Composable
 fun MdMermaidIsland(code: String, textColor: Color) {
-    MdWebIsland(
-        page = "mermaid.html",
-        renderFn = "renderDiagram",
-        content = code,
-        fallbackLanguage = "mermaid",
-        textColor = textColor,
-        framed = true,
-    )
+    var showPreview by remember { mutableStateOf(false) }
+    Box {
+        MdWebIsland(
+            page = "mermaid.html",
+            renderFn = "renderDiagram",
+            content = code,
+            fallbackLanguage = "mermaid",
+            textColor = textColor,
+            framed = true,
+        )
+        // 透明点击层：仅图表区域响应点击（WebView 本身已消费触摸，这里统一接管），
+        // 不拦截外层气泡的长按/自由复制等其余手势语义
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { showPreview = true }
+        )
+        // 可点击提示：右上角小图标
+        Icon(
+            imageVector = Icons.Filled.Fullscreen,
+            contentDescription = "全屏预览",
+            tint = mdSecondaryText(textColor),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 12.dp, end = 18.dp)
+                .size(16.dp)
+        )
+    }
+    if (showPreview) {
+        MdMermaidPreviewDialog(code = code, onDismiss = { showPreview = false })
+    }
 }
 
 /** LaTeX 块级公式小岛（$$...$$ 段落）；失败回退为源码卡片 */
