@@ -2,12 +2,18 @@ package com.cjhsy.linkzone.ui.chat.md
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -88,13 +94,13 @@ fun MdMermaidIsland(code: String, textColor: Color) {
                     modifier = Modifier
                         .matchParentSize()
                         .clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                         ) { showPreview = true }
                 )
                 // 可点击提示：右上角小图标
-                androidx.compose.material3.Icon(
-                    imageVector = androidx.compose.material.icons.Icons.Filled.Fullscreen,
+                Icon(
+                    imageVector = Icons.Filled.Fullscreen,
                     contentDescription = "全屏预览",
                     tint = mdSecondaryText(textColor),
                     modifier = Modifier
