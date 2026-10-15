@@ -140,6 +140,8 @@ dependencies {
     // Markdown 渲染底座（RikkaHub 方案：AST 后台解析 + 分块渲染，长文滚动不卡）
     // RikkaHub fork 的 intellij-markdown（含 GFM 数学扩展 INLINE_MATH/BLOCK_MATH）
     implementation 'com.github.rikkahub:markdown:d79a97cc8e'
+    // 代码语法高亮（MdCodeCard；原由 mikepenz markdown-renderer-code 传递引入）
+    implementation 'dev.snipme:highlights:0.9.2'
     // HTML 片段解析（含 HTML 的 markdown 走 Jsoup DOM 渲染）
     implementation 'org.jsoup:jsoup:1.18.3'
     // LaTeX 原生渲染（jlatexmath-android，无 WebView）

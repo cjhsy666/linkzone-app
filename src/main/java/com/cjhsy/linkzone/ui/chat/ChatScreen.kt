@@ -1176,11 +1176,11 @@ internal fun ChatInputBar(
         val item = PendingMedia(file = file, type = type)
         pendingAttachments = pendingAttachments + item
         onUploadPending(file) { result ->
-            pendingAttachments = pendingAttachments.map {
-                if (it.id != item.id) it
+            pendingAttachments = pendingAttachments.map { pm ->
+                if (pm.id != item.id) pm
                 else result.fold(
                     onSuccess = { up ->
-                        it.copy(
+                        pm.copy(
                             uploadState = MediaUploadState.UPLOADED,
                             remoteUrl = up.url,
                             remoteSegType = up.segType,
@@ -1188,7 +1188,7 @@ internal fun ChatInputBar(
                             remoteSize = up.size
                         )
                     },
-                    onFailure = { it.copy(uploadState = MediaUploadState.FAILED) }
+                    onFailure = { pm.copy(uploadState = MediaUploadState.FAILED) }
                 )
             }
         }
