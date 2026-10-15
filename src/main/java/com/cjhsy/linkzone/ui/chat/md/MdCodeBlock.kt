@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -141,7 +140,6 @@ fun MdCodeCard(
             .padding(vertical = 4.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(cardBg)
-            .animateContentSize()
     ) {
         // 顶栏：语言名 + 图形按钮（无文字标签）
         Row(

@@ -35,23 +35,31 @@
 <div id="c"></div>
 <div id="i"></div>
 <script>
-  function reportHeight() {
-    var h = document.getElementById('c').getBoundingClientRect().height;
-    if (h > 0 && window.LinkZone) {
-      // 上报物理像素：css px * devicePixelRatio，原生侧按 density 转回 dp
-      LinkZone.onHeight(Math.ceil(h * (window.devicePixelRatio || 1)));
-    }
-  }
-
-  window.renderFormula = function (tex) {
+  // 块级公式离屏渲染（原生 MdOffscreen 调用）：渲染进 #c 后上报物理像素宽高。
+  // 宽取容器与内容较大者：短公式位图=容器宽（CSS 居中随位图保留），
+  // 溢出长公式位图=内容实际宽（截屏前原生按该宽 EXACTLY 重测，内容完整不丢）
+  window.renderBlock = function (tex) {
     try {
-      katex.render(tex, document.getElementById('c'), {
+      var c = document.getElementById('c');
+      katex.render(tex, c, {
         displayMode: true,
         throwOnError: true,
         output: 'html'
       });
-      reportHeight();
-      setTimeout(reportHeight, 50);
+      var dpr = window.devicePixelRatio || 1;
+      var r = c.getBoundingClientRect();
+      var wCss = Math.max(r.width, c.scrollWidth);
+      var k = c.querySelector('.katex');
+      if (k) {
+        var kr = k.getBoundingClientRect();
+        if (kr.width > wCss) wCss = kr.width;
+      }
+      if (window.LinkZone) {
+        LinkZone.onSize(JSON.stringify({
+          w: Math.ceil(wCss * dpr),
+          h: Math.ceil(r.height * dpr)
+        }));
+      }
     } catch (e) {
       if (window.LinkZone) LinkZone.onError(String((e && e.message) || e));
     }
@@ -85,10 +93,6 @@
       if (window.LinkZone) LinkZone.onInlineError(String((e && e.message) || e));
     }
   };
-
-  if (window.ResizeObserver) {
-    new ResizeObserver(reportHeight).observe(document.getElementById('c'));
-  }
 </script>
 </body>
 </html>

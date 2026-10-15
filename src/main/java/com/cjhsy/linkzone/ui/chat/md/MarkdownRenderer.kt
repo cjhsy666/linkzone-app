@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -18,6 +20,8 @@ import com.mikepenz.markdown.model.ImageData
 import com.mikepenz.markdown.model.ImageTransformer
 import com.mikepenz.markdown.model.State
 import com.mikepenz.markdown.model.parseMarkdown
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** markdown 内相对图片地址经 [resolveMedia] 拼接 baseUrl 后走 Coil2 */
 private class BaseUrlImageTransformer(private val baseUrl: String) : ImageTransformer {
@@ -39,7 +43,8 @@ private class BaseUrlImageTransformer(private val baseUrl: String) : ImageTransf
  * 长按/点击由气泡外层 combinedClickable 接收；自由复制由外层 SelectionContainer 接管；
  * 链接点击走 LocalUriHandler。
  *
- * 流式性能：按顶层块拆分 + 逐块 remember 解析缓存，流式增长仅尾部块重解析。
+ * 流式性能：按顶层块拆分 + 异步解析（Dispatchers.Default，主线程零解析），
+ * 块级缓存跨流式更新复用，流式增长仅新增块解析；滑动进入长消息同样不阻塞 UI 线程。
  *
  * @param selectable 兼容旧签名保留（新实现无需使用，外层 SelectionContainer 已接管）
  * @param onLongClick 兼容旧签名保留（新手势路径不消费，外层 combinedClickable 自然收到）
@@ -59,6 +64,24 @@ fun MarkdownContent(
     val blocks = remember(markdown) {
         runCatching { splitTopLevelBlocks(markdown) }.getOrElse { listOf(markdown) }
     }
+    // 解析全部异步（Dispatchers.Default）：主线程零解析 —— LazyColumn 滑动进入新消息、
+    // 流式增长均不再阻塞 UI 线程。块缓存跨流式更新复用（前序块字符串不变直接命中），
+    // 仅新增块解析；解析完成前以纯文本占位（渲染快且内容可见），失败转义重解析，
+    // 再失败保持纯文本 —— 内容绝不可不可见
+    val stateCache = remember { mutableStateMapOf<String, State?>() }
+    LaunchedEffect(blocks) {
+        val missing = blocks.filter { !stateCache.containsKey(it) }
+        if (missing.isEmpty()) return@LaunchedEffect
+        val parsed = withContext(Dispatchers.Default) {
+            missing.map { block ->
+                runCatching { parseMarkdown(block) as? State.Success }
+                    .getOrElse {
+                        runCatching { parseMarkdown(escapeMarkdown(block)) as? State.Success }.getOrNull()
+                    }
+            }
+        }
+        missing.forEachIndexed { i, block -> stateCache[block] = parsed[i] }
+    }
     val colors = mdColors(textColor, linkColor)
     val typography = mdTypography(textColor, linkColor)
     // 用户气泡白字（luminance 高）→ 深色高亮板
@@ -72,17 +95,8 @@ fun MarkdownContent(
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         blocks.forEach { block ->
-            // 逐块解析缓存：前序块字符串不变 → remember 命中零开销，仅尾部增长块重解析；
-            // 解析失败（罕见，parser 自身容错极高）→ 转义后按纯文本再解析兜底
-            val state = remember(block) {
-                val parsed = parseMarkdown(block)
-                if (parsed is State.Error) parseMarkdown(escapeMarkdown(block)) else parsed
-            }
-            if (state is State.Error) {
-                // 兜底也失败：绝不让内容不可见，直接纯文本展示
-                Text(text = block, style = typography.text)
-            } else {
-                Markdown(
+            when (val state = stateCache[block]) {
+                is State.Success -> Markdown(
                     state = state,
                     colors = colors,
                     typography = typography,
@@ -94,6 +108,8 @@ fun MarkdownContent(
                     components = components,
                     animations = mdAnimations(),
                 )
+                // 解析中 / 解析失败：纯文本展示（解析仅数毫秒，长消息短暂渐进无碍）
+                else -> Text(text = block, style = typography.text)
             }
         }
     }
