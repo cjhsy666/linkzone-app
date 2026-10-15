@@ -2292,31 +2292,32 @@ class ChatViewModel(
                     messages = listOf(
                         UIMessage.user(
                             """
-                            I will give you some dialogue content in the `<content>` block.
-                            Summarize the dialogue into a short title.
-                            1. The title language should match the user's primary language
-                            2. Do not use punctuation or other special symbols
-                            3. Reply directly with the title only
-                            4. The title should not exceed 10 characters
+                            请根据下面的对话内容，生成一个简短的会话标题。要求：
+                            1. 标题语言与用户使用的语言保持一致（中文对话就用中文）
+                            2. 6 到 12 个汉字，概括对话的核心主题，不要照抄原句
+                            3. 不要使用任何标点符号、引号、 emoji 或特殊符号
+                            4. 不要出现"对话""聊天""咨询"这类无信息量的词
+                            5. 只输出标题文本本身，不要输出任何解释、序号或前缀
 
-                            <content>
-                            用户：${userText.take(600)}
-                            助手：${aiText.take(600)}
-                            </content>
+                            对话内容：
+                            用户：${userText.take(500)}
+                            助手：${aiText.take(500)}
                             """.trimIndent()
                         )
                     ),
                     params = TextGenerationParams(
                         model = model,
                         temperature = 0.3f,
-                        maxTokens = 100
+                        maxTokens = 60
                     )
                 )
                 result.message.parts
                     .filterIsInstance<UIMessagePart.Text>()
                     .joinToString("") { it.text }
             }.getOrNull().orEmpty()
-                .trim('"', '\'', '「', '」', '『', '』', '。', '.', ' ', '\n')
+                .lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+                .removePrefix("标题：").removePrefix("标题:")
+                .trim('"', '\'', '「', '」', '『', '』', '：', ':', '。', '.', ' ', '\t', '\n', '*', '#')
                 .take(NAME_MAX_LEN)
             if (title.isBlank()) return@launch
             localStore.rename(convId, title)

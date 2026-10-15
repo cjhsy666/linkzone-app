@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,11 +22,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,8 +54,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -114,23 +116,26 @@ fun AppDrawer(
     val pinned = remember(filtered) { filtered.filter { it.pinned } }
     val normal = remember(filtered) { filtered.filter { !it.pinned } }
 
-    // 智能体分组（按智能体清单顺序；智能体已删除的会话归入「其他会话」组）
+    // 智能体分组（按智能体清单顺序；组内置顶优先；智能体已删除的会话归入「其他会话」组）
     val agentGroups = remember(filtered, agents) {
         val byId = filtered.groupBy { agentIdOf(it) }
         val known = agents.mapTo(mutableSetOf()) { it.id }
         val named = agents.mapNotNull { a ->
-            byId[a.id]?.let { AgentGroup(a.id, a.name.ifBlank { "智能体" }, it) }
+            byId[a.id]?.sortedByDescending { it.pinned }?.let {
+                AgentGroup(a.id, a.name.ifBlank { "智能体" }, it)
+            }
         }
         val orphans = byId.filterKeys { it !in known }
-            .map { AgentGroup(it.key, "其他会话", it.value) }
+            .map { AgentGroup(it.key, "其他会话", it.value.sortedByDescending { c -> c.pinned }) }
         named + orphans
     }
 
-    // 会话行渲染：搜索拍平与智能体分组两种模式共用；indent=true 时左缩进体现层级
+    // 会话行渲染：搜索拍平与智能体分组两种模式共用；indent=true 时缩进对齐分组标题
     val convRow: @Composable (ConvItem, Boolean) -> Unit = { conv, indent ->
-        Box(Modifier.padding(start = if (indent) 8.dp else 0.dp)) {
+        Box(Modifier.padding(start = if (indent) 22.dp else 0.dp)) {
             ConversationDrawerItem(
                 conv = conv,
+                leadingDot = indent,
                 selected = conv.id == currentConvId,
                 onClick = { onSwitchConversation(conv.id) },
                 onLongClick = { menuConv = conv },
@@ -155,58 +160,58 @@ fun AppDrawer(
     Column(
         modifier = modifier
             .fillMaxHeight()
+            .background(MaterialTheme.colorScheme.surface)
     ) {
-        // ---------- 顶部：会话搜索（新建对话入口已移至聊天页顶栏） ----------
+        // ---------- 顶部：轻量搜索框 ----------
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp)
+                .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp)
+                .height(40.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = Icons.Filled.Search,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .padding(start = 10.dp)
-                    .size(15.dp)
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.size(16.dp)
             )
-            androidx.compose.material3.TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 44.dp),
-                placeholder = { Text("搜索会话", style = MaterialTheme.typography.bodySmall) },
-                singleLine = true,
-                colors = androidx.compose.material3.TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    disabledContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent
-                ),
-                textStyle = MaterialTheme.typography.bodySmall
-            )
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (searchQuery.isEmpty()) {
+                    Text(
+                        text = "搜索会话",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
 
-        // ---------- 固定置顶：唯一云端主会话（搜索不影响它，始终可见） ----------
-        val mainItem = mainConv ?: ConvItem(id = "__main_placeholder__", name = "LinkZone 对话")
-        ConversationDrawerItem(
-            conv = mainItem,
+        // ---------- 固定置顶：唯一云端主会话（品牌卡片，区别于本地会话） ----------
+        MainConversationCard(
+            title = mainConv?.name?.ifBlank { null } ?: "LinkZone",
             selected = mainConv != null && mainConv.id == currentConvId,
             onClick = {
                 if (mainConv != null) onSwitchConversation(mainConv.id) else onOpenMainConversation()
-            },
-            // 云端主会话是固定入口：无长按菜单（不可删/不可置顶）
-            onLongClick = {}
+            }
         )
 
-        SectionLabel(if (searchQuery.isBlank()) "本地会话" else "搜索结果")
+        SectionLabel(if (searchQuery.isBlank()) "本地智能体" else "搜索结果")
 
         // ---------- 会话区（搜索时拍平；否则按智能体分组折叠） ----------
         if (filtered.isEmpty()) {
@@ -230,20 +235,13 @@ fun AppDrawer(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 if (searchQuery.isNotBlank()) {
-                    // 搜索结果拍平展示（置顶优先）
+                    // 搜索结果拍平展示（置顶优先，图钉标记区分）
                     if (pinned.isNotEmpty()) {
                         items(pinned, key = { "p-" + it.id }) { conv -> convRow(conv, false) }
                     }
                     if (normal.isNotEmpty()) {
                         if (pinned.isNotEmpty()) {
-                            item(key = "divider") {
-                                Text(
-                                    text = "全部会话",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)
-                                )
-                            }
+                            item(key = "divider") { Spacer(Modifier.height(6.dp)) }
                         }
                         items(normal, key = { it.id }) { conv -> convRow(conv, false) }
                     }
@@ -331,54 +329,101 @@ fun AppDrawer(
     }
 }
 
-/** 分区小标题 */
+/** 分区小标题：极小、淡色、宽字距 */
 @Composable
 private fun SectionLabel(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 6.dp)
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+        modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 6.dp)
     )
 }
 
-/** 智能体分组头：主色机器人图标 + 名称 + 会话数 + 展开/收起箭头（无底色，轻量紧凑） */
+/**
+ * 唯一云端主会话：品牌卡片（主色淡底 + 主色图标盒），
+ * 与普通本地会话拉开层级；不可删除/置顶，无长按菜单。
+ */
+@Composable
+private fun MainConversationCard(title: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = if (selected) 0.13f else 0.07f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(17.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+/**
+ * 智能体分组头：左侧收展箭头 + 机器人图标 + 名称 + 右侧数量。
+ * 无底色、轻量行式，层级靠缩进和字重表达。
+ */
 @Composable
 private fun AgentGroupHeader(name: String, count: Int, expanded: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
-            .padding(start = 6.dp, end = 6.dp, top = 12.dp, bottom = 6.dp),
+            .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
+            imageVector = if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.ChevronRight,
+            contentDescription = if (expanded) "收起" else "展开",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            modifier = Modifier.size(15.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(
             imageVector = Icons.Filled.SmartToy,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(15.dp)
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            modifier = Modifier.size(14.dp)
         )
         Spacer(Modifier.width(7.dp))
         Text(
             text = name,
             style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
             modifier = Modifier.weight(1f)
         )
         Text(
             text = count.toString(),
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
-        Spacer(Modifier.width(5.dp))
-        Icon(
-            imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-            contentDescription = if (expanded) "收起" else "展开",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            modifier = Modifier.size(16.dp)
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
         )
     }
 }
@@ -405,7 +450,9 @@ private fun ConversationDrawerItem(
     onDismissMenu: () -> Unit = {},
     onRename: () -> Unit = {},
     onPin: () -> Unit = {},
-    onDelete: () -> Unit = {}
+    onDelete: () -> Unit = {},
+    /** 组内会话：标题前显示小圆点，表达文件树层级 */
+    leadingDot: Boolean = false
 ) {
     val container = if (selected) {
         MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
@@ -416,21 +463,33 @@ private fun ConversationDrawerItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(9.dp))
                 .background(container)
                 .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                .padding(start = 10.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                .padding(start = 10.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (leadingDot) {
+                Box(
+                    modifier = Modifier
+                        .padding(end = 9.dp)
+                        .size(4.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        )
+                )
+            }
             Text(
                 text = conv.name.ifBlank { "新对话" },
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
                 color = if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f),
+                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal
             )
             // 置顶标记
             if (conv.pinned) {
@@ -506,7 +565,7 @@ private fun ConversationDrawerItem(
     }
 }
 
-/** 底部渐变资料卡（整卡可点击进入「我的」；右上角设置图标进入设置） */
+/** 底部资料卡：白底 + 顶部分割线，整卡可点进「我的」，右侧设置入口 */
 @Composable
 private fun DrawerHeader(
     profile: UserProfile?,
@@ -514,83 +573,79 @@ private fun DrawerHeader(
     onClick: () -> Unit,
     onSettings: () -> Unit
 ) {
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            // 渐变背景置于 navigationBarsPadding 外层，让紫色铺满到屏幕底（避免导航区露出白底）
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.03f),
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                    )
-                )
-            )
-            .clickable(onClick = onClick)
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp)
+            .background(MaterialTheme.colorScheme.surface)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        HorizontalDivider(
+            thickness = 0.5.dp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Box(
                 modifier = Modifier
-                    .size(50.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Filled.Person,
                     contentDescription = "我的",
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(26.dp)
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(19.dp)
                 )
             }
-            Spacer(Modifier.width(14.dp))
+            Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     text = profile?.username?.ifBlank { profile.linkzoneId } ?: "灵臻用户",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 连接状态指示
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
+                            .size(6.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (connected) Color(0xFF34C759)
-                                else MaterialTheme.colorScheme.outline
-                            )
+                            .background(if (connected) Color(0xFF34C759) else MaterialTheme.colorScheme.outline)
                     )
                     Spacer(Modifier.width(5.dp))
                     Text(
                         text = if (connected) "已连接" else "连接中…",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                     )
                     if (profile != null) {
                         val id = profile.linkzoneId
                         Text(
                             text = " · ID ${id.take(10)}${if (id.length > 10) "…" else ""}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
             }
-            // 右上角设置图标（独立可点，不冒泡到整卡点击）
-            IconButton(onClick = onSettings) {
+            IconButton(onClick = onSettings, modifier = Modifier.size(36.dp)) {
                 Icon(
                     imageVector = Icons.Filled.Settings,
                     contentDescription = "设置",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp)
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    modifier = Modifier.size(19.dp)
                 )
             }
         }
