@@ -2,20 +2,12 @@ package com.cjhsy.linkzone.ui.chat.md
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,7 +21,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.compose.LocalMarkdownTypography
@@ -71,14 +62,13 @@ private fun MdIslandPlaceholder(label: String, minHeight: Dp, textColor: Color) 
 fun MdMermaidIsland(code: String, textColor: Color) {
     var showPreview by remember { mutableStateOf(false) }
     val result = rememberOffscreenRender("mermaid.html", "renderDiagram", code, ISLAND_MAX_WIDTH_PX)
-    val cardShape = RoundedCornerShape(14.dp)
+    val cardShape = RoundedCornerShape(12.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clip(cardShape)
-            .border(1.dp, textColor.copy(alpha = 0.10f), cardShape)
-            .background(textColor.copy(alpha = 0.03f))
+            .background(mdNeutralCard(textColor))
             .padding(10.dp)
     ) {
         when (result) {
@@ -93,19 +83,18 @@ fun MdMermaidIsland(code: String, textColor: Color) {
                     contentDescription = "图表",
                     modifier = Modifier.fillMaxWidth(),
                 )
-                // 全屏预览点击层：统一接管点击（WebView 已不挂载，不再消费触摸），
-                // 不拦截外层气泡的长按/自由复制等其余手势语义
+                // 全屏预览点击层
                 Box(
                     modifier = Modifier
                         .matchParentSize()
                         .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                             indication = null,
                         ) { showPreview = true }
                 )
                 // 可点击提示：右上角小图标
-                Icon(
-                    imageVector = Icons.Filled.Fullscreen,
+                androidx.compose.material3.Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Filled.Fullscreen,
                     contentDescription = "全屏预览",
                     tint = mdSecondaryText(textColor),
                     modifier = Modifier
@@ -124,9 +113,8 @@ fun MdMermaidIsland(code: String, textColor: Color) {
 }
 
 /**
- * LaTeX 块级公式（$$...$$）：离屏渲染为透明底、气泡文字色字形的位图，
- * 按内容尺寸居中呈现 —— 无卡片、无底板、无边框、无圆角，公式字形直接浮在
- * 气泡背景上，与豆包一致（数学式本体即视觉主体）；失败回退源码卡片。
+ * LaTeX 块级公式（$$...$$）：白底圆角卡片 + 居中显示，与代码卡片同风格。
+ * 稳定可靠：白底不透明位图，无透明底兼容性问题。
  */
 @Composable
 fun MdKatexIsland(formula: String, textColor: Color) {
@@ -136,27 +124,25 @@ fun MdKatexIsland(formula: String, textColor: Color) {
         content = formula,
         maxWidthPx = ISLAND_MAX_WIDTH_PX,
         tint = textColor,
-        transparent = true,
+        transparent = false,
     )
-    when (result) {
-        is MdOffscreen.Result.Ready -> BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 10.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            val density = LocalDensity.current
-            val naturalW = with(density) { result.bitmap.width.toDp() }
-            val naturalH = with(density) { result.bitmap.height.toDp() }
-            // 内容宽超出气泡可用宽（罕见超长公式）时等比缩放，绝不横向裁切
-            val scale = if (naturalW > maxWidth) maxWidth / naturalW else 1f
-            Image(
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(mdNeutralCard(textColor))
+            .padding(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        when (result) {
+            is MdOffscreen.Result.Ready -> Image(
                 bitmap = result.bitmap.asImageBitmap(),
                 contentDescription = formula,
-                modifier = Modifier.size(naturalW * scale, naturalH * scale),
+                modifier = Modifier.fillMaxWidth(),
             )
+            is MdOffscreen.Result.Failed -> MdIslandFallback(formula, "latex", textColor)
+            null -> MdIslandPlaceholder("渲染公式…", 56.dp, textColor)
         }
-        is MdOffscreen.Result.Failed -> MdIslandFallback(formula, "latex", textColor)
-        null -> MdIslandPlaceholder("渲染公式…", 56.dp, textColor)
     }
 }

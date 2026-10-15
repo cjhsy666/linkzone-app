@@ -33,57 +33,48 @@ internal fun inlineMathKey(tex: String, tint: Color?): String =
 
 /**
  * 行内 $...$ 公式离屏渲染器：全 App 共享一个不挂载视图树的 WebView，
- * 串行队列逐条渲染 KaTeX 行内公式（throwOnError，失败即降级），
- * 按 JS 上报的几何（宽/高/基线下沉深度）截取白底位图，
- * 供 Compose InlineTextContent 以「位图底部对齐文字基线」插入段落。
+ * 串行队列渲染并截取白底位图，供 Compose 以 InlineTextContent 嵌入段落。
  *
- * 可靠性设计：
- * - 软件层绘制（硬件层离屏 draw(Canvas) 在部分机型全黑）；
- * - 白底位图（不透明），杜绝透明快照变黑的机型差异；
- * - 位图按 tex 缓存（LruCache 8MB），流式期间反复重组零重渲染；
- * - 3s 超时 / JS 报错 / 截屏异常一律 Failed，调用方降级为纯文本，消息绝不可不见。
+ * 相比每实例挂载 WebView：LazyColumn 滑动进出组合零 WebView 创建/销毁开销，
+ * 位图按 tex+着色 LruCache，滚动回看零重渲染。
  */
 object MdInlineMathRenderer {
 
-    /** 渲染结果：Ready=位图就绪；Failed=失败/超时（降级纯文本）；results 中无记录=渲染中 */
     sealed interface Result {
         data class Ready(val bitmap: Bitmap) : Result
         data object Failed : Result
     }
 
-    private const val MAX_WIDTH_PX = 2000
     private const val MAX_TEX_LENGTH = 200
-    private const val TIMEOUT_MS = 3000L
-    // 几何上报后等一短拍再截屏：等 KaTeX 字体加载/布局稳定，期间如有更新几何以最新为准
+    private const val MAX_WIDTH_PX = 720
+    private const val TIMEOUT_MS = 8000L
     private const val DRAW_DELAY_MS = 120L
     private const val PAGE_URL = "https://appassets.androidplatform.net/assets/md/katex.html"
 
-    /** Compose 可观察的结果表（key=tex）；无记录表示尚未就绪 */
+    /** Compose 可观察的结果表（key=[inlineMathKey]）；无记录表示尚未就绪 */
     val results = mutableStateMapOf<String, Result>()
 
-    // 位图缓存：tex -> bitmap，按字节计费 8MB；淘汰时同步清 results，触发按需重渲染
+    private val handler = Handler(Looper.getMainLooper())
+    private var webView: WebView? = null
+    private var pageLoaded = false
+    private var busy = false
+    private var current: Job? = null
+    private var currentW = 0
+    private var currentH = 0
+    private var currentDepth = 0
+    private var density = 3f
+
     private val cache = object : LruCache<String, Bitmap>(8 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-
         override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
             if (evicted) results.remove(key)
         }
     }
 
-    private val handler = Handler(Looper.getMainLooper())
-    private var webView: WebView? = null
-    private var density: Float = 3f
-    private var pageLoaded = false
-    private var busy = false
-
     private data class Job(val key: String, val tex: String, val tint: Color?)
 
     private val queue = ArrayDeque<Job>()
     private val enqueued = mutableSetOf<String>()
-    private var current: Job? = null
-    private var currentW = 0
-    private var currentH = 0
-    private var currentDepth = 0
 
     private val timeoutRunnable = Runnable { current?.let { fail(it) } }
     private val drawRunnable = Runnable { drawCurrent() }
@@ -119,9 +110,7 @@ object MdInlineMathRenderer {
         wv.settings.javaScriptEnabled = true
         wv.settings.allowFileAccess = false
         wv.settings.allowContentAccess = false
-        // 透明底：页面自身不画底，公式字形直接画在透明画布上
-        wv.setBackgroundColor(AndroidColor.TRANSPARENT)
-        // 软件层：保证 draw(Canvas) 到位图可靠
+        wv.setBackgroundColor(AndroidColor.WHITE)
         wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         wv.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(
@@ -160,7 +149,6 @@ object MdInlineMathRenderer {
         currentW = 0
         currentH = 0
         currentDepth = 0
-        // 宽上限 AT_MOST：内容自然排版不折行（#i white-space:nowrap），超高内容由 JS 精确回报
         wv.measure(
             View.MeasureSpec.makeMeasureSpec(MAX_WIDTH_PX, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
@@ -179,9 +167,9 @@ object MdInlineMathRenderer {
     private fun onGeometry(json: String) {
         if (!busy) return
         val o = runCatching { JSONObject(json) }.getOrNull() ?: return
-        currentW = ceil(o.optDouble("w") * density).toInt()
-        currentH = ceil(o.optDouble("h") * density).toInt()
-        currentDepth = ceil(o.optDouble("depth") * density).toInt()
+        currentW = o.optInt("w")
+        currentH = o.optInt("h")
+        currentDepth = o.optInt("depth")
         if (currentW <= 0 || currentH <= 0) return
         handler.removeCallbacks(drawRunnable)
         handler.postDelayed(drawRunnable, DRAW_DELAY_MS)
@@ -194,10 +182,7 @@ object MdInlineMathRenderer {
         val h = currentH.coerceAtLeast(1)
         val padX = ceil(2 * density).toInt()
         val padY = ceil(1 * density).toInt()
-        // 位图底部留 depth 空白：Compose 把位图底部对齐文字基线时公式基线正确
-        // 透明底：不铺白底，公式字形直接浮在段落文字上（豆包风格）
         val bitmap = runCatching {
-            // 按上报几何精确排版后再截屏（渲染前 layout 的高度是空内容的）
             wv.measure(
                 View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY),
@@ -205,7 +190,7 @@ object MdInlineMathRenderer {
             wv.layout(0, 0, w, h)
             val bmp = Bitmap.createBitmap(w + padX * 2, h + currentDepth.coerceAtLeast(0) + padY * 2, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
-            canvas.drawColor(AndroidColor.TRANSPARENT)
+            canvas.drawColor(AndroidColor.WHITE)
             canvas.translate(padX.toFloat(), padY.toFloat())
             wv.draw(canvas)
             bmp
@@ -233,7 +218,7 @@ object MdInlineMathRenderer {
     }
 }
 
-/** 订阅 tex 的离屏渲染结果；null=渲染中，Ready=透明底位图，Failed=失败。
+/** 订阅 tex 的离屏渲染结果；null=渲染中，Ready=白底位图，Failed=失败。
  *  @param tint 字形颜色（匹配气泡文字色），计入缓存 key 并传给 JS。 */
 @Composable
 fun rememberInlineMath(tex: String, tint: Color? = null): MdInlineMathRenderer.Result? {

@@ -41,15 +41,17 @@ fun mdColors(textColor: Color, linkColor: Color): MarkdownColors = markdownColor
     text = textColor,
     codeBackground = mdNeutralCard(textColor),
     inlineCodeBackground = mdNeutralCard(textColor),
-    // 分割线克制：仅作行/块之间的极细提示
-    dividerColor = textColor.copy(alpha = 0.10f),
+    dividerColor = textColor.copy(alpha = 0.08f),
     tableBackground = textColor.copy(alpha = 0.03f),
 )
 
 @Composable
 fun mdTypography(textColor: Color, linkColor: Color): MarkdownTypography {
-    val body = MaterialTheme.typography.bodyMedium.copy(
-        color = textColor, fontSize = 16.sp, lineHeight = 24.sp
+    // 正文：16sp / 24sp 行高（1.5x），主流对话应用标准
+    val body = MaterialTheme.typography.bodyLarge.copy(
+        color = textColor,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
     )
     return markdownTypography(
         text = body,
@@ -57,26 +59,45 @@ fun mdTypography(textColor: Color, linkColor: Color): MarkdownTypography {
         ordered = body,
         bullet = body,
         list = body,
-        // 标题阶梯：比正文明显更黑更大，拉开层级
-        h1 = MaterialTheme.typography.titleLarge.copy(
-            color = textColor, fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold
+        // 标题阶梯：h1 22sp / h2 20sp / h3 18sp，Bold，行高 1.35x
+        h1 = body.copy(
+            fontSize = 22.sp,
+            lineHeight = 30.sp,
+            fontWeight = FontWeight.Bold,
         ),
-        h2 = MaterialTheme.typography.titleMedium.copy(
-            color = textColor, fontSize = 19.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold
+        h2 = body.copy(
+            fontSize = 20.sp,
+            lineHeight = 28.sp,
+            fontWeight = FontWeight.Bold,
         ),
-        h3 = MaterialTheme.typography.titleSmall.copy(
-            color = textColor, fontSize = 17.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold
+        h3 = body.copy(
+            fontSize = 18.sp,
+            lineHeight = 26.sp,
+            fontWeight = FontWeight.Bold,
         ),
-        h4 = body.copy(fontWeight = FontWeight.SemiBold),
-        h5 = body.copy(fontWeight = FontWeight.SemiBold),
-        h6 = body.copy(fontWeight = FontWeight.SemiBold),
-        code = MaterialTheme.typography.bodySmall.copy(
+        h4 = body.copy(
+            fontSize = 17.sp,
+            lineHeight = 25.sp,
+            fontWeight = FontWeight.SemiBold,
+        ),
+        h5 = body.copy(
+            fontSize = 16.sp,
+            lineHeight = 24.sp,
+            fontWeight = FontWeight.SemiBold,
+        ),
+        h6 = body.copy(
+            fontSize = 15.sp,
+            lineHeight = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+        ),
+        // 代码：13sp / 20sp，等宽字体
+        code = MaterialTheme.typography.bodyMedium.copy(
             color = textColor,
             fontFamily = FontFamily.Monospace,
             fontSize = 13.sp,
-            lineHeight = 20.sp
+            lineHeight = 20.sp,
         ),
-        // 引用克制处理：不斜体，仅降透明度
+        // 引用：降透明度，不斜体
         quote = body.copy(color = textColor.copy(alpha = 0.72f)),
         textLink = TextLinkStyles(
             style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
@@ -87,24 +108,24 @@ fun mdTypography(textColor: Color, linkColor: Color): MarkdownTypography {
 
 @Composable
 fun mdPadding(): MarkdownPadding = markdownPadding(
-    // 排版节奏放宽：块间距 10dp，标题/段落呼吸感更接近主流对话应用
-    block = 10.dp,
-    list = 6.dp,
-    listItemTop = 3.dp,
-    listItemBottom = 3.dp,
-    listIndent = 12.dp,
+    // 块间距 12dp：标题/段落/代码块/表格之间统一呼吸感
+    block = 12.dp,
+    list = 8.dp,
+    listItemTop = 4.dp,
+    listItemBottom = 4.dp,
+    listIndent = 16.dp,
     codeBlock = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-    blockQuote = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+    blockQuote = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
 )
 
 @Composable
 fun mdDimens(): MarkdownDimens = markdownDimens(
-    dividerThickness = 1.dp,
-    codeBackgroundCornerSize = 14.dp,
+    dividerThickness = 0.5.dp,
+    codeBackgroundCornerSize = 12.dp,
     blockQuoteThickness = 3.dp,
-    tableCornerSize = 12.dp,
-    tableCellWidth = 110.dp,
-    tableCellPadding = 12.dp,
+    tableCornerSize = 10.dp,
+    tableCellWidth = 120.dp,
+    tableCellPadding = 10.dp,
 )
 
 /** 关闭文字尺寸动画：流式期间图片占位换正式图不抖动 */
