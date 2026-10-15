@@ -1,10 +1,6 @@
 package com.cjhsy.linkzone.ui.chat.md
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Text
@@ -12,8 +8,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -120,7 +114,7 @@ private fun MdInlineMathParagraph(model: MarkdownComponentModel) {
     val style = model.typography.paragraph
     val context = LocalContext.current
     LaunchedEffect(mathNodes) {
-        mathNodes.forEach { MdInlineMathRenderer.request(context, it.second) }
+        mathNodes.forEach { MdInlineMathRenderer.request(context, it.second, style.color) }
     }
 
     val mathByIndex = mathNodes.toMap()
@@ -145,7 +139,8 @@ private fun MdInlineMathParagraph(model: MarkdownComponentModel) {
     // 每次重组重建（渲染结果到达后占位尺寸换成真实位图尺寸），配合 LruCache 命中零重渲染
     val mathInline = HashMap<String, InlineTextContent>(mathNodes.size)
     mathNodes.forEach { (index, tex) ->
-        val result = MdInlineMathRenderer.results[tex]
+        val key = inlineMathKey(tex, style.color)
+        val result = MdInlineMathRenderer.results[key]
         val width = if (result is MdInlineMathRenderer.Result.Ready) {
             with(density) { result.bitmap.width.toDp() }
         } else {
@@ -169,17 +164,12 @@ private fun MdInlineMathParagraph(model: MarkdownComponentModel) {
                 is MdInlineMathRenderer.Result.Ready -> Image(
                     bitmap = result.bitmap.asImageBitmap(),
                     contentDescription = tex,
-                    modifier = Modifier.clip(RoundedCornerShape(6.dp)),
+                    // 透明底字形，不做任何 clip 或背景，直接浮在段落上
                 )
                 // 失败/超时：降级为纯文本（原始 tex，不带 $ 定界符）
                 is MdInlineMathRenderer.Result.Failed -> Text(text = tex, style = style)
-                // 渲染中：白底小圆角占位芯片
-                null -> Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(Color.White)
-                )
+                // 渲染中：透明占位（不破坏段落观感），估尺寸已防止跳动
+                null -> Unit
             }
         }
     }

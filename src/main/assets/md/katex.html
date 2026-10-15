@@ -17,7 +17,7 @@
   }
   /* 去掉 KaTeX display 模式上下 margin：位图高度 = 公式本体高度，无多余留白 */
   #c .katex-display { margin: 0; }
-  /* 行内公式离屏渲染容器：脱离文档流（不影响 #c 高度上报）、零 padding、白底深字、不换行 */
+  /* 行内公式离屏渲染容器：脱离文档流（不影响 #c 高度上报）、零 padding、透明底（字形直接浮在段落上）、不换行 */
   #i {
     position: absolute;
     left: 0;
@@ -25,7 +25,7 @@
     display: inline-block;
     margin: 0;
     padding: 0;
-    background: #ffffff;
+    background: transparent;
     color: #1F2328;
     white-space: nowrap;
     font-size: 16px;
@@ -62,12 +62,13 @@
     }
   };
 
-  // 行内公式离屏渲染：渲染进脱离文档流的 #i，精确上报几何（css px，原生侧按 density 换算）
-  // depth = 内容底边相对文字基线的下沉量（可为负/0），供原生侧位图底部留白做基线对齐
-  window.renderInline = function (tex) {
+  // 行内公式离屏渲染（原生 MdInlineMathRenderer 调用，第二参为字形颜色）：
+  // 透明底，只上报几何（宽高+基线下沉深度），原生按此截取透明位图嵌入段落
+  window.renderInline = function (tex, color) {
     try {
       var el = document.getElementById('i');
       el.innerHTML = '';
+      el.style.color = color || '#1F2328';
       var holder = document.createElement('span');
       // 同线零尺寸参照元素：其 bottom 即公式行基线位置
       var ref = document.createElement('span');

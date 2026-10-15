@@ -17,10 +17,19 @@ import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.webkit.WebViewAssetLoader
 import org.json.JSONObject
 import kotlin.math.ceil
+
+/** Compose 颜色 → JS 可用 #RRGGBB */
+private fun hexOf(color: Color): String = "#%06X".format(0xFFFFFF and color.toArgb())
+
+/** 缓存 key：tex + 着色，深浅气泡文字色不同需分别缓存；同包组件共享 */
+internal fun inlineMathKey(tex: String, tint: Color?): String =
+    if (tint == null) tex else "$tex|${hexOf(tint)}"
 
 /**
  * 行内 $...$ 公式离屏渲染器：全 App 共享一个不挂载视图树的 WebView，
@@ -67,30 +76,34 @@ object MdInlineMathRenderer {
     private var pageLoaded = false
     private var busy = false
 
-    private val queue = ArrayDeque<String>()
+    private data class Job(val key: String, val tex: String, val tint: Color?)
+
+    private val queue = ArrayDeque<Job>()
     private val enqueued = mutableSetOf<String>()
-    private var currentTex: String? = null
+    private var current: Job? = null
     private var currentW = 0
     private var currentH = 0
     private var currentDepth = 0
 
-    private val timeoutRunnable = Runnable { currentTex?.let(::fail) }
+    private val timeoutRunnable = Runnable { current?.let { fail(it) } }
     private val drawRunnable = Runnable { drawCurrent() }
 
-    /** 请求渲染（任意线程可调；已缓存/在途自动去重） */
-    fun request(context: Context, tex: String) {
+    /** 请求渲染（任意线程可调；已缓存/在途自动去重）。
+     *  @param tint 字形颜色（非空时传给 JS 并计入缓存 key），匹配气泡文字色 */
+    fun request(context: Context, tex: String, tint: Color? = null) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             val app = context.applicationContext
-            handler.post { request(app, tex) }
+            handler.post { request(app, tex, tint) }
             return
         }
         if (tex.isBlank() || tex.length > MAX_TEX_LENGTH) return
-        cache.get(tex)?.let {
-            results[tex] = Result.Ready(it)
+        val key = inlineMathKey(tex, tint)
+        cache.get(key)?.let {
+            results[key] = Result.Ready(it)
             return
         }
-        if (results.containsKey(tex) || !enqueued.add(tex)) return
-        queue.addLast(tex)
+        if (results.containsKey(key) || !enqueued.add(key)) return
+        queue.addLast(Job(key, tex, tint))
         ensureWebView(context.applicationContext)
         pump()
     }
@@ -106,7 +119,9 @@ object MdInlineMathRenderer {
         wv.settings.javaScriptEnabled = true
         wv.settings.allowFileAccess = false
         wv.settings.allowContentAccess = false
-        // 软件层：保证 draw(Canvas) 到位图可靠且白底可信
+        // 透明底：页面自身不画底，公式字形直接画在透明画布上
+        wv.setBackgroundColor(AndroidColor.TRANSPARENT)
+        // 软件层：保证 draw(Canvas) 到位图可靠
         wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         wv.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(
@@ -138,10 +153,10 @@ object MdInlineMathRenderer {
     private fun pump() {
         if (busy || !pageLoaded) return
         val wv = webView ?: return
-        val tex = queue.removeFirstOrNull() ?: return
-        enqueued.remove(tex)
+        val job = queue.removeFirstOrNull() ?: return
+        enqueued.remove(job.key)
         busy = true
-        currentTex = tex
+        current = job
         currentW = 0
         currentH = 0
         currentDepth = 0
@@ -151,7 +166,13 @@ object MdInlineMathRenderer {
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
         )
         wv.layout(0, 0, wv.measuredWidth, wv.measuredHeight)
-        wv.evaluateJavascript("window.renderInline(${JSONObject.quote(tex) ?: "\"\""})", null)
+        val quotedTex = JSONObject.quote(job.tex) ?: "\"\""
+        val jsCall = if (job.tint == null) {
+            "window.renderInline($quotedTex)"
+        } else {
+            "window.renderInline($quotedTex, \"${hexOf(job.tint)}\")"
+        }
+        wv.evaluateJavascript(jsCall, null)
         handler.postDelayed(timeoutRunnable, TIMEOUT_MS)
     }
 
@@ -167,13 +188,14 @@ object MdInlineMathRenderer {
     }
 
     private fun drawCurrent() {
-        val tex = currentTex ?: return
-        val wv = webView ?: return fail(tex)
+        val job = current ?: return
+        val wv = webView ?: run { fail(job); return }
         val w = currentW.coerceIn(1, MAX_WIDTH_PX)
         val h = currentH.coerceAtLeast(1)
         val padX = ceil(2 * density).toInt()
         val padY = ceil(1 * density).toInt()
         // 位图底部留 depth 空白：Compose 把位图底部对齐文字基线时公式基线正确
+        // 透明底：不铺白底，公式字形直接浮在段落文字上（豆包风格）
         val bitmap = runCatching {
             // 按上报几何精确排版后再截屏（渲染前 layout 的高度是空内容的）
             wv.measure(
@@ -183,22 +205,22 @@ object MdInlineMathRenderer {
             wv.layout(0, 0, w, h)
             val bmp = Bitmap.createBitmap(w + padX * 2, h + currentDepth.coerceAtLeast(0) + padY * 2, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
-            canvas.drawColor(AndroidColor.WHITE)
+            canvas.drawColor(AndroidColor.TRANSPARENT)
             canvas.translate(padX.toFloat(), padY.toFloat())
             wv.draw(canvas)
             bmp
         }.getOrNull()
         if (bitmap == null) {
-            fail(tex)
+            fail(job)
         } else {
-            cache.put(tex, bitmap)
-            results[tex] = Result.Ready(bitmap)
+            cache.put(job.key, bitmap)
+            results[job.key] = Result.Ready(bitmap)
             next()
         }
     }
 
-    private fun fail(tex: String) {
-        results[tex] = Result.Failed
+    private fun fail(job: Job) {
+        results[job.key] = Result.Failed
         next()
     }
 
@@ -206,18 +228,16 @@ object MdInlineMathRenderer {
         handler.removeCallbacks(timeoutRunnable)
         handler.removeCallbacks(drawRunnable)
         busy = false
-        currentTex = null
+        current = null
         pump()
     }
 }
 
-/**
- * 订阅 tex 的离屏渲染结果：null=渲染中（调用方画估算占位，避免布局跳动）；
- * Ready=白底位图；Failed=失败/超时（调用方降级为纯文本 tex，不带 $）。
- */
+/** 订阅 tex 的离屏渲染结果；null=渲染中，Ready=透明底位图，Failed=失败。
+ *  @param tint 字形颜色（匹配气泡文字色），计入缓存 key 并传给 JS。 */
 @Composable
-fun rememberInlineMath(tex: String): MdInlineMathRenderer.Result? {
+fun rememberInlineMath(tex: String, tint: Color? = null): MdInlineMathRenderer.Result? {
     val context = LocalContext.current
-    LaunchedEffect(tex) { MdInlineMathRenderer.request(context, tex) }
-    return MdInlineMathRenderer.results[tex]
+    LaunchedEffect(tex, tint) { MdInlineMathRenderer.request(context.applicationContext, tex, tint) }
+    return MdInlineMathRenderer.results[inlineMathKey(tex, tint)]
 }
