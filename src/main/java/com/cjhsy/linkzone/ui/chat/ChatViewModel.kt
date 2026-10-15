@@ -212,9 +212,9 @@ class ChatViewModel(
         .map { list -> list.firstOrNull { isMainConv(it.id) } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** 本地智能体会话列表（抽屉历史区；云端主会话不进历史列表） */
+    /** 本地智能体会话列表（抽屉历史区；仅本地会话，排除所有云端会话） */
     val localConversations: StateFlow<List<ConvItem>> = conversations
-        .map { list -> list.filterNot { isMainConv(it.id) } }
+        .map { list -> list.filter { isLocalConvId(it.id) } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 本地智能体列表（抽屉「新建本地对话」选择器用） */
