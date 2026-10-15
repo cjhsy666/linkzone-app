@@ -130,9 +130,9 @@ fun AppDrawer(
         named + orphans
     }
 
-    // 会话行渲染：搜索拍平与智能体分组两种模式共用；indent=true 时缩进对齐分组标题
+    // 会话行渲染：搜索拍平与智能体分组两种模式共用；indent=true 时缩进对齐分组标题文本
     val convRow: @Composable (ConvItem, Boolean) -> Unit = { conv, indent ->
-        Box(Modifier.padding(start = if (indent) 22.dp else 0.dp)) {
+        Box(Modifier.padding(start = if (indent) 34.dp else 0.dp)) {
             ConversationDrawerItem(
                 conv = conv,
                 leadingDot = indent,
@@ -202,14 +202,21 @@ fun AppDrawer(
             }
         }
 
-        // ---------- 固定置顶：唯一云端主会话（品牌卡片，区别于本地会话） ----------
-        MainConversationCard(
-            title = mainConv?.name?.ifBlank { null } ?: "LinkZone",
-            selected = mainConv != null && mainConv.id == currentConvId,
-            onClick = {
-                if (mainConv != null) onSwitchConversation(mainConv.id) else onOpenMainConversation()
-            }
-        )
+        // ---------- 固定标题：LinkZone 对话（不可点击，纯标识） ----------
+        LinkZoneSectionHeader()
+
+        // 云端主会话：可点进入（固定置顶，无长按菜单）
+        Box(Modifier.padding(horizontal = 12.dp)) {
+            ConversationDrawerItem(
+                conv = mainConv ?: ConvItem(id = "__main__", name = "云端对话"),
+                selected = mainConv != null && mainConv.id == currentConvId,
+                leadingDot = false,
+                onClick = {
+                    if (mainConv != null) onSwitchConversation(mainConv.id) else onOpenMainConversation()
+                },
+                onLongClick = {}
+            )
+        }
 
         SectionLabel(if (searchQuery.isBlank()) "本地智能体" else "搜索结果")
 
@@ -329,101 +336,112 @@ fun AppDrawer(
     }
 }
 
-/** 分区小标题：极小、淡色、宽字距 */
+/** 分区小标题：极小、淡色 */
 @Composable
 private fun SectionLabel(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-        modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 6.dp)
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        modifier = Modifier.padding(start = 22.dp, top = 16.dp, bottom = 4.dp)
     )
 }
 
 /**
- * 唯一云端主会话：品牌卡片（主色淡底 + 主色图标盒），
- * 与普通本地会话拉开层级；不可删除/置顶，无长按菜单。
+ * 「LinkZone 对话」固定标题：主色图标盒 + 主标题 + 副标题。
+ * 不可点击——它只是一个区域标识，云端主会话入口在聊天页顶栏。
  */
 @Composable
-private fun MainConversationCard(title: String, selected: Boolean, onClick: () -> Unit) {
+private fun LinkZoneSectionHeader() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = if (selected) 0.13f else 0.07f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(MaterialTheme.colorScheme.primary),
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Filled.AutoAwesome,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(17.dp)
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
             )
         }
-        Spacer(Modifier.width(10.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.weight(1f)
-        )
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(
+                text = "LinkZone 对话",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                text = "云端助手",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+            )
+        }
     }
 }
 
 /**
- * 智能体分组头：左侧收展箭头 + 机器人图标 + 名称 + 右侧数量。
- * 无底色、轻量行式，层级靠缩进和字重表达。
+ * 智能体分组头：36dp 圆角图标盒 + 名称/会话数两行 + 右侧收展箭头。
+ * 无底色轻量行式，可点击折叠/展开组内会话。
  */
 @Composable
 private fun AgentGroupHeader(name: String, count: Int, expanded: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 5.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.SmartToy,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                text = "$count 个会话",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+        }
         Icon(
             imageVector = if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.ChevronRight,
             contentDescription = if (expanded) "收起" else "展开",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-            modifier = Modifier.size(15.dp)
-        )
-        Spacer(Modifier.width(4.dp))
-        Icon(
-            imageVector = Icons.Filled.SmartToy,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-            modifier = Modifier.size(14.dp)
-        )
-        Spacer(Modifier.width(7.dp))
-        Text(
-            text = name,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = count.toString(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            modifier = Modifier.size(20.dp)
         )
     }
 }
@@ -463,10 +481,10 @@ private fun ConversationDrawerItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(9.dp))
+                .clip(RoundedCornerShape(10.dp))
                 .background(container)
                 .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                .padding(start = 10.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+                .padding(start = 12.dp, end = 10.dp, top = 9.dp, bottom = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (leadingDot) {
