@@ -34,9 +34,10 @@
   }
 
   var rendering = false;
+  var pending = null;   // 渲染中收到的新代码：渲染完成后补渲染，避免流式末尾内容被丢弃
 
   window.renderDiagram = async function (code) {
-    if (rendering) return;
+    if (rendering) { pending = code; return; }
     rendering = true;
     try {
       cleanupStale();
@@ -50,6 +51,11 @@
       if (window.LinkZone) LinkZone.onError(String((e && e.message) || e));
     } finally {
       rendering = false;
+      if (pending !== null) {
+        var next = pending;
+        pending = null;
+        window.renderDiagram(next);
+      }
     }
   };
 
