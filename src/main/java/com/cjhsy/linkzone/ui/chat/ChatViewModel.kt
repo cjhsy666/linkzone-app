@@ -488,7 +488,7 @@ class ChatViewModel(
                     if (_state.value.currentConvId == convId) {
                         _state.value = _state.value.copy(messages = emptyList())
                     }
-                    updateConvInList(convId) { it.copy(lastMsg = "", unread = 0) }
+                    updateConvInList(convId) { it.copy(last_msg = "", unread = 0) }
                 }
                 .onFailure { _state.value = _state.value.copy(error = it.message ?: "清空失败") }
         }
