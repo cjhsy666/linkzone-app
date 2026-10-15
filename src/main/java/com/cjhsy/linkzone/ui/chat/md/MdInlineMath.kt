@@ -142,7 +142,7 @@ object MdInlineMathRenderer {
 
             @JavascriptInterface
             fun onInlineError(msg: String) {
-                handler.post { currentTex?.let(::fail) }
+                handler.post { current?.let { fail(it) } }
             }
         }, "LinkZone")
         webView = wv
