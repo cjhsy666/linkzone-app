@@ -57,6 +57,8 @@ private fun MdWebIsland(
     content: String,
     fallbackLanguage: String,
     textColor: Color,
+    // 图表用轻卡片包裹；块级公式不着卡片，直接居中呈现（数学式本体即视觉主体）
+    framed: Boolean,
 ) {
     val density = LocalDensity.current.density
     var heightDp by remember { mutableStateOf(48.dp) }
@@ -86,15 +88,23 @@ private fun MdWebIsland(
     }
 
     val animatedHeight by animateDpAsState(targetValue = heightDp, label = "islandHeight")
+    val cardShape = RoundedCornerShape(14.dp)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, textColor.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
-            .background(textColor.copy(alpha = 0.03f))
-            .padding(8.dp)
+            .padding(vertical = if (framed) 4.dp else 8.dp)
+            .then(
+                if (framed) {
+                    Modifier
+                        .clip(cardShape)
+                        .border(1.dp, textColor.copy(alpha = 0.10f), cardShape)
+                        .background(textColor.copy(alpha = 0.03f))
+                        .padding(10.dp)
+                } else {
+                    Modifier
+                }
+            )
     ) {
         // 白底内容区：图表/公式始终在白底上渲染，与气泡配色解耦
         Box(
@@ -159,6 +169,7 @@ fun MdMermaidIsland(code: String, textColor: Color) {
         content = code,
         fallbackLanguage = "mermaid",
         textColor = textColor,
+        framed = true,
     )
 }
 
@@ -171,5 +182,6 @@ fun MdKatexIsland(formula: String, textColor: Color) {
         content = formula,
         fallbackLanguage = "latex",
         textColor = textColor,
+        framed = false,
     )
 }

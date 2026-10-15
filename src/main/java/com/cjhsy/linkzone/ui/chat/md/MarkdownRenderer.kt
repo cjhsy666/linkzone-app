@@ -70,7 +70,7 @@ fun MarkdownContent(
         if (baseUrl.isBlank()) Coil2ImageTransformerImpl else BaseUrlImageTransformer(baseUrl)
     }
 
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         blocks.forEach { block ->
             // 逐块解析缓存：前序块字符串不变 → remember 命中零开销，仅尾部增长块重解析；
             // 解析失败（罕见，parser 自身容错极高）→ 转义后按纯文本再解析兜底

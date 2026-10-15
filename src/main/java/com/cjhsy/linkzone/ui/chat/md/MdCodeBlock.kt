@@ -6,19 +6,17 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,11 +25,10 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.UnfoldLess
 import androidx.compose.material.icons.filled.UnfoldMore
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -61,20 +59,20 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
-// ---------- 语法高亮主题（迁移自旧正则高亮调色板，9 色位均为 Int RGB） ----------
+// ---------- 语法高亮主题（深字卡片走浅色板，浅字卡片走 VS Code Dark+） ----------
 
 private val LIGHT_SYNTAX = SyntaxTheme(
     key = "lz-light",
-    code = 0x1F2328, keyword = 0x7C4DFF, string = 0x2E7D32,
-    literal = 0xB25000, comment = 0x9E9E9E, metadata = 0x00695C,
-    multilineComment = 0x9E9E9E, punctuation = 0x5D4037, mark = 0x0B7285,
+    code = 0x24292F, keyword = 0xAF00DB, string = 0xA31515,
+    literal = 0x098658, comment = 0x008000, metadata = 0x267F99,
+    multilineComment = 0x008000, punctuation = 0x24292F, mark = 0x0000FF,
 )
 
 private val DARK_SYNTAX = SyntaxTheme(
     key = "lz-dark",
-    code = 0xE6EDF3, keyword = 0xC792EA, string = 0xC3E88D,
-    literal = 0xF78C6C, comment = 0x8B949E, metadata = 0x4EC9B0,
-    multilineComment = 0x8B949E, punctuation = 0x89DDFF, mark = 0x82AAFF,
+    code = 0xD4D4D4, keyword = 0xC586C0, string = 0xCE9178,
+    literal = 0xB5CEA8, comment = 0x6A9955, metadata = 0x4EC9B0,
+    multilineComment = 0x6A9955, punctuation = 0xD4D4D4, mark = 0x569CD6,
 )
 
 /** 用户气泡白字 → 深色高亮板；AI 气泡深字 → 浅色高亮板 */
@@ -102,13 +100,13 @@ private fun buildHighlighted(code: String, language: String?, builder: Highlight
     }
 }
 
-/**
- * 现代代码卡片：顶栏（语言标签 + 复制/下载/展开），0.7dp 分隔线、等宽代码区横向滚动。
- * 视觉参数迁移自旧自绘卡片（圆角 12dp、padding 12/10）；高亮异步计算，先显纯文本。
- * 超过 [COLLAPSE_LINES] 行默认折叠（限高 300dp），点「展开」显示全部。
- */
+/** 超过该行数默认折叠，底部给出「查看完整内容」入口 */
 private const val COLLAPSE_LINES = 12
 
+/**
+ * 代码卡片：中性底色圆角卡片（无边框、无分割线），顶栏语言标签 + 图形按钮（复制/下载/展开），
+ * 等宽代码区横向滚动；超长代码默认限高折叠，底部「查看完整内容」展开（带尺寸动画反馈）。
+ */
 @Composable
 fun MdCodeCard(
     code: String,
@@ -128,9 +126,8 @@ fun MdCodeCard(
     }
     val collapsible = remember(code) { code.count { it == '\n' } + 1 > COLLAPSE_LINES }
     var expanded by remember { mutableStateOf(false) }
-    val bg = textColor.copy(alpha = 0.06f)
-    val border = textColor.copy(alpha = 0.14f)
-    val dim = textColor.copy(alpha = 0.65f)
+    val cardBg = mdNeutralCard(textColor)
+    val subColor = mdSecondaryText(textColor)
     val highlighted by produceState(initialValue = AnnotatedString(code), code, language) {
         val job = launch(Dispatchers.Default) {
             value = buildHighlighted(code, language, highlightsBuilder)
@@ -141,44 +138,43 @@ fun MdCodeCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, border, RoundedCornerShape(12.dp))
-            .background(bg)
+            .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(cardBg)
+            .animateContentSize()
     ) {
-        // 顶栏：语言名 + 复制 / 下载 / 展开
+        // 顶栏：语言名 + 图形按钮（无文字标签）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+                .padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = language?.ifBlank { null } ?: "代码",
-                style = MaterialTheme.typography.labelSmall,
-                color = dim,
+                style = MaterialTheme.typography.labelMedium,
+                color = subColor,
                 modifier = Modifier.weight(1f)
             )
             MdCodeAction(
                 icon = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                label = if (copied) "已复制" else "复制",
-                tint = dim,
+                description = if (copied) "已复制" else "复制",
+                tint = subColor,
             ) {
                 clipboard.setText(AnnotatedString(code))
                 copied = true
             }
-            MdCodeAction(icon = Icons.Filled.Download, label = "下载", tint = dim) {
+            MdCodeAction(icon = Icons.Filled.Download, description = "下载", tint = subColor) {
                 Toast.makeText(context, saveCodeToFile(context, code, language), Toast.LENGTH_LONG).show()
             }
             if (collapsible) {
                 MdCodeAction(
                     icon = if (expanded) Icons.Filled.UnfoldLess else Icons.Filled.UnfoldMore,
-                    label = if (expanded) "收起" else "展开",
-                    tint = dim,
+                    description = if (expanded) "收起" else "展开",
+                    tint = subColor,
                 ) { expanded = !expanded }
             }
         }
-        HorizontalDivider(color = border, thickness = 0.7.dp)
         // 代码区：等宽 + 横向滚动（长行不折断，滑出查看）；超长代码默认限高折叠
         Text(
             text = highlighted,
@@ -187,31 +183,41 @@ fun MdCodeCard(
                 .fillMaxWidth()
                 .then(if (collapsible && !expanded) Modifier.heightIn(max = 300.dp) else Modifier)
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
         )
+        if (collapsible) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+            ) {
+                Text(
+                    text = if (expanded) "收起" else "查看完整内容",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = subColor,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(vertical = 9.dp)
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun MdCodeAction(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
+    icon: ImageVector,
+    description: String,
     tint: Color,
     onClick: () -> Unit,
 ) {
-    TextButton(
-        onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 6.dp),
-        modifier = Modifier.height(30.dp)
-    ) {
+    IconButton(onClick = onClick, modifier = Modifier.size(34.dp)) {
         Icon(
             imageVector = icon,
-            contentDescription = label,
+            contentDescription = description,
             tint = tint,
-            modifier = Modifier.size(13.dp)
+            modifier = Modifier.size(18.dp)
         )
-        Spacer(Modifier.width(3.dp))
-        Text(text = label, style = MaterialTheme.typography.labelSmall, color = tint)
     }
 }
 
