@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -127,28 +126,30 @@ fun AppDrawer(
         named + orphans
     }
 
-    // 会话行渲染：搜索拍平与智能体分组两种模式共用
-    val convRow: @Composable (ConvItem) -> Unit = { conv ->
-        ConversationDrawerItem(
-            conv = conv,
-            selected = conv.id == currentConvId,
-            onClick = { onSwitchConversation(conv.id) },
-            onLongClick = { menuConv = conv },
-            menuOpen = menuConv?.id == conv.id,
-            onDismissMenu = { menuConv = null },
-            onRename = {
-                menuConv = null
-                renamingConv = conv
-            },
-            onPin = {
-                menuConv = null
-                onPinConversation(conv.id, !conv.pinned)
-            },
-            onDelete = {
-                menuConv = null
-                pendingDelete = conv
-            }
-        )
+    // 会话行渲染：搜索拍平与智能体分组两种模式共用；indent=true 时左缩进体现层级
+    val convRow: @Composable (ConvItem, Boolean) -> Unit = { conv, indent ->
+        Box(Modifier.padding(start = if (indent) 8.dp else 0.dp)) {
+            ConversationDrawerItem(
+                conv = conv,
+                selected = conv.id == currentConvId,
+                onClick = { onSwitchConversation(conv.id) },
+                onLongClick = { menuConv = conv },
+                menuOpen = menuConv?.id == conv.id,
+                onDismissMenu = { menuConv = null },
+                onRename = {
+                    menuConv = null
+                    renamingConv = conv
+                },
+                onPin = {
+                    menuConv = null
+                    onPinConversation(conv.id, !conv.pinned)
+                },
+                onDelete = {
+                    menuConv = null
+                    pendingDelete = conv
+                }
+            )
+        }
     }
 
     Column(
@@ -231,7 +232,7 @@ fun AppDrawer(
                 if (searchQuery.isNotBlank()) {
                     // 搜索结果拍平展示（置顶优先）
                     if (pinned.isNotEmpty()) {
-                        items(pinned, key = { "p-" + it.id }) { conv -> convRow(conv) }
+                        items(pinned, key = { "p-" + it.id }) { conv -> convRow(conv, false) }
                     }
                     if (normal.isNotEmpty()) {
                         if (pinned.isNotEmpty()) {
@@ -244,10 +245,10 @@ fun AppDrawer(
                                 )
                             }
                         }
-                        items(normal, key = { it.id }) { conv -> convRow(conv) }
+                        items(normal, key = { it.id }) { conv -> convRow(conv, false) }
                     }
                 } else {
-                    // 智能体分组：组头可点击折叠/展开，组内会话置顶优先
+                    // 智能体分组：组头可点击折叠/展开，组内会话缩进展示
                     agentGroups.forEach { group ->
                         val expanded = group.agentId !in collapsedAgents
                         item(key = "g-" + group.agentId) {
@@ -262,7 +263,7 @@ fun AppDrawer(
                             )
                         }
                         if (expanded) {
-                            items(group.convs, key = { it.id }) { conv -> convRow(conv) }
+                            items(group.convs, key = { it.id }) { conv -> convRow(conv, true) }
                         }
                     }
                 }
@@ -341,28 +342,27 @@ private fun SectionLabel(text: String) {
     )
 }
 
-/** 智能体分组头：机器人图标 + 名称 + 会话数 + 展开/收起箭头（点击折叠/展开组内会话） */
+/** 智能体分组头：主色机器人图标 + 名称 + 会话数 + 展开/收起箭头（无底色，轻量紧凑） */
 @Composable
 private fun AgentGroupHeader(name: String, count: Int, expanded: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(start = 6.dp, end = 6.dp, top = 12.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = Icons.Filled.SmartToy,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(17.dp)
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(15.dp)
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(7.dp))
         Text(
             text = name,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -371,14 +371,14 @@ private fun AgentGroupHeader(name: String, count: Int, expanded: Boolean, onClic
         Text(
             text = count.toString(),
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
         )
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(5.dp))
         Icon(
             imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
             contentDescription = if (expanded) "收起" else "展开",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp)
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.size(16.dp)
         )
     }
 }
@@ -408,7 +408,7 @@ private fun ConversationDrawerItem(
     onDelete: () -> Unit = {}
 ) {
     val container = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
     } else {
         Color.Transparent
     }
@@ -416,28 +416,15 @@ private fun ConversationDrawerItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(10.dp))
                 .background(container)
                 .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(start = 10.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 抽屉会话项图标：本地智能体会话用机器人图标区分
-            Icon(
-                imageVector = if (conv.target_id.startsWith(LOCAL_BOT_PREFIX)) {
-                    Icons.Filled.SmartToy
-                } else {
-                    Icons.Filled.ChatBubbleOutline
-                },
-                contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(17.dp)
-            )
-            Spacer(Modifier.width(10.dp))
             Text(
                 text = conv.name.ifBlank { "新对话" },
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.labelLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),

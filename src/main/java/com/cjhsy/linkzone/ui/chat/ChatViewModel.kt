@@ -262,6 +262,12 @@ class ChatViewModel(
     @Volatile
     private var pendingDispatch = false
 
+    /**
+     * 本地会话自动标题跟踪：在集合中 = 标题仍是自动命名（首条消息截断），
+     * AI 标题生成后仍可覆盖；用户手动重命名即移除锁定，AI 不再改标题。
+     */
+    private val autoTitledConvs = mutableSetOf<String>()
+
     /** ask_user 挂起中的应答通道；工具 execute 内 await，提交后 complete 继续 */
     private var pendingAskUser: CompletableDeferred<JsonElement>? = null
 
@@ -1619,8 +1625,14 @@ class ChatViewModel(
                 // 消息自身时间戳沿用锚点聚集值，仅用于版本排序/分页
                 System.currentTimeMillis() * 1000
             )
-            // 首答完成：生成回复建议（思考中断、无正文时不触发）
+            // 首答完成：AI 生成会话标题（失败回退首条消息）+ 回复建议
             if (finalText.isNotBlank()) {
+                maybeGenerateLlmTitle(
+                    convId = convId,
+                    agent = agent,
+                    userText = _state.value.messages.firstOrNull { it.isSelf }?.content.orEmpty(),
+                    aiText = finalText
+                )
                 maybeGenerateSuggestions(agent, model, finalText)
             }
             return
@@ -2226,7 +2238,8 @@ class ChatViewModel(
         val name = firstText.take(NAME_MAX_LEN)
         if (name.isBlank()) return
         if (isLocalConvId(s.currentConvId)) {
-            // 本地会话：默认标题 = 首条用户消息截断（用户可长按手动改名）
+            // 本地会话：默认标题 = 首条用户消息截断（AI 可在后升级为总结标题，用户可手动改名锁定）
+            autoTitledConvs.add(s.currentConvId)
             viewModelScope.launch {
                 localStore.rename(s.currentConvId, name)
                 if (_state.value.currentConvId == s.currentConvId) {
@@ -2244,16 +2257,71 @@ class ChatViewModel(
 
     /**
      * 手动重命名本地会话（抽屉长按菜单「重命名」）。
-     * 改的是当前会话时同步顶部标题。
+     * 改的是当前会话时同步顶部标题；同时锁定标题，AI 不再自动覆盖。
      */
     fun renameConversation(convId: String, name: String) {
         if (!isLocalConvId(convId)) return
         val trimmed = name.trim().take(RENAME_MAX_LEN)
         if (trimmed.isBlank()) return
+        autoTitledConvs.remove(convId)
         viewModelScope.launch {
             localStore.rename(convId, trimmed)
             if (_state.value.currentConvId == convId) {
                 _state.value = _state.value.copy(currentName = trimmed)
+            }
+        }
+    }
+
+    /**
+     * 本地会话首答完成后用 LLM 生成短标题（DeepSeek 式）。
+     * 仅当标题仍是自动命名（未被手动改名）时执行一次；
+     * 生成失败/无模型时静默保留首条用户消息标题（回退）。
+     */
+    private fun maybeGenerateLlmTitle(
+        convId: String,
+        agent: LlmAgent,
+        userText: String,
+        aiText: String
+    ) {
+        if (!autoTitledConvs.remove(convId)) return
+        viewModelScope.launch {
+            val title = runCatching {
+                val (setting, model) = resolveChatModel(agent) ?: return@runCatching null
+                val result = providerManager.getProviderByType(setting).generateText(
+                    providerSetting = setting,
+                    messages = listOf(
+                        UIMessage.user(
+                            """
+                            I will give you some dialogue content in the `<content>` block.
+                            Summarize the dialogue into a short title.
+                            1. The title language should match the user's primary language
+                            2. Do not use punctuation or other special symbols
+                            3. Reply directly with the title only
+                            4. The title should not exceed 10 characters
+
+                            <content>
+                            用户：${userText.take(600)}
+                            助手：${aiText.take(600)}
+                            </content>
+                            """.trimIndent()
+                        )
+                    ),
+                    params = TextGenerationParams(
+                        model = model,
+                        temperature = 0.3f,
+                        maxTokens = 100
+                    )
+                )
+                result.message.parts
+                    .filterIsInstance<UIMessagePart.Text>()
+                    .joinToString("") { it.text }
+            }.getOrNull().orEmpty()
+                .trim('"', '\'', '「', '」', '『', '』', '。', '.', ' ', '\n')
+                .take(NAME_MAX_LEN)
+            if (title.isBlank()) return@launch
+            localStore.rename(convId, title)
+            if (_state.value.currentConvId == convId) {
+                _state.value = _state.value.copy(currentName = title)
             }
         }
     }
