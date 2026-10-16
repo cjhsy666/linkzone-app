@@ -2771,7 +2771,8 @@ class ChatViewModel(
     /**
      * 在用户消息节点追加一个新版本（RikkaHub 式分叉，非破坏式）：
      * - [newSegments] 非空 → 新版本使用编辑后的内容段（文本 + 图片，编辑重发）
-     * - [newSegments] 为空 → 克隆原消息全部内容段（图片/文件等，消息下「重新生成」入口）
+     * - [newSegments] 为空 → 克隆原消息全部内容段（防御性兜底，目前无调用入口）
+     * 这是**唯一**会创建用户版本支线的操作（仅「编辑重发」触发）。
      * 旧尾巴钉到旧版本分支完整保留（历史版本可见切换）；新版本时间戳仍聚集在锚点
      * （排序/分页稳定），真实重发时间记录在 sys.ver 的 ts 字段供 UI 展示。
      */
@@ -2878,9 +2879,10 @@ class ChatViewModel(
      * 从某条消息重新生成（仅本地会话）：
      * - bot 回复：**当前线路重发**——旧回复作为历史版本保留但不占线，新回复原地成为该节点
      *   当前版本，后续消息仍留在当前线路可见（不再把尾巴钉成隐藏支线）
-     * - 用户消息：等价于「重发这条消息」，在节点追加新版本并克隆原文；后续旧内容作为历史
-     *   版本隐藏（必须钉分支，否则新生成的回复会重复追加在旧内容之后）
-     * 旧版本照旧完整落库，可在消息菜单「历史版本」切回查看。
+     * - 用户消息：定位它后面当前分支上的那条 bot 回复，执行与上面完全相同的重生成，
+     *   语义为「让 AI 重新回答我这句话」。**不 fork 用户消息**——用户版本支线只由
+     *   「编辑重发」（[confirmEditMessage] → forkUserVersion）产生。
+     * 旧回复版本完整落库；AI 回复不提供版本切换 UI，当前线路直接展示最新一版。
      */
     fun regenerateAt(message: MessageItem) {
         if (!isLocalConv()) return
@@ -2888,21 +2890,28 @@ class ChatViewModel(
         if (generatingJob?.isActive == true) return
         viewModelScope.launch {
             stopGeneratingAndWait()
-            val node = _state.value.messages.toMessageNodes().nodeOf(message.id) ?: return@launch
-            if (node.isSelf) {
-                forkUserVersion(message, null)
+            val visible = _state.value.messages.toMessageNodes().resolveVisible()
+            val node = visible.nodeOf(message.id) ?: return@launch
+            // 目标 bot 节点：用户消息上点「重新生成」= 重新生成它对应的那条 AI 回复，
+            // 与在 AI 气泡上点重新生成完全等价——绝不 fork 用户消息，只有编辑重发才产生支线。
+            val targetNode = if (node.isSelf) {
+                val selfIndex = visible.indexOfFirst { it.anchorId == node.anchorId }
+                visible.drop(selfIndex + 1).firstOrNull { !it.isSelf }
+            } else node
+            if (targetNode == null) {
+                // 该用户消息后面没有回复（异常残留）：普通补一次生成，不创建版本
                 maybeDispatchLocal()
-            } else {
-                val newIdx = node.versions.size
-                generatingJob = viewModelScope.launch {
-                    runLocalGeneration(
-                        botId = _state.value.currentBotId,
-                        trimTrailingAssistant = true,
-                        versionAnchorId = node.anchorId,
-                        versionIdx = newIdx,
-                        versionAnchorTs = node.anchorTs
-                    )
-                }
+                return@launch
+            }
+            val newIdx = targetNode.versions.size
+            generatingJob = viewModelScope.launch {
+                runLocalGeneration(
+                    botId = _state.value.currentBotId,
+                    trimTrailingAssistant = true,
+                    versionAnchorId = targetNode.anchorId,
+                    versionIdx = newIdx,
+                    versionAnchorTs = targetNode.anchorTs
+                )
             }
         }
     }
