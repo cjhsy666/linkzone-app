@@ -109,11 +109,11 @@ private val DOCUMENT_FRIENDLY_TYPES = setOf(
 /**
  * 统一消息项（云端 / 本地智能体共用）：
  * - 用户：右侧 62% 品牌气泡（纯媒体裸渲染），本地会话点击文字可编辑重发（版本链），
- *   下方快捷操作行：时间戳/复制/编辑(本地)/重生成(本地)/‹ n/m › 切换器
+ *   下方快捷操作行：时间戳/复制/编辑(本地)/‹ n/m › 切换器（不提供重新生成）
  * - AI/框架：长文本/Markdown 走无气泡文档流 + 思考过程折叠面板 + 下方快捷操作行；
  *   IM 卡片类段（文件/名片/投票等）自动回落到气泡样式
  * - 长按弹出完整操作菜单（复制/自由复制/回复/编辑/重生成/换模型/撤回/删除），
- *   菜单显隐全部由能力参数决定，不再靠消息 id 前缀猜测引擎
+ *   菜单显隐全部由能力参数决定（重生成仅最后一条 AI 回复开放），不再靠消息 id 前缀猜测引擎
  *
  * @param isLocal 是否本地智能体会话（决定头像/署名/默认样式；编辑重发仅本地开放）
  * @param streaming 是否处于本地流式生成中的最后一条 AI 消息（禁动画/隐操作行）
@@ -376,20 +376,18 @@ fun MessageItemView(
                 }
             }
 
-            // 用户消息下方快捷操作行（RikkaHub 式）：复制/编辑(仅本地)/重生成(仅本地)/版本切换器
+            // 用户消息下方快捷操作行（RikkaHub 式）：复制/编辑(仅本地)/版本切换器
             if (message.isSelf && !message.recalled) {
                 SelfMessageActionBar(
                     isLocal = isLocal,
                     hasText = hasText,
                     canEdit = hasText || hasImage,
-                    canRegenerate = canRegenerate,
                     versionCount = versionCount,
                     versionIndex = versionIndex,
                     onSelectVersion = onSelectVersion,
                     timestamp = message.displayTimestamp(),
                     onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
-                    onEdit = onEdit,
-                    onRegenerate = onRegenerate
+                    onEdit = onEdit
                 )
             }
 
@@ -778,23 +776,21 @@ private fun FailedStatusIcon() {
 
 /**
  * 用户消息下方快捷操作行（RikkaHub 式，右对齐）：
- * 时间戳 / 复制 / 编辑重发（仅本地，含图消息也可编辑）/ 重新生成（仅本地）/ ‹ n/m › 版本切换。
- * 编辑重发是唯一产生用户版本支线的操作（可切回旧版）；用户消息上的「重新生成」只重答
- * 对应的 AI 回复，不 fork 用户消息；AI 回复自身的重新生成同样不产生可见分支。
+ * 时间戳 / 复制 / 编辑重发（仅本地，含图消息也可编辑）/ ‹ n/m › 版本切换。
+ * 用户消息上不提供「重新生成」：想改问法走编辑重发（显式分叉，可切回旧版）；
+ * 重答请在最后一条 AI 回复上操作（当前线路重发，不产生支线）。
  */
 @Composable
 private fun SelfMessageActionBar(
     isLocal: Boolean,
     hasText: Boolean,
     canEdit: Boolean,
-    canRegenerate: Boolean,
     versionCount: Int,
     versionIndex: Int,
     onSelectVersion: ((Int) -> Unit)?,
     timestamp: Long,
     onCopy: () -> Unit,
-    onEdit: () -> Unit,
-    onRegenerate: () -> Unit
+    onEdit: () -> Unit
 ) {
     Row(
         modifier = Modifier.padding(top = 2.dp, end = 2.dp),
@@ -812,7 +808,6 @@ private fun SelfMessageActionBar(
         }
         if (hasText) ActionBarIcon(Icons.Filled.ContentCopy, "复制", onCopy)
         if (isLocal && canEdit) ActionBarIcon(Icons.Filled.Edit, "编辑重发", onEdit)
-        if (canRegenerate) ActionBarIcon(Icons.Filled.Refresh, "重新生成", onRegenerate)
         if (versionCount > 1 && onSelectVersion != null) {
             VersionSwitcher(
                 versionCount = versionCount,
