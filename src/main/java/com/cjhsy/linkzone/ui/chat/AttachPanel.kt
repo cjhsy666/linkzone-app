@@ -276,7 +276,7 @@ private fun AttachGridItem(
  * 把 content:// 选择结果复制到应用缓存目录，返回可上传的真实文件。
  * 文件名优先取 OpenableColumns.DISPLAY_NAME，取不到时按 mime 补扩展名。
  */
-private fun Uri.copyToCache(context: Context): File {
+internal fun Uri.copyToCache(context: Context): File {
     val mime = context.contentResolver.getType(this)
 
     // 优先保留系统返回的原始文件名（文档解析依赖扩展名分发：pdf/docx/pptx/xlsx/epub…）

@@ -2687,10 +2687,16 @@ class ChatViewModel(
      * 旧尾巴钉到旧版本分支（切回旧版本时整条换回），随后以新版本为末尾重新生成。
      * 云端会话不提供编辑功能。
      */
-    fun confirmEditMessage(newText: String) {
+    fun confirmEditMessage(
+        newText: String,
+        keptImages: List<MessageSegment> = emptyList(),
+        addedImages: List<PendingMediaItem> = emptyList()
+    ) {
         val target = _state.value.editing ?: return
         val content = newText.trim()
-        if (content.isEmpty()) return
+        // 原有图片段：编辑时保留的（可逐张删除）；新增图片段：从上传结果取服务端 URL
+        val kept = keptImages.filter { it.type == "image" || it.type == "flash" }
+        if (content.isEmpty() && kept.isEmpty() && addedImages.isEmpty()) return
         _state.value = _state.value.copy(editing = null)
         // 生成进行中忽略：快速连点会让两个占位气泡拿到相同 version idx，版本链永久错乱
         if (generatingJob?.isActive == true) return
@@ -2698,19 +2704,39 @@ class ChatViewModel(
             stopGeneratingAndWait()
             val s = _state.value
             if (!isLocalConvId(s.currentConvId)) return@launch
-            forkUserVersion(target, content)
+            val segs = buildList {
+                if (content.isNotEmpty()) add(Segments.text(content))
+                addAll(kept)
+                addedImages.forEach { att ->
+                    val url = att.remoteUrl ?: return@forEach
+                    add(
+                        buildMediaSeg(
+                            "image",
+                            url,
+                            att.remoteName.ifBlank { att.file.name },
+                            att.remoteSize,
+                            0L
+                        )
+                    )
+                }
+            }
+            forkUserVersion(target, segs, content.takeIf { it.isNotEmpty() })
             maybeDispatchLocal()
         }
     }
 
     /**
      * 在用户消息节点追加一个新版本（RikkaHub 式分叉，非破坏式）：
-     * - [newText] 非空 → 新版本使用编辑后的文本（编辑重发）
-     * - [newText] 为空 → 克隆原消息全部内容段（图片/文件等，消息下「重新生成」入口）
-     * 旧尾巴钉到旧版本分支完整保留；新版本时间戳仍聚集在锚点（排序/分页稳定），
-     * 真实重发时间记录在 sys.ver 的 ts 字段供 UI 展示。
+     * - [newSegments] 非空 → 新版本使用编辑后的内容段（文本 + 图片，编辑重发）
+     * - [newSegments] 为空 → 克隆原消息全部内容段（图片/文件等，消息下「重新生成」入口）
+     * 旧尾巴钉到旧版本分支完整保留（历史版本可见切换）；新版本时间戳仍聚集在锚点
+     * （排序/分页稳定），真实重发时间记录在 sys.ver 的 ts 字段供 UI 展示。
      */
-    private suspend fun forkUserVersion(target: MessageItem, newText: String?) {
+    private suspend fun forkUserVersion(
+        target: MessageItem,
+        newSegments: List<MessageSegment>?,
+        displayText: String? = null
+    ) {
         val s = _state.value
         val node = s.messages.toMessageNodes().nodeOf(target.id)
         if (node == null) {
@@ -2721,8 +2747,8 @@ class ChatViewModel(
         pinTailToVersion(node.anchorId, node.selectedIndex)
         val newIdx = node.versions.size
         val source = node.selected
-        val contentSegs = if (newText != null) {
-            listOf(Segments.text(newText))
+        val contentSegs = if (newSegments != null) {
+            newSegments
         } else {
             // 克隆原文：剔除版本/分支/思考/中断等内部段，保留 text/image/file 等全部内容段
             source.segments.orEmpty().filter {
@@ -2730,7 +2756,7 @@ class ChatViewModel(
                     it.type != "thinking" && it.type != "sys.stop"
             }.ifEmpty { listOf(Segments.text(source.content)) }
         }
-        val displayContent = newText ?: source.content
+        val displayContent = displayText ?: source.content
         val now = System.currentTimeMillis() * 1000
         val edited = MessageItem(
             id = UUID.randomUUID().toString(),
@@ -2806,10 +2832,12 @@ class ChatViewModel(
             .map { branchSegment(it.anchorId, it.selectedIndex) }
 
     /**
-     * 从某条消息重新生成（仅本地会话，对齐 RikkaHub regenerateAtMessage）：
-     * - 用户消息：在该节点**非破坏式分叉**一个新版本（克隆原文，含图片/文件），
-     *   旧尾巴完整保留为旧版本分支，随后对新版本重新生成（不再删除任何消息）
-     * - bot 回复：旧回复保留为旧版本（其尾巴钉到旧版本分支），新回复作为该节点新版本
+     * 从某条消息重新生成（仅本地会话）：
+     * - bot 回复：**当前线路重发**——旧回复作为历史版本保留但不占线，新回复原地成为该节点
+     *   当前版本，后续消息仍留在当前线路可见（不再把尾巴钉成隐藏支线）
+     * - 用户消息：等价于「重发这条消息」，在节点追加新版本并克隆原文；后续旧内容作为历史
+     *   版本隐藏（必须钉分支，否则新生成的回复会重复追加在旧内容之后）
+     * 旧版本照旧完整落库，可在消息菜单「历史版本」切回查看。
      */
     fun regenerateAt(message: MessageItem) {
         if (!isLocalConv()) return
@@ -2822,7 +2850,6 @@ class ChatViewModel(
                 forkUserVersion(message, null)
                 maybeDispatchLocal()
             } else {
-                pinTailToVersion(node.anchorId, node.selectedIndex)
                 val newIdx = node.versions.size
                 generatingJob = viewModelScope.launch {
                     runLocalGeneration(

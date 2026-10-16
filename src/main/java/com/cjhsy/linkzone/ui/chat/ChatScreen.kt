@@ -63,6 +63,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Bolt
@@ -129,6 +130,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.cjhsy.linkzone.R
+import com.cjhsy.linkzone.data.model.MessageSegment
 import com.cjhsy.linkzone.di.BASE_URL
 import com.cjhsy.linkzone.ui.theme.SuccessGreen
 import kotlinx.coroutines.delay
@@ -400,19 +402,19 @@ fun ChatScreen(
         }
     }
 
-    // ---------- 编辑重发对话框（仅本地会话：原消息生成新版本，版本链可切换） ----------
+    // ---------- 编辑重发对话框（仅本地会话：文本 + 图片，原消息保留为历史版本） ----------
     state.editing?.let { target ->
         EditMessageDialog(
-            initial = target.let { m ->
-                m.segments
-                    ?.filter { it.type == "text" || it.type == "markdown" }
-                    ?.map { it.get("text", "content") }
-                    ?.filter { it.isNotBlank() }
-                    ?.joinToString("\n")
-                    .orEmpty()
-                    .ifBlank { m.content }
-            },
-            onConfirm = viewModel::confirmEditMessage,
+            initial = target.visibleSegments()
+                .filter { it.type == "text" || it.type == "markdown" }
+                .map { it.get("text", "content") }
+                .filter { it.isNotBlank() }
+                .joinToString("\n")
+                .ifBlank { target.content },
+            initialImages = target.visibleSegments().filter { it.type == "image" || it.type == "flash" },
+            baseUrl = BASE_URL.trimEnd('/'),
+            onUpload = viewModel::uploadPending,
+            onConfirm = { text, kept, added -> viewModel.confirmEditMessage(text, kept, added) },
             onDismiss = viewModel::cancelEditMessage
         )
     }
@@ -829,10 +831,11 @@ private fun MessageList(
                         canReply = true,
                         canRecall = true,
                         canRegenerate = isLocal,
-                        // 版本链（RikkaHub 式）：多版本节点显示 ‹ n/m › 切换器
+                        // 版本链（RikkaHub 式）：多版本节点从长按菜单「历史版本」切回
                         versionCount = node.versions.size,
                         versionIndex = node.selectedIndex,
                         onSelectVersion = { idx -> onSelectVersion(node.anchorId, idx) },
+                        versionPreviews = node.versions.map { it.previewText() },
                         highlight = node.versions.any { it.id == state.highlightMessageId },
                         onReply = { onReply(msg) },
                         onRecall = { onRecall(msg) },
@@ -1942,21 +1945,75 @@ internal fun Modifier.messageEnter(): Modifier {
 
 // ============ 编辑重发 / 多模型重答 / 会话内搜索 ============
 
-/** 编辑重发对话框：仅本地会话（原消息所在节点生成新版本，旧版本 ‹ n/m › 可切换） */
+/**
+ * 编辑重发对话框：仅本地会话。
+ * 可编辑文本与图片：已有图片可逐张删除、点击预览，也可从相册新增（选中即预上传）。
+ * 确认后原消息保留为历史版本（消息菜单「历史版本」可切回），并以编辑内容重新生成回复。
+ */
 @Composable
 internal fun EditMessageDialog(
     initial: String,
-    onConfirm: (String) -> Unit,
+    initialImages: List<MessageSegment>,
+    baseUrl: String,
+    onUpload: (java.io.File, (Result<com.cjhsy.linkzone.data.model.UploadResponse>) -> Unit) -> Unit,
+    onConfirm: (String, List<MessageSegment>, List<PendingMediaItem>) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var text by remember { mutableStateOf(initial) }
+    // 原有图片段（可逐张移除）
+    var kept by remember { mutableStateOf(initialImages) }
+    // 新增图片：选中即预上传，与输入栏附件共用同一套状态机
+    var added by remember { mutableStateOf(listOf<PendingMedia>()) }
+    var previewUrl by remember { mutableStateOf<String?>(null) }
+
+    previewUrl?.let { url ->
+        ZoomableImageDialog(rawUrl = url, baseUrl = baseUrl, onDismiss = { previewUrl = null })
+    }
+
+    fun addImage(file: java.io.File) {
+        val item = PendingMedia(file = file, type = "image")
+        added = added + item
+        onUpload(file) { result ->
+            added = added.map { pm ->
+                if (pm.id != item.id) {
+                    pm
+                } else {
+                    result.fold(
+                        onSuccess = { up ->
+                            pm.copy(
+                                uploadState = MediaUploadState.UPLOADED,
+                                remoteUrl = up.url,
+                                remoteSegType = up.segType,
+                                remoteName = up.name,
+                                remoteSize = up.size
+                            )
+                        },
+                        onFailure = { pm.copy(uploadState = MediaUploadState.FAILED) }
+                    )
+                }
+            }
+        }
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9)
+    ) { uris ->
+        uris.forEach { uri ->
+            runCatching { uri.copyToCache(context) }.getOrNull()?.let { addImage(it) }
+        }
+    }
+
+    val uploading = added.any { it.uploadState == MediaUploadState.UPLOADING }
+    val failed = added.any { it.uploadState == MediaUploadState.FAILED }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("编辑重发") },
         text = {
             Column {
                 Text(
-                    text = "确认后原消息保留为旧版本（可随时切换查看），并以编辑内容重新生成回复。",
+                    text = "确认后原消息保留为历史版本（消息菜单「历史版本」可切回），并以编辑内容重新生成回复。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1967,20 +2024,164 @@ internal fun EditMessageDialog(
                     modifier = Modifier.fillMaxWidth(),
                     // material3 1.1.2 无 minLines：用 maxLines 限制高度，随内容增高
                     maxLines = 5,
+                    placeholder = { Text("可只保留图片") },
                     textStyle = MaterialTheme.typography.bodyMedium
                 )
+                if (kept.isNotEmpty() || added.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        itemsIndexed(kept, key = { i, _ -> "kept-$i" }) { _, seg ->
+                            val url = seg.get("url")
+                            val shown = resolveMedia(url, baseUrl)
+                            EditImageThumb(
+                                model = shown,
+                                uploadState = null,
+                                onPreview = { previewUrl = shown },
+                                onRemove = { kept = kept - seg }
+                            )
+                        }
+                        items(added, key = { it.id }) { pm ->
+                            EditImageThumb(
+                                model = pm.file,
+                                uploadState = pm.uploadState,
+                                onPreview = { previewUrl = "file://" + pm.file.absolutePath },
+                                onRemove = {
+                                    added = added - pm
+                                    runCatching { pm.file.delete() }
+                                }
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                TextButton(
+                    onClick = {
+                        galleryLauncher.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                            )
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AddPhotoAlternate,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("添加图片")
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { if (text.isNotBlank()) onConfirm(text) },
-                enabled = text.isNotBlank()
+                onClick = {
+                    if (uploading) {
+                        Toast.makeText(context, "图片上传中，请稍候", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    if (failed) {
+                        Toast.makeText(context, "有图片上传失败，请移除后重试", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    onConfirm(
+                        text,
+                        kept,
+                        added.map { pm ->
+                            PendingMediaItem(
+                                file = pm.file,
+                                type = "image",
+                                remoteUrl = pm.remoteUrl,
+                                remoteSegType = pm.remoteSegType,
+                                remoteName = pm.remoteName,
+                                remoteSize = pm.remoteSize
+                            )
+                        }
+                    )
+                },
+                enabled = text.isNotBlank() || kept.isNotEmpty() || added.isNotEmpty()
             ) { Text("确认") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
+}
+
+/** 编辑对话框里的图片缩略卡：68dp 圆角卡 + 右上角移除角标，上传中/失败叠加状态遮罩 */
+@Composable
+private fun EditImageThumb(
+    model: Any,
+    uploadState: MediaUploadState?,
+    onPreview: (() -> Unit)?,
+    onRemove: () -> Unit
+) {
+    Box(modifier = Modifier.size(68.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            AsyncImage(
+                model = model,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (onPreview != null) Modifier.clickable(onClick = onPreview) else Modifier)
+            )
+            when (uploadState) {
+                MediaUploadState.UPLOADING -> Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.35f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                MediaUploadState.FAILED -> Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                else -> Unit
+            }
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .offset(x = 4.dp, y = (-4).dp)
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.6f))
+                .clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "移除图片",
+                tint = Color.White,
+                modifier = Modifier.size(13.dp)
+            )
+        }
+    }
 }
 
 /** 多模型重答：选择一个模型重新生成回复 */
