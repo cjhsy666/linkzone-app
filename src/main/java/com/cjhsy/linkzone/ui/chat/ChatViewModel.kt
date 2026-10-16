@@ -142,8 +142,12 @@ data class ChatUiState(
     val currentAgent: LlmAgent? = null,
     /** 当前本地会话存在临时覆盖配置（仅本会话生效，未回写智能体） */
     val agentOverridden: Boolean = false,
-    /** 正在编辑的消息（编辑重发：非空时聊天页弹出编辑对话框） */
-    val editing: MessageItem? = null,
+    /**
+     * 正在编辑的消息目标（非空时聊天页弹出编辑对话框）：
+     * - resend=true：编辑重发（用户消息，原消息保留为历史版本并重新生成回复）
+     * - resend=false：仅编辑（用户/AI 均可，直接改本条消息内容，不产生版本、不触发回复）
+     */
+    val editing: EditTarget? = null,
     /** 会话内搜索面板打开中 */
     val searchOpen: Boolean = false,
     val searchQuery: String = "",
@@ -154,6 +158,15 @@ data class ChatUiState(
     /** 定位高亮的消息 id（搜索结果点击跳转） */
     val highlightMessageId: String? = null,
     val error: String? = null
+)
+
+/**
+ * 消息编辑目标：[resend] = true 走编辑重发（分叉新版本并重新生成回复，仅用户消息）；
+ * false = 仅编辑（直接改本条消息内容，用户消息/AI 回答均可，不产生版本、不触发回复）。
+ */
+data class EditTarget(
+    val message: MessageItem,
+    val resend: Boolean
 )
 
 /** 可选模型项（多模型重答选择器用） */
@@ -2715,9 +2728,14 @@ class ChatViewModel(
         return fromSegs.ifBlank { if (m.segments.isNullOrEmpty()) m.content else "" }.trim()
     }
 
-    /** 长按消息 → 编辑重发：聊天页弹出编辑对话框 */
+    /** 长按消息 → 编辑重发：聊天页弹出编辑对话框（用户消息，确认后分叉新版本并重新生成） */
     fun startEditMessage(m: MessageItem) {
-        _state.value = _state.value.copy(editing = m)
+        _state.value = _state.value.copy(editing = EditTarget(m, resend = true))
+    }
+
+    /** 长按消息 → 仅编辑：直接修改本条消息内容（用户消息/AI 回答均可，不重发、不产生版本） */
+    fun startModifyMessage(m: MessageItem) {
+        _state.value = _state.value.copy(editing = EditTarget(m, resend = false))
     }
 
     fun cancelEditMessage() {
@@ -2735,7 +2753,9 @@ class ChatViewModel(
         keptImages: List<MessageSegment> = emptyList(),
         addedImages: List<PendingMediaItem> = emptyList()
     ) {
-        val target = _state.value.editing ?: return
+        val editTarget = _state.value.editing ?: return
+        if (!editTarget.resend) return
+        val target = editTarget.message
         val content = newText.trim()
         // 原有图片段：编辑时保留的（可逐张删除）；新增图片段：从上传结果取服务端 URL
         val kept = keptImages.filter { it.type == "image" || it.type == "flash" }
@@ -2765,6 +2785,71 @@ class ChatViewModel(
             }
             forkUserVersion(target, segs, content.takeIf { it.isNotEmpty() })
             maybeDispatchLocal()
+        }
+    }
+
+    /**
+     * 确认「仅编辑」（仅本地会话）：直接覆盖本条消息的内容段，
+     * 不产生新版本、不触发重新生成。用户消息与 AI 回答通用：
+     * - 保留 sys.ver/sys.br/thinking 段（版本链元数据与 AI 思考过程不动）
+     * - 文本段：用户消息为 text、AI 回答为 markdown；图片段可保留/删除/新增
+     * - 编辑的是版本节点中的当前这一条具体消息，其他历史版本不受影响
+     */
+    fun confirmModifyMessage(
+        newText: String,
+        keptImages: List<MessageSegment> = emptyList(),
+        addedImages: List<PendingMediaItem> = emptyList()
+    ) {
+        val editTarget = _state.value.editing ?: return
+        if (editTarget.resend) return
+        val target = editTarget.message
+        val content = newText.trim()
+        val kept = keptImages.filter { it.type == "image" || it.type == "flash" }
+        if (content.isEmpty() && kept.isEmpty() && addedImages.isEmpty()) return
+        _state.value = _state.value.copy(editing = null)
+        viewModelScope.launch {
+            val s = _state.value
+            if (!isLocalConvId(s.currentConvId)) return@launch
+            // 等待上传完成（与编辑重发一致：未拿到 URL 的图片直接丢弃）
+            val newSegs = buildList {
+                if (content.isNotEmpty()) {
+                    add(if (target.isSelf) Segments.text(content) else Segments.markdown(content))
+                }
+                addAll(kept)
+                addedImages.forEach { att ->
+                    val url = att.remoteUrl ?: return@forEach
+                    add(
+                        buildMediaSeg(
+                            "image",
+                            url,
+                            att.remoteName.ifBlank { att.file.name },
+                            att.remoteSize,
+                            0L
+                        )
+                    )
+                }
+            }
+            if (newSegs.isEmpty()) return@launch
+            // 保留内部段：版本/分支元数据 + AI 思考过程；正文与图片整体替换
+            val internalSegs = target.segments.orEmpty().filter {
+                it.type == VERSION_SEG || it.type == BRANCH_SEG || it.type == "thinking"
+            }
+            val updated = target.copy(
+                segments = internalSegs + newSegs,
+                content = content.ifBlank { if (kept.isNotEmpty() || addedImages.isNotEmpty()) "[图片]" else "" }
+            )
+            localStore.insertMessage(updated)
+            _state.value = _state.value.copy(
+                messages = _state.value.messages.map { if (it.id == updated.id) updated else it }
+            )
+            // 改的是会话最后一条时刷新预览/置顶时间（微秒，与消息时间戳单位一致）
+            if (s.messages.lastOrNull()?.id == target.id) {
+                localStore.touch(
+                    s.currentConvId,
+                    updated.content.take(NAME_MAX_LEN),
+                    System.currentTimeMillis() * 1000
+                )
+            }
         }
     }
 
@@ -2854,10 +2939,14 @@ class ChatViewModel(
     /**
      * 把锚点之后、尚未标记该锚点分支归属的消息钉到指定版本（sys.br 约束）。
      * 在创建新版本前调用：旧尾巴完整保留为旧版本的分支，切换版本时整条换回。
+     *
+     * 注意：只处理**当前可见分支**上的节点（resolveVisible 后）。绝不能用全量节点——
+     * 隐藏在其他分支里的消息若被钉上当前锚点的约束，会变成任何分支都不满足的
+     * 孤儿消息（表现为分支切换后消息丢失/错乱）。
      */
     private suspend fun pinTailToVersion(anchorId: String, versionIdx: Int) {
         val s = _state.value
-        val nodes = s.messages.toMessageNodes()
+        val nodes = s.messages.toMessageNodes().resolveVisible()
         val idx = nodes.indexOfFirst { it.anchorId == anchorId }
         if (idx < 0) return
         val toUpdate = nodes.drop(idx + 1).flatMap { it.versions }
@@ -2879,8 +2968,9 @@ class ChatViewModel(
      * 从某条消息重新生成（仅本地会话）：
      * - bot 回复（仅最后一条 AI 回复上有入口）：**当前线路重发**——旧回复作为历史版本保留
      *   但不占线，新回复原地成为该节点当前版本，后续消息仍留在当前线路可见
-     * - 用户消息：**截断重来**——删除这条消息之后的全部消息（含其所有版本/分支），
-     *   以这条用户消息为最后一轮重新回答（ChatGPT 式）。用户消息本身保留不动。
+     * - 用户消息：**截断重来**——删除当前可见分支上这条消息之后的全部消息，
+     *   以这条用户消息为最后一轮重新回答（ChatGPT 式）。用户消息本身保留不动；
+     *   其他历史版本分支上的隐藏消息不在删除范围，切版本时仍完整保留。
      *   想保留旧答案改问法应走「编辑重发」（显式分叉、可切回旧版）。
      */
     fun regenerateAt(message: MessageItem) {
@@ -2892,9 +2982,13 @@ class ChatViewModel(
             val allNodes = _state.value.messages.toMessageNodes()
             val node = allNodes.nodeOf(message.id) ?: return@launch
             if (node.isSelf) {
-                // 截断：删除该用户消息节点之后所有节点的全部版本（回复 + 后续轮次）
-                val startIdx = allNodes.indexOfFirst { it.anchorId == node.anchorId }
-                val toDeleteIds = allNodes.drop(startIdx + 1).flatMap { n ->
+                // 截断：删除**当前可见分支**上该用户消息节点之后的全部节点（回复 + 后续轮次）。
+                // 只按 resolveVisible 后的可见节点定位——其他版本分支上的隐藏消息保留，
+                // 切到对应历史版本时旧分支仍然完整；用全量节点会误删隐藏分支导致版本链错乱。
+                val visible = allNodes.resolveVisible()
+                val startIdx = visible.indexOfFirst { it.anchorId == node.anchorId }
+                if (startIdx < 0) return@launch
+                val toDeleteIds = visible.drop(startIdx + 1).flatMap { n ->
                     n.versions.map { it.id }
                 }
                 if (toDeleteIds.isNotEmpty()) {
@@ -2904,12 +2998,12 @@ class ChatViewModel(
                         messages = _state.value.messages.filterNot { it.id in deleteSet }
                     )
                 }
-                // 会话预览回到这条用户消息
+                // 会话预览回到这条用户消息（lastTime 单位为微秒，与消息时间戳一致）
                 val preview = node.selected.content.take(60)
                 localStore.touch(
                     _state.value.currentConvId,
                     preview,
-                    System.currentTimeMillis()
+                    System.currentTimeMillis() * 1000
                 )
                 // 上下文自然以该用户消息结尾，普通补发一轮即可
                 maybeDispatchLocal()

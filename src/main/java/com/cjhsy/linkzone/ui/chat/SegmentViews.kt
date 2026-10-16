@@ -52,6 +52,17 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.net.URI
 
 /**
+ * 文本是否含块级 markdown 语法（代码围栏/标题/引用/列表/表格/缩进代码/行内代码）。
+ * 用户消息默认仍按纯文本右对齐渲染（短消息贴右、不被 fillMaxWidth 撑宽）；
+ * 只有命中这些语法时才升级为 markdown 文档渲染，获得代码块/列表等排版。
+ */
+private val MD_BLOCK_REGEX = Regex(
+    """(?m)(^\s{0,3}(#{1,6}\s|>|```|~~~|[-*+]\s|\d+[.)]\s)|^\s{4,}\S|\|.+\||`[^`\n]+`)"""
+)
+private fun looksLikeMarkdown(text: String): Boolean =
+    text.contains("```") || MD_BLOCK_REGEX.containsMatchIn(text)
+
+/**
  * 消息段渲染入口：
  * - [freeCopy] 为 true（自由复制模式）时文本/Markdown 段包在 [SelectionContainer] 里，长按出选区手柄；
  * - 任何内容（文本/Markdown/媒体）长按都经 [onMediaLongClick] 上抛（弹消息操作菜单）；
@@ -65,23 +76,42 @@ fun SegmentContent(
     baseUrl: String,
     freeCopy: Boolean = false,
     onMediaLongClick: (() -> Unit)? = null,
-    /** 点击文本/Markdown 非链接区域回调（编辑重发 / 退出自由复制） */
-    onTextClick: (() -> Unit)? = null
+    /** 点击文本/Markdown 非链接区域回调（编辑 / 退出自由复制） */
+    onTextClick: (() -> Unit)? = null,
+    /**
+     * 强制把 text 段按完整 markdown 渲染（代码块/列表/表格等）。
+     * 用户消息文档式排版使用：发送时存的是 text 段，但希望获得与 AI markdown 回复一致的渲染能力。
+     */
+    forceMarkdown: Boolean = false
 ) {
     // 自己气泡的前景色跟随主题 onPrimary（暗色主题 primary 是亮青，配深字；浅色紫配白字），
     // 不要硬编码白——暗色下亮青底白字完全看不清
     val onSurface = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
     // 自由复制模式下长按 = 文本选择手势，不再上抛弹菜单
     val longClick = if (freeCopy) null else onMediaLongClick
+    val linkColor = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
     if (segments.isNullOrEmpty()) {
         val plain: @Composable () -> Unit = {
-            AutoLinkText(
-                text = fallback.ifBlank { " " },
-                textColor = onSurface,
-                linkColor = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                onLongClick = longClick,
-                onTextClick = onTextClick
-            )
+            if (forceMarkdown && looksLikeMarkdown(fallback)) {
+                MarkdownContent(
+                    markdown = fallback.ifBlank { " " },
+                    textColor = onSurface,
+                    linkColor = linkColor,
+                    modifier = Modifier.fillMaxWidth(),
+                    selectable = freeCopy,
+                    onLongClick = longClick,
+                    onTextClick = onTextClick,
+                    baseUrl = baseUrl
+                )
+            } else {
+                AutoLinkText(
+                    text = fallback.ifBlank { " " },
+                    textColor = onSurface,
+                    linkColor = linkColor,
+                    onLongClick = longClick,
+                    onTextClick = onTextClick
+                )
+            }
         }
         if (freeCopy) SelectionContainer(content = plain) else plain()
         return
@@ -96,7 +126,8 @@ fun SegmentContent(
                     onSurface = onSurface,
                     freeCopy = freeCopy,
                     onMediaLongClick = longClick,
-                    onTextClick = onTextClick
+                    onTextClick = onTextClick,
+                    forceMarkdown = forceMarkdown
                 )
             }
         }
@@ -116,7 +147,8 @@ private fun SegmentView(
     onSurface: Color,
     freeCopy: Boolean = false,
     onMediaLongClick: (() -> Unit)? = null,
-    onTextClick: (() -> Unit)? = null
+    onTextClick: (() -> Unit)? = null,
+    forceMarkdown: Boolean = false
 ) {
     val muted = onSurface.copy(alpha = 0.72f)
     val context = LocalContext.current
@@ -130,13 +162,26 @@ private fun SegmentView(
     }
 
     when (seg.type) {
-        "text" -> AutoLinkText(
-            text = seg.get("text"),
-            textColor = onSurface,
-            linkColor = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-            onLongClick = onMediaLongClick,
-            onTextClick = onTextClick
-        )
+        "text" -> if (forceMarkdown && looksLikeMarkdown(seg.get("text"))) {
+            MarkdownContent(
+                markdown = seg.get("text"),
+                textColor = onSurface,
+                linkColor = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth(),
+                selectable = freeCopy,
+                onLongClick = onMediaLongClick,
+                onTextClick = onTextClick,
+                baseUrl = baseUrl
+            )
+        } else {
+            AutoLinkText(
+                text = seg.get("text"),
+                textColor = onSurface,
+                linkColor = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                onLongClick = onMediaLongClick,
+                onTextClick = onTextClick
+            )
+        }
 
         "markdown" -> {
             val linkColor = if (isSelf) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary

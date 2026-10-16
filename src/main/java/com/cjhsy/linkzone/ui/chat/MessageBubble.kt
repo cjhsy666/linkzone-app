@@ -47,6 +47,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -108,12 +109,13 @@ private val DOCUMENT_FRIENDLY_TYPES = setOf(
 
 /**
  * 统一消息项（云端 / 本地智能体共用）：
- * - 用户：右侧 62% 品牌气泡（纯媒体裸渲染），本地会话点击文字可编辑重发（版本链），
- *   下方快捷操作行：时间戳/复制/编辑(本地)/重新生成(本地，截断重答)/‹ n/m › 切换器
- * - AI/框架：长文本/Markdown 走无气泡文档流 + 思考过程折叠面板 + 下方快捷操作行；
- *   IM 卡片类段（文件/名片/投票等）自动回落到气泡样式
- * - 长按弹出完整操作菜单（复制/自由复制/回复/编辑/重生成/换模型/撤回/删除），
- *   菜单显隐全部由能力参数决定（用户消息=截断重答；AI 重生成仅最后一条回复），不再靠消息 id 前缀猜测引擎
+ * - 用户：右侧 85% 宽收束的文档流，文本与 AI 回复同款 markdown 渲染（代码块/列表/表格）；
+ *   本地会话点击文字=仅编辑（直接改内容），操作行另有「编辑重发」（分叉新版本）
+ *   与「重新生成」（截断当前分支重答）；版本节点显示 ‹ n/m › 切换器
+ * - AI/框架：长文本/Markdown 走无气泡全宽文档流 + 思考过程折叠面板 + 下方快捷操作行；
+ *   本地会话可「编辑回答」（直接改内容）；IM 卡片类段（文件/名片/投票等）自动回落气泡
+ * - 长按弹出完整操作菜单（复制/自由复制/回复/编辑/编辑重发/编辑回答/重生成/换模型/撤回/删除），
+ *   菜单显隐全部由能力参数决定（用户重新生成=截断重答；AI 重生成仅最后一条回复），不再靠消息 id 前缀猜测引擎
  *
  * @param isLocal 是否本地智能体会话（决定头像/署名/默认样式；编辑重发仅本地开放）
  * @param streaming 是否处于本地流式生成中的最后一条 AI 消息（禁动画/隐操作行）
@@ -139,7 +141,10 @@ fun MessageItemView(
     onReply: () -> Unit,
     onRecall: () -> Unit,
     onDelete: () -> Unit,
+    /** 编辑重发（仅用户消息·本地）：分叉新版本并重新生成回复 */
     onEdit: () -> Unit,
+    /** 仅编辑（用户消息/AI 回答·本地）：直接改本条内容，不产生版本、不触发回复 */
+    onModify: () -> Unit = {},
     onRegenerate: () -> Unit,
     onRegenerateWithModel: () -> Unit,
     /** 中断后「继续生成」回调；null 时不显示该按钮 */
@@ -258,9 +263,9 @@ fun MessageItemView(
             }
         }
 
-        // 正文：AI 占满全宽（文档流需要）；用户靠右限宽
+        // 正文：AI 占满全宽（文档流需要）；用户靠右限宽（文档式 markdown 渲染需要更宽上限）
         val middleModifier = if (message.isSelf) {
-            Modifier.widthIn(max = LocalConfiguration.current.screenWidthDp.dp * MAX_BUBBLE_WIDTH_RATIO)
+            Modifier.widthIn(max = LocalConfiguration.current.screenWidthDp.dp * SELF_DOC_WIDTH_RATIO)
         } else {
             Modifier.fillMaxWidth()
         }
@@ -272,32 +277,40 @@ fun MessageItemView(
             if (message.recalled) {
                 RecalledChip()
             } else if (message.isSelf) {
-                // ---------- 用户消息：右对齐文档流（去气泡；昵称/头像已在头部行） ----------
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SendStatusIndicator(message)
-                    // 去气泡：全部内容右对齐文档流（媒体裸渲染，文本右对齐无底色）
+                // ---------- 用户消息：右对齐文档流（与 AI 同款 markdown 渲染；昵称/头像在头部行） ----------
+                Row(
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // 发送状态与多行正文顶对齐（CenterVertically 会让图标飘在长文中间）
+                    Box(modifier = Modifier.padding(top = 4.dp)) {
+                        SendStatusIndicator(message)
+                    }
+                    // 去气泡：文本走完整 markdown 渲染（代码块/列表/表格等与 AI 回复一致），
+                    // 内容在限宽容器内自然左对齐，整条靠右收束（ChatGPT 式）
                     Box(
                         modifier = Modifier
                             .highlightBackground(highlightColor)
                             .combinedClickable(
                                 onClick = {
                                     if (freeCopy) freeCopy = false
-                                    else if ((hasText || hasImage) && isLocal && !selfPureMedia) onEdit()
+                                    else if ((hasText || hasImage) && isLocal && !selfPureMedia) onModify()
                                 },
                                 onLongClick = { if (!freeCopy) menuOpen = true }
                             )
                     ) {
-                        // 去气泡：传 isSelf=false，让文本/链接走普通 onSurface 配色（白字是为气泡底设计的）
                         SegmentContent(
                             segments = contentSegs.ifEmpty { null },
                             fallback = message.content,
                             isSelf = false,
                             baseUrl = baseUrl,
                             freeCopy = freeCopy,
+                            // 用户文本段(text)按 markdown 渲染，获得与 AI 回复一致的排版能力
+                            forceMarkdown = true,
                             onMediaLongClick = { menuOpen = true },
                             onTextClick = {
                                 if (freeCopy) freeCopy = false
-                                else if ((hasText || hasImage) && isLocal && !selfPureMedia) onEdit()
+                                else if ((hasText || hasImage) && isLocal && !selfPureMedia) onModify()
                             }
                         )
                     }
@@ -376,7 +389,8 @@ fun MessageItemView(
                 }
             }
 
-            // 用户消息下方快捷操作行（RikkaHub 式）：复制/编辑(仅本地)/重新生成(截断)/版本切换器
+            // 用户消息下方快捷操作行（RikkaHub 式）：
+            // 复制/编辑(仅改内容)/编辑重发(分叉重答)/重新生成(截断)/版本切换器
             if (message.isSelf && !message.recalled) {
                 SelfMessageActionBar(
                     isLocal = isLocal,
@@ -389,6 +403,7 @@ fun MessageItemView(
                     timestamp = message.displayTimestamp(),
                     onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
                     onEdit = onEdit,
+                    onModify = onModify,
                     onRegenerate = onRegenerate
                 )
             }
@@ -408,10 +423,12 @@ fun MessageItemView(
                 if (interactionsEnabled) {
                     MessageActionBar(
                         hasText = hasText,
+                        canEdit = isLocal,
                         canRegenerate = canRegenerate,
                         versionCount = versionCount,
                         timestamp = message.displayTimestamp(),
                         onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
+                        onEdit = onModify,
                         onRegenerate = onRegenerate,
                         onRegenerateWithModel = onRegenerateWithModel
                     )
@@ -450,10 +467,26 @@ fun MessageItemView(
                 }
                 if (isLocal && message.isSelf && (hasText || hasImage)) {
                     DropdownMenuItem(
+                        text = { Text("编辑") },
+                        onClick = {
+                            menuOpen = false
+                            onModify()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("编辑重发") },
                         onClick = {
                             menuOpen = false
                             onEdit()
+                        }
+                    )
+                }
+                if (isLocal && !message.isSelf && hasText) {
+                    DropdownMenuItem(
+                        text = { Text("编辑回答") },
+                        onClick = {
+                            menuOpen = false
+                            onModify()
                         }
                     )
                 }
@@ -778,9 +811,10 @@ private fun FailedStatusIcon() {
 
 /**
  * 用户消息下方快捷操作行（RikkaHub 式，右对齐）：
- * 时间戳 / 复制 / 编辑重发（仅本地，含图消息也可编辑）/ 重新生成（截断重答）/ ‹ n/m › 版本切换。
+ * 时间戳 / 复制 / 编辑（仅改内容）/ 编辑重发（分叉重答）/ 重新生成（截断重答）/ ‹ n/m › 版本切换。
+ * - 编辑：直接修改本条消息，不产生版本、不重新生成
  * - 编辑重发：显式分叉，保留旧答案并可切回旧版
- * - 重新生成：删除该消息之后的全部消息，以它为最后一轮重新回答（不产生支线）
+ * - 重新生成：删除该消息之后当前分支的全部消息，以它为最后一轮重新回答（不产生支线）
  */
 @Composable
 private fun SelfMessageActionBar(
@@ -794,6 +828,7 @@ private fun SelfMessageActionBar(
     timestamp: Long,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
+    onModify: () -> Unit,
     onRegenerate: () -> Unit
 ) {
     Row(
@@ -811,7 +846,10 @@ private fun SelfMessageActionBar(
             )
         }
         if (hasText) ActionBarIcon(Icons.Filled.ContentCopy, "复制", onCopy)
-        if (isLocal && canEdit) ActionBarIcon(Icons.Filled.Edit, "编辑重发", onEdit)
+        if (isLocal && canEdit) {
+            ActionBarIcon(Icons.Filled.Edit, "编辑", onModify)
+            ActionBarIcon(Icons.AutoMirrored.Filled.Send, "编辑重发", onEdit)
+        }
         if (canRegenerate) ActionBarIcon(Icons.Filled.Refresh, "重新生成", onRegenerate)
         if (versionCount > 1 && onSelectVersion != null) {
             VersionSwitcher(
@@ -825,16 +863,18 @@ private fun SelfMessageActionBar(
 
 /**
  * AI 消息下方快捷操作行（RikkaHub 式）：
- * 复制 / 重新生成 / 多模型重答 / 行尾时间戳。
+ * 复制 / 编辑回答（仅本地，直接改内容）/ 重新生成 / 多模型重答 / 行尾时间戳。
  * 弱化小图标，不抢正文视觉。
  */
 @Composable
 private fun MessageActionBar(
     hasText: Boolean,
+    canEdit: Boolean,
     canRegenerate: Boolean,
     versionCount: Int,
     timestamp: Long,
     onCopy: () -> Unit,
+    onEdit: () -> Unit,
     onRegenerate: () -> Unit,
     onRegenerateWithModel: () -> Unit
 ) {
@@ -845,6 +885,7 @@ private fun MessageActionBar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (hasText) ActionBarIcon(Icons.Filled.ContentCopy, "复制", onCopy)
+        if (canEdit && hasText) ActionBarIcon(Icons.Filled.Edit, "编辑回答", onEdit)
         if (canRegenerate) {
             ActionBarIcon(Icons.Filled.Refresh, "重新生成", onRegenerate)
             ActionBarIcon(Icons.Filled.SwapHoriz, "多模型重答", onRegenerateWithModel)
@@ -1134,3 +1175,6 @@ fun uriToCacheFile(context: Context, uri: Uri): File? {
 }
 
 private const val MAX_BUBBLE_WIDTH_RATIO = 0.62f
+
+/** 用户文档式消息（markdown 渲染）的最大宽度占比：代码块/列表需要更宽，仍留右侧收束感 */
+private const val SELF_DOC_WIDTH_RATIO = 0.85f

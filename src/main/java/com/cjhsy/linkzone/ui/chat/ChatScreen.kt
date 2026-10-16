@@ -284,6 +284,7 @@ fun ChatScreen(
                     onRecall = viewModel::recall,
                     onDelete = viewModel::deleteMessage,
                     onEdit = viewModel::startEditMessage,
+                    onModify = viewModel::startModifyMessage,
                     onRegenerate = viewModel::regenerateAt,
                     onRegenerateWithModel = {
                         viewModel.loadChatModels()
@@ -406,19 +407,30 @@ fun ChatScreen(
         }
     }
 
-    // ---------- 编辑重发对话框（仅本地会话：文本 + 图片，原消息保留为历史版本） ----------
+    // ---------- 编辑对话框（仅本地会话） ----------
+    // resend=true：编辑重发（用户消息，原消息保留为历史版本并重新生成）
+    // resend=false：仅编辑（用户消息/AI 回答，直接改内容，不产生版本、不触发回复）
     state.editing?.let { target ->
         EditMessageDialog(
-            initial = target.visibleSegments()
+            resend = target.resend,
+            isSelfMessage = target.message.isSelf,
+            initial = target.message.visibleSegments()
                 .filter { it.type == "text" || it.type == "markdown" }
                 .map { it.get("text", "content") }
                 .filter { it.isNotBlank() }
                 .joinToString("\n")
-                .ifBlank { target.content },
-            initialImages = target.visibleSegments().filter { it.type == "image" || it.type == "flash" },
+                .ifBlank { target.message.content },
+            initialImages = target.message.visibleSegments()
+                .filter { it.type == "image" || it.type == "flash" },
             baseUrl = BASE_URL.trimEnd('/'),
             onUpload = viewModel::uploadPending,
-            onConfirm = { text, kept, added -> viewModel.confirmEditMessage(text, kept, added) },
+            onConfirm = { text, kept, added ->
+                if (target.resend) {
+                    viewModel.confirmEditMessage(text, kept, added)
+                } else {
+                    viewModel.confirmModifyMessage(text, kept, added)
+                }
+            },
             onDismiss = viewModel::cancelEditMessage
         )
     }
@@ -640,6 +652,7 @@ private fun MessageList(
     onRecall: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onDelete: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onEdit: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
+    onModify: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onRegenerate: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onRegenerateWithModel: (com.cjhsy.linkzone.data.model.MessageItem) -> Unit,
     onContinue: () -> Unit = {},
@@ -852,6 +865,7 @@ private fun MessageList(
                         onRecall = { onRecall(msg) },
                         onDelete = { onDelete(msg) },
                         onEdit = { onEdit(msg) },
+                        onModify = { onModify(msg) },
                         onRegenerate = { onRegenerate(msg) },
                         onRegenerateWithModel = { onRegenerateWithModel(msg) },
                         onContinue = onContinue.takeIf { isLocal && !streaming },
@@ -2051,12 +2065,18 @@ internal fun Modifier.messageEnter(): Modifier {
 // ============ 编辑重发 / 多模型重答 / 会话内搜索 ============
 
 /**
- * 编辑重发对话框：仅本地会话。
- * 可编辑文本与图片：已有图片可逐张删除、点击预览，也可从相册新增（选中即预上传）。
- * 确认后原消息保留为历史版本（消息菜单「历史版本」可切回），并以编辑内容重新生成回复。
+ * 消息编辑对话框（仅本地会话），两种模式：
+ * - resend=true 编辑重发（用户消息）：原消息保留为历史版本（‹ n/m › 可切回），确认后重新生成回复；
+ *   可编辑文本与图片（逐张删除/点击预览/相册新增，选中即预上传）
+ * - resend=false 仅编辑（用户消息/AI 回答）：直接覆盖本条消息内容，不产生版本、不触发回复；
+ *   AI 回答仅文本，不提供图片管理
  */
 @Composable
 internal fun EditMessageDialog(
+    /** true=编辑重发（分叉新版本并重新生成）；false=仅编辑保存（不重发） */
+    resend: Boolean,
+    /** 被编辑的是否为用户消息（决定标题/说明；AI 回答不提供图片管理） */
+    isSelfMessage: Boolean,
     initial: String,
     initialImages: List<MessageSegment>,
     baseUrl: String,
@@ -2071,6 +2091,19 @@ internal fun EditMessageDialog(
     // 新增图片：选中即预上传，与输入栏附件共用同一套状态机
     var added by remember { mutableStateOf(listOf<PendingMedia>()) }
     var previewUrl by remember { mutableStateOf<String?>(null) }
+
+    val dialogTitle = when {
+        resend -> "编辑重发"
+        isSelfMessage -> "编辑消息"
+        else -> "编辑回答"
+    }
+    val dialogHint = when {
+        resend -> "确认后原消息保留为历史版本（消息菜单「历史版本」可切回），并以编辑内容重新生成回复。"
+        isSelfMessage -> "仅修改本条消息内容，不会重新生成回复。"
+        else -> "仅修改本地显示的回答内容，不会重新请求模型。"
+    }
+    // AI 回答仅文本；用户消息（编辑/编辑重发）可管理图片
+    val supportsImage = isSelfMessage
 
     previewUrl?.let { url ->
         ZoomableImageDialog(rawUrl = url, baseUrl = baseUrl, onDismiss = { previewUrl = null })
@@ -2114,11 +2147,11 @@ internal fun EditMessageDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑重发") },
+        title = { Text(dialogTitle) },
         text = {
             Column {
                 Text(
-                    text = "确认后原消息保留为历史版本（消息菜单「历史版本」可切回），并以编辑内容重新生成回复。",
+                    text = dialogHint,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2128,11 +2161,11 @@ internal fun EditMessageDialog(
                     onValueChange = { text = it },
                     modifier = Modifier.fillMaxWidth(),
                     // material3 1.1.2 无 minLines：用 maxLines 限制高度，随内容增高
-                    maxLines = 5,
-                    placeholder = { Text("可只保留图片") },
+                    maxLines = 10,
+                    placeholder = { Text(if (supportsImage) "可只保留图片" else "输入修改后的内容") },
                     textStyle = MaterialTheme.typography.bodyMedium
                 )
-                if (kept.isNotEmpty() || added.isNotEmpty()) {
+                if (supportsImage && (kept.isNotEmpty() || added.isNotEmpty())) {
                     Spacer(Modifier.height(10.dp))
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2162,23 +2195,25 @@ internal fun EditMessageDialog(
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                TextButton(
-                    onClick = {
-                        galleryLauncher.launch(
-                            androidx.activity.result.PickVisualMediaRequest(
-                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                if (supportsImage) {
+                    TextButton(
+                        onClick = {
+                            galleryLauncher.launch(
+                                androidx.activity.result.PickVisualMediaRequest(
+                                    ActivityResultContracts.PickVisualMedia.ImageOnly
+                                )
                             )
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AddPhotoAlternate,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
                         )
-                    },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.AddPhotoAlternate,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("添加图片")
+                        Spacer(Modifier.width(6.dp))
+                        Text("添加图片")
+                    }
                 }
             }
         },
@@ -2209,7 +2244,7 @@ internal fun EditMessageDialog(
                     )
                 },
                 enabled = text.isNotBlank() || kept.isNotEmpty() || added.isNotEmpty()
-            ) { Text("确认") }
+            ) { Text(if (resend) "重新发送" else "保存") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
