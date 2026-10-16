@@ -73,6 +73,21 @@ interface LocalChatDao {
     @Upsert
     suspend fun upsertConversation(entity: LocalConversationEntity)
 
+    // 以下均为单字段原子 UPDATE：避免「读-改-写」竞态互相覆盖
+    // （如发送时 rename 与 touch 并发，旧实现会把刚写入的标题抹回空串）
+
+    @Query("UPDATE llm_local_conversation SET name = :name WHERE id = :convId")
+    suspend fun renameConversation(convId: String, name: String)
+
+    @Query("UPDATE llm_local_conversation SET lastMsg = :lastMsg, lastTime = :lastTime WHERE id = :convId")
+    suspend fun touchConversation(convId: String, lastMsg: String, lastTime: Long)
+
+    @Query("UPDATE llm_local_conversation SET pinned = :pinned WHERE id = :convId")
+    suspend fun setConversationPinned(convId: String, pinned: Boolean)
+
+    @Query("UPDATE llm_local_conversation SET unread = 0 WHERE id = :convId")
+    suspend fun clearConversationUnread(convId: String)
+
     @Query("DELETE FROM llm_local_conversation WHERE id = :convId")
     suspend fun deleteConversation(convId: String)
 

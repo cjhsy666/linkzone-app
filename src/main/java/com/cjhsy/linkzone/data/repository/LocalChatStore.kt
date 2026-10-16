@@ -75,24 +75,20 @@ class LocalChatStore(
     }
 
     suspend fun rename(convId: String, name: String) {
-        val conv = dao.getConversation(convId) ?: return
-        dao.upsertConversation(conv.copy(name = name))
+        dao.renameConversation(convId, name)
     }
 
     suspend fun setPinned(convId: String, pinned: Boolean) {
-        val conv = dao.getConversation(convId) ?: return
-        dao.upsertConversation(conv.copy(pinned = pinned))
+        dao.setConversationPinned(convId, pinned)
     }
 
     suspend fun clearUnread(convId: String) {
-        val conv = dao.getConversation(convId) ?: return
-        if (conv.unread != 0) dao.upsertConversation(conv.copy(unread = 0))
+        dao.clearConversationUnread(convId)
     }
 
     /** 刷新最近消息预览/时间（发送与生成结束时调用） */
     suspend fun touch(convId: String, lastMsg: String, lastTime: Long) {
-        val conv = dao.getConversation(convId) ?: return
-        dao.upsertConversation(conv.copy(lastMsg = lastMsg, lastTime = lastTime))
+        dao.touchConversation(convId, lastMsg, lastTime)
     }
 
     /** 删除会话及全部消息（单事务） */

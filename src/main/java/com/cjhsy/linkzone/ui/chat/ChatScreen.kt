@@ -56,6 +56,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -89,6 +91,7 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -1148,6 +1151,7 @@ private fun AskUserAnswerCard(
  * - 发送时文字 + 所有附件组合发出（文字在前，附件依次跟发）
  * - 按住说话：按下开始录音，松开发送，上滑取消；录音中显示居中浮层与计时
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun ChatInputBar(
     sending: Boolean,
@@ -1306,8 +1310,13 @@ internal fun ChatInputBar(
                 enter = expandVertically(tween(200)) + fadeIn(tween(200)),
                 exit = shrinkVertically(tween(180)) + fadeOut(tween(180))
             ) {
+                var showAllQuick by remember { mutableStateOf(false) }
+                val fillQuick: (com.cjhsy.linkzone.data.model.LlmQuickMessage) -> Unit = { quick ->
+                    input = if (input.isBlank()) quick.content else input + quick.content
+                }
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(vertical = 6.dp)
                 ) {
                     items(quickMessages, key = { it.id }) { quick ->
@@ -1317,9 +1326,7 @@ internal fun ChatInputBar(
                             tonalElevation = 2.dp,
                             shadowElevation = 6.dp,
                             border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                            modifier = Modifier.clickable {
-                                input = if (input.isBlank()) quick.content else input + quick.content
-                            }
+                            modifier = Modifier.clickable { fillQuick(quick) }
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -1337,6 +1344,95 @@ internal fun ChatInputBar(
                                     style = MaterialTheme.typography.labelLarge,
                                     maxLines = 1
                                 )
+                            }
+                        }
+                    }
+                    // 指令较多时提供全量面板入口，避免无限横向翻找
+                    if (quickMessages.size > 4) {
+                        item(key = "__quick_all__") {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 2.dp,
+                                shadowElevation = 6.dp,
+                                border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                                modifier = Modifier.clickable { showAllQuick = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.MoreHoriz,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        "全部 ${quickMessages.size}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 全量快捷指令面板：双列网格，适合存放大量插件命令
+                if (showAllQuick) {
+                    ModalBottomSheet(onDismissRequest = { showAllQuick = false }) {
+                        Text(
+                            "快捷指令",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 20.dp)
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 28.dp)
+                        ) {
+                            items(quickMessages.size, key = { quickMessages[it].id }) { i ->
+                                val quick = quickMessages[i]
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                    modifier = Modifier.clickable {
+                                        fillQuick(quick)
+                                        showAllQuick = false
+                                    }
+                                ) {
+                                    Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Bolt,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                quick.title,
+                                                style = MaterialTheme.typography.labelLarge,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(
+                                            quick.content,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
