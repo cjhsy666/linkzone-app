@@ -194,17 +194,17 @@ fun MessageItemView(
     // 生成中（内容未定稿）不弹菜单、不显示操作行
     val interactionsEnabled = !(streaming && !message.isSelf)
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (freeCopy) Modifier.combinedClickable(
                 onClick = { freeCopy = false },
                 onLongClick = null
             ) else Modifier),
-        horizontalArrangement = if (message.isSelf) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.Top
+        horizontalAlignment = if (message.isSelf) Alignment.End else Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // ---------- 左侧：AI/模型头像 + 模型名（AI 消息靠左） ----------
+        // ---------- 头部：头像 + 署名（与正文分行；正文从下一行起、自头像左缘开始） ----------
         if (!message.isSelf) {
             // 云端沿用 36dp 头像规格，本地智能体 32dp
             val avatarSize = if (isLocal) 32.dp else 36.dp
@@ -212,56 +212,65 @@ fun MessageItemView(
             val modelIconMatched = remember(modelName) {
                 isLocal && modelName.isNotBlank() && computeAIIconByName(modelName) != null
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // AI 署名：智能体名 · 模型名（显示取模型 id 末段）
+            val displayModel = modelName.substringAfterLast('/')
+            val senderLabel = if (displayModel.isNotBlank() && !message.senderName.contains(displayModel)) {
+                "${message.senderName} · $displayModel"
+            } else {
+                message.senderName
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 if (modelIconMatched) AutoAIIcon(modelName, size = avatarSize)
                 else if (isLocal) AgentAvatar(agentEmoji, size = avatarSize)
                 else SenderAvatar(message.senderName, size = avatarSize)
-            }
-            Spacer(Modifier.width(8.dp))
-        }
-
-        // 对方消息占满剩余宽度（文档流需要）；用户消息靠右限宽
-        val middleModifier = if (message.isSelf) {
-            Modifier.widthIn(max = LocalConfiguration.current.screenWidthDp.dp * MAX_BUBBLE_WIDTH_RATIO)
-        } else {
-            Modifier.weight(1f)
-        }
-        Column(
-            modifier = middleModifier,
-            horizontalAlignment = if (message.isSelf) Alignment.End else Alignment.Start
-        ) {
-            // AI 署名：智能体名 · 模型名（Rikka 式——模型头像旁标注模型来源；modelName 传完整模型 id，显示取末段）
-            if (!message.isSelf && message.senderName.isNotBlank()) {
-                val displayModel = modelName.substringAfterLast('/')
-                val label = if (displayModel.isNotBlank() && !message.senderName.contains(displayModel)) {
-                    "${message.senderName} · $displayModel"
-                } else {
-                    message.senderName
+                if (senderLabel.isNotBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = senderLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp)
-                )
             }
-
-            if (message.recalled) {
-                RecalledChip()
-            } else if (message.isSelf) {
-                // ---------- 用户消息：右上昵称，下方右对齐文档流（去气泡） ----------
+        } else {
+            // 用户消息：昵称 + 头像同处头部行，正文在其下方右对齐
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 if (userName.isNotBlank()) {
                     Text(
                         text = userName,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(end = 4.dp, bottom = 2.dp)
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.width(8.dp))
                 }
+                SelfAvatar(
+                    size = if (isLocal) 32.dp else 36.dp,
+                    name = userName,
+                    avatarUrl = userAvatarUrl,
+                    baseUrl = baseUrl
+                )
+            }
+        }
+
+        // 正文：AI 占满全宽（文档流需要）；用户靠右限宽
+        val middleModifier = if (message.isSelf) {
+            Modifier.widthIn(max = LocalConfiguration.current.screenWidthDp.dp * MAX_BUBBLE_WIDTH_RATIO)
+        } else {
+            Modifier.fillMaxWidth()
+        }
+        Column(
+            modifier = middleModifier,
+            horizontalAlignment = if (message.isSelf) Alignment.End else Alignment.Start
+        ) {
+
+            if (message.recalled) {
+                RecalledChip()
+            } else if (message.isSelf) {
+                // ---------- 用户消息：右对齐文档流（去气泡；昵称/头像已在头部行） ----------
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SendStatusIndicator(message)
                     // 去气泡：全部内容右对齐文档流（媒体裸渲染，文本右对齐无底色）
@@ -481,16 +490,6 @@ fun MessageItemView(
                     }
                 )
             }
-        }
-
-        if (message.isSelf) {
-            Spacer(Modifier.width(8.dp))
-            SelfAvatar(
-                size = if (isLocal) 32.dp else 36.dp,
-                name = userName,
-                avatarUrl = userAvatarUrl,
-                baseUrl = baseUrl
-            )
         }
     }
 }

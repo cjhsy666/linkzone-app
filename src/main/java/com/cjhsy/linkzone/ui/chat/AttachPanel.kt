@@ -88,9 +88,18 @@ fun AttachPanel(
         ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9)
     ) { uris ->
         // 返回 content:// 列表，上传需要真实文件：逐个复制到缓存后按 mime 判型
+        // （按 mime 而非扩展名判型，避免缩略图退化成文件卡片）
         uris.forEach { uri ->
             val cached = runCatching { uri.copyToCache(context) }.getOrNull()
-            if (cached != null) onSendMedia(cached, null)
+            if (cached != null) {
+                val mime = context.contentResolver.getType(uri)
+                val kind = when {
+                    mime?.startsWith("image/") == true -> "image"
+                    mime?.startsWith("video/") == true -> "video"
+                    else -> null
+                }
+                onSendMedia(cached, kind)
+            }
         }
     }
 

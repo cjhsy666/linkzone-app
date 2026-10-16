@@ -2279,13 +2279,15 @@ class ChatViewModel(
                 "markdown" -> seg.get("content").takeIf { it.isNotBlank() }
                     ?.let { parts += UIMessagePart.Text(it) }
                 "image" -> {
+                    // 服务端上传后段里存的是自托管相对路径（/public/...）：
+                    // 相对路径同样是合法来源，否则整张图会被丢弃、AI 完全看不到
+                    //（服务端转发上游前会把该路径读回原图并内联为 base64）
                     val url = seg.mediaUrl
-                    val ok = url.startsWith("http") || url.startsWith("file://")
-                    android.util.Log.d("LZC-image", "toLlmUIMessage image seg url=[$url] startsOk=$ok allData=${seg.data}")
-                    if (!ok) {
-                        android.util.Log.w("LZC-image", "image seg DROPPED (bad url) → 将退化为 content 占位: id=$id data=${seg.data}")
+                    if (url.isNotBlank()) {
+                        parts += UIMessagePart.Image(url)
+                    } else {
+                        android.util.Log.w("LZC-image", "image seg DROPPED (blank url) id=$id data=${seg.data}")
                     }
-                    url.takeIf { ok }?.let { parts += UIMessagePart.Image(it) }
                 }
                 "file" -> {
                     val url = seg.mediaUrl

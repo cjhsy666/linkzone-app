@@ -1632,6 +1632,14 @@ internal fun ChatInputBar(
     }
 }
 
+/** 按扩展名判定是否图片文件（相册/文件多选时段类型可能缺失） */
+private fun java.io.File.hasImageExt(): Boolean {
+    val n = name.lowercase()
+    return n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") ||
+        n.endsWith(".webp") || n.endsWith(".gif") || n.endsWith(".bmp") ||
+        n.endsWith(".heic") || n.endsWith(".heif") || n.endsWith(".avif")
+}
+
 /** 待发送附件预览条：图片/视频/文件缩略卡 + X 移除 + 上传动画（豆包式） */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -1668,7 +1676,15 @@ internal fun PendingMediaStrip(
                         .clip(RoundedCornerShape(14.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 ) {
-                    when (item.type) {
+                    // 相册多选时 onSendMedia 的 type 为 null：结合上传结果/扩展名判定，
+                    // 否则图片会落进文件卡片分支（只显示文档图标 + 文件名，不显示缩略图）
+                    val mediaKind = when {
+                        item.type == "image" || item.remoteSegType == "image" -> "image"
+                        item.type == "video" || item.remoteSegType == "video" -> "video"
+                        item.type == null && item.remoteSegType.isBlank() && item.file.hasImageExt() -> "image"
+                        else -> item.type ?: "file"
+                    }
+                    when (mediaKind) {
                         "image" -> {
                             AsyncImage(
                                 model = item.file,

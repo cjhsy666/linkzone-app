@@ -76,6 +76,12 @@ fun UIMessagePart.Image.encodeBase64(withPrefix: Boolean = true): Result<Encoded
             // HTTP URL 无法确定 mime type，默认使用 image/png
             EncodedImage(base64 = url, mimeType = "image/png")
         }
+        this.url.startsWith("/") -> {
+            // 自托管相对路径（/public/...）：原样透传给服务端，
+            // 由服务端在转发上游前读回原图内联为 base64；
+            // 不能抛错——抛错会让整张图片被静默丢弃，模型完全看不到图
+            EncodedImage(base64 = url, mimeType = "image/png")
+        }
         else -> throw IllegalArgumentException("Unsupported URL format: $url")
     }
 }
