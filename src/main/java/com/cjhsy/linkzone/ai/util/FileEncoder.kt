@@ -23,6 +23,22 @@ data class EncodedImage(
     val mimeType: String
 )
 
+/**
+ * 自托管图片相对路径（/public/...）→ 本机缓存文件路径 的进程内映射。
+ *
+ * 本地智能体可能直连第三方代理或模型官方 API（不经 LinkZone 服务端转发），
+ * 这类端点访问不到 /public 相对地址，必须和 RikkaHub 一样在端上把图片内联为 base64。
+ * 同一会话刚选中/上传的图片直接读本地原文件，省去「上传后又回源下载」的往返。
+ */
+private val localImageFiles = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+/** 登记「服务端相对 URL → 本地文件」映射（上传成功后调用） */
+fun registerLocalImage(remoteUrl: String, localPath: String) {
+    if (remoteUrl.startsWith("/") && localPath.isNotBlank()) {
+        localImageFiles[remoteUrl] = localPath
+    }
+}
+
 internal enum class ExifTransformType {
     NONE,
     FLIP_HORIZONTAL,
@@ -77,10 +93,22 @@ fun UIMessagePart.Image.encodeBase64(withPrefix: Boolean = true): Result<Encoded
             EncodedImage(base64 = url, mimeType = "image/png")
         }
         this.url.startsWith("/") -> {
-            // 自托管相对路径（/public/...）：原样透传给服务端，
-            // 由服务端在转发上游前读回原图内联为 base64；
-            // 不能抛错——抛错会让整张图片被静默丢弃，模型完全看不到图
-            EncodedImage(base64 = url, mimeType = "image/png")
+            // 自托管相对路径（/public/...）：本地智能体可能直连第三方代理/官方 API，
+            // 对方访问不到该相对地址，必须在端上内联 base64（与 RikkaHub 一致，端点无关）。
+            // 优先读本会话上传时缓存的原文件；找不到再回源 LinkZone 静态服务下载后编码。
+            val local = localImageFiles[this.url]
+                ?.let { File(it) }
+                ?.takeIf { it.exists() }
+            if (local != null) {
+                val mimeType = local.guessMimeType().getOrThrow()
+                val (encoded, outputMimeType) = local.compressAndEncode(mimeType)
+                EncodedImage(
+                    base64 = if (withPrefix) "data:$outputMimeType;base64,$encoded" else encoded,
+                    mimeType = outputMimeType
+                )
+            } else {
+                downloadAndEncode(this.url, withPrefix)
+            }
         }
         else -> throw IllegalArgumentException("Unsupported URL format: $url")
     }
@@ -199,6 +227,91 @@ private fun applyExifTransform(bitmap: Bitmap, transform: ExifTransformType): Bi
     return runCatching {
         Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }.getOrElse { bitmap }
+}
+
+/**
+ * 回源 LinkZone 静态服务下载自托管图片（/public/...）并编码为 data URI。
+ * 调用方必须在 IO 线程执行（含网络请求）。
+ */
+private fun downloadAndEncode(path: String, withPrefix: Boolean): EncodedImage {
+    val base = com.cjhsy.linkzone.di.BASE_URL.trimEnd('/')
+    val conn = (java.net.URL(base + path).openConnection() as java.net.HttpURLConnection).apply {
+        connectTimeout = 15_000
+        readTimeout = 30_000
+        instanceFollowRedirects = true
+    }
+    try {
+        if (conn.responseCode !in 200..299) {
+            throw java.io.IOException("HTTP ${conn.responseCode}")
+        }
+        val bytes = conn.inputStream.use { it.readBytes() }
+        if (bytes.isEmpty()) throw java.io.IOException("空文件")
+        val mimeType = conn.contentType
+            ?.substringBefore(';')?.trim()
+            ?.takeIf { it.startsWith("image/") }
+            ?: guessImageMimeTypeFromBytes(bytes)
+
+        // GIF 原样保留（可能是动图）
+        if (mimeType == "image/gif") {
+            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            return EncodedImage(
+                base64 = if (withPrefix) "data:image/gif;base64,$encoded" else encoded,
+                mimeType = "image/gif"
+            )
+        }
+
+        val (encoded, outputMimeType) = compressBytesAndEncode(bytes)
+        return EncodedImage(
+            base64 = if (withPrefix) "data:$outputMimeType;base64,$encoded" else encoded,
+            mimeType = outputMimeType
+        )
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/** 字节数组 → 采样解码 Bitmap → JPEG 压缩 → base64（与 File.compressAndEncode 同一策略） */
+private fun compressBytesAndEncode(bytes: ByteArray): Pair<String, String> {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = calculateImageInSampleSize(
+            width = bounds.outWidth,
+            height = bounds.outHeight,
+            maxDimension = 10_000,
+            maxPixels = 16_000_000L
+        )
+    }
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        ?: throw IllegalArgumentException("无法解码下载的图片")
+
+    return try {
+        val byteArrayOutputStream = ByteArrayOutputStream()
+        // 强制 JPEG：很多提供商不支持 webp
+        Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, base64Stream)
+        }
+        Pair(byteArrayOutputStream.toString(Charsets.ISO_8859_1.name()), "image/jpeg")
+    } finally {
+        bitmap.recycle()
+    }
+}
+
+/** 通过文件头魔数识别常见图片类型；无法识别时抛错（避免把非图片发给模型） */
+private fun guessImageMimeTypeFromBytes(bytes: ByteArray): String {
+    if (bytes.size < 12) throw IllegalArgumentException("文件过小，无法识别图片类型")
+    if (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()) return "image/jpeg"
+    if (bytes.copyOfRange(0, 8).contentEquals(
+            byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+        )
+    ) return "image/png"
+    if (bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
+        bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP"
+    ) return "image/webp"
+    val header = bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII)
+    if (header == "GIF89a" || header == "GIF87a") return "image/gif"
+    throw IllegalArgumentException("不支持的图片格式")
 }
 
 private fun File.encodeToBase64Streaming(): String {

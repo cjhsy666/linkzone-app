@@ -81,6 +81,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import android.content.Context
 import com.cjhsy.linkzone.ai.util.encodeBase64
+import com.cjhsy.linkzone.ai.util.registerLocalImage
 import java.io.File
 import java.util.UUID
 
@@ -885,6 +886,7 @@ class ChatViewModel(
                     // 预上传已完成：直接引用服务端 URL，跳过重复上传
                     if (att.remoteUrl != null) {
                         val segType = att.type ?: att.remoteSegType.ifBlank { guessSegType(att.file) }
+                        registerLocalImage(att.remoteUrl, att.file.absolutePath)
                         uploadedSegs.add(buildMediaSeg(
                             segType, att.remoteUrl,
                             att.remoteName.ifBlank { att.file.name }, att.remoteSize, 0L
@@ -901,6 +903,7 @@ class ChatViewModel(
                     }
                     val upload = result.getOrThrow()
                     val segType = att.type ?: upload.segType.ifBlank { guessSegType(att.file) }
+                    registerLocalImage(upload.url, att.file.absolutePath)
                     uploadedSegs.add(buildMediaSeg(segType, upload.url, upload.name, upload.size, 0L))
                 }
                 // 上传完成：替换消息段为服务端 URL 并落库，AI 上下文即可拿到 URL
@@ -968,6 +971,7 @@ class ChatViewModel(
                 // 预上传已完成：直接引用服务端 URL，跳过重复上传
                 if (att.remoteUrl != null) {
                     val segType = att.type ?: att.remoteSegType.ifBlank { guessSegType(att.file) }
+                    registerLocalImage(att.remoteUrl, att.file.absolutePath)
                     remoteSegs.add(buildMediaSeg(
                         segType, att.remoteUrl,
                         att.remoteName.ifBlank { att.file.name }, att.remoteSize, 0L
@@ -983,6 +987,7 @@ class ChatViewModel(
                 }
                 val upload = result.getOrThrow()
                 val segType = att.type ?: upload.segType.ifBlank { guessSegType(att.file) }
+                registerLocalImage(upload.url, att.file.absolutePath)
                 remoteSegs.add(buildMediaSeg(segType, upload.url, upload.name, upload.size, 0L))
             }
             if (!allOk) return@launch
@@ -2117,43 +2122,52 @@ class ChatViewModel(
         }
     }
 
-    /** file:// 图片预编码缓存：url → data: URL（避免每轮生成重复压缩编码） */
+    /** file:// 与自托管相对路径（/public/...）图片预编码缓存：url → data: URL（避免每轮生成重复压缩/下载） */
     private val imageEncodeCache = android.util.LruCache<String, String>(32)
 
     /**
-     * 发送前预编码（fail-loud）：把上下文里所有 file:// 图片统一转成 data: URL，
+     * 发送前预编码（fail-loud）：把上下文里所有本地图片统一转成 data: URL，
      * 三个 Provider 的编码器对 data: 均原样透传，等于在唯一入口完成读图。
+     *
+     * 处理两类本地来源：
+     * - file://：相册/文件选择器缓存的原文件，直接压缩编码；
+     * - /public/...：服务端自托管相对路径。本地智能体可能直连第三方代理/官方 API，
+     *   对方访问不到该地址，必须在端上内联（优先读上传时缓存的原文件，否则回源下载），
+     *   与 RikkaHub「请求构建阶段内联 base64」的做法一致，与所用端点无关。
+     *
      * 文件丢失/解码失败时：①聊天页立即报错（不再让 AI 答"只看到占位符"）；
      * ②该图替换为显式文本标记，模型与用户都能明确看到哪张图没传上。
      */
-    private fun ensureImagesEncoded(messages: List<UIMessage>): List<UIMessage> {
-        var firstError: String? = null
-        val out = messages.map { m ->
-            if (m.parts.none { it is UIMessagePart.Image }) return@map m
-            m.copy(parts = m.parts.map { part ->
-                if (part !is UIMessagePart.Image) return@map part
-                val url = part.url
-                // http(s)/data: 由 Provider 原样透传，无需本地处理
-                if (!url.startsWith("file://")) return@map part
-                imageEncodeCache.get(url)?.let { return@map UIMessagePart.Image(it) }
-                val result = part.encodeBase64(withPrefix = true)
-                result.onSuccess { encoded ->
-                    imageEncodeCache.put(url, encoded.base64)
-                    android.util.Log.d("LZC-image", "pre-encode ok url=$url bytes=${encoded.base64.length}")
-                }
-                result.onFailure { e ->
-                    android.util.Log.w("LZC-image", "pre-encode FAILED url=$url", e)
-                    if (firstError == null) firstError = e.message ?: "未知错误"
-                }
-                result.getOrNull()?.let { UIMessagePart.Image(it.base64) }
-                    ?: UIMessagePart.Text("[图片读取失败：${url.substringAfterLast('/')}]")
-            })
+    private suspend fun ensureImagesEncoded(messages: List<UIMessage>): List<UIMessage> =
+        withContext(Dispatchers.IO) {
+            var firstError: String? = null
+            val out = messages.map { m ->
+                if (m.parts.none { it is UIMessagePart.Image }) return@map m
+                m.copy(parts = m.parts.map { part ->
+                    if (part !is UIMessagePart.Image) return@map part
+                    val url = part.url
+                    // http(s)/data: 由 Provider 原样透传，无需本地处理
+                    val isLocalSource = url.startsWith("file://") || url.startsWith("/")
+                    if (!isLocalSource) return@map part
+                    imageEncodeCache.get(url)?.let { return@map UIMessagePart.Image(it) }
+                    val result = part.encodeBase64(withPrefix = true)
+                    result.onSuccess { encoded ->
+                        imageEncodeCache.put(url, encoded.base64)
+                        android.util.Log.d("LZC-image", "pre-encode ok url=$url bytes=${encoded.base64.length}")
+                    }
+                    result.onFailure { e ->
+                        android.util.Log.w("LZC-image", "pre-encode FAILED url=$url", e)
+                        if (firstError == null) firstError = e.message ?: "未知错误"
+                    }
+                    result.getOrNull()?.let { UIMessagePart.Image(it.base64) }
+                        ?: UIMessagePart.Text("[图片读取失败：${url.substringAfterLast('/')}]")
+                })
+            }
+            firstError?.let {
+                _state.value = _state.value.copy(error = "图片读取失败，AI 看不到这张图：$it")
+            }
+            out
         }
-        firstError?.let {
-            _state.value = _state.value.copy(error = "图片读取失败，AI 看不到这张图：$it")
-        }
-        return out
-    }
 
     /** 调视觉模型识别单张图片，带缓存；失败返回错误占位文本 */
     private suspend fun performOcr(
@@ -2280,8 +2294,9 @@ class ChatViewModel(
                     ?.let { parts += UIMessagePart.Text(it) }
                 "image" -> {
                     // 服务端上传后段里存的是自托管相对路径（/public/...）：
-                    // 相对路径同样是合法来源，否则整张图会被丢弃、AI 完全看不到
-                    //（服务端转发上游前会把该路径读回原图并内联为 base64）
+                    // 非空即保留为图片 part；真正发送前由 ensureImagesEncoded
+                    // 在端上内联为 base64（本地智能体可能直连第三方代理/官方 API，
+                    // 端点无关），空地址才丢弃
                     val url = seg.mediaUrl
                     if (url.isNotBlank()) {
                         parts += UIMessagePart.Image(url)
