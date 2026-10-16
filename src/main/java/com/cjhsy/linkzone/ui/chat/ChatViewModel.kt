@@ -2877,12 +2877,11 @@ class ChatViewModel(
 
     /**
      * 从某条消息重新生成（仅本地会话）：
-     * - bot 回复：**当前线路重发**——旧回复作为历史版本保留但不占线，新回复原地成为该节点
-     *   当前版本，后续消息仍留在当前线路可见（不再把尾巴钉成隐藏支线）
-     * - 用户消息：定位它后面当前分支上的那条 bot 回复，执行与上面完全相同的重生成，
-     *   语义为「让 AI 重新回答我这句话」。**不 fork 用户消息**——用户版本支线只由
-     *   「编辑重发」（[confirmEditMessage] → forkUserVersion）产生。
-     * 旧回复版本完整落库；AI 回复不提供版本切换 UI，当前线路直接展示最新一版。
+     * - bot 回复（仅最后一条 AI 回复上有入口）：**当前线路重发**——旧回复作为历史版本保留
+     *   但不占线，新回复原地成为该节点当前版本，后续消息仍留在当前线路可见
+     * - 用户消息：**截断重来**——删除这条消息之后的全部消息（含其所有版本/分支），
+     *   以这条用户消息为最后一轮重新回答（ChatGPT 式）。用户消息本身保留不动。
+     *   想保留旧答案改问法应走「编辑重发」（显式分叉、可切回旧版）。
      */
     fun regenerateAt(message: MessageItem) {
         if (!isLocalConv()) return
@@ -2890,27 +2889,40 @@ class ChatViewModel(
         if (generatingJob?.isActive == true) return
         viewModelScope.launch {
             stopGeneratingAndWait()
-            val visible = _state.value.messages.toMessageNodes().resolveVisible()
-            val node = visible.nodeOf(message.id) ?: return@launch
-            // 目标 bot 节点：用户消息上点「重新生成」= 重新生成它对应的那条 AI 回复，
-            // 与在 AI 气泡上点重新生成完全等价——绝不 fork 用户消息，只有编辑重发才产生支线。
-            val targetNode = if (node.isSelf) {
-                val selfIndex = visible.indexOfFirst { it.anchorId == node.anchorId }
-                visible.drop(selfIndex + 1).firstOrNull { !it.isSelf }
-            } else node
-            if (targetNode == null) {
-                // 该用户消息后面没有回复（异常残留）：普通补一次生成，不创建版本
+            val allNodes = _state.value.messages.toMessageNodes()
+            val node = allNodes.nodeOf(message.id) ?: return@launch
+            if (node.isSelf) {
+                // 截断：删除该用户消息节点之后所有节点的全部版本（回复 + 后续轮次）
+                val startIdx = allNodes.indexOfFirst { it.anchorId == node.anchorId }
+                val toDeleteIds = allNodes.drop(startIdx + 1).flatMap { n ->
+                    n.versions.map { it.id }
+                }
+                if (toDeleteIds.isNotEmpty()) {
+                    localStore.deleteMessages(toDeleteIds)
+                    val deleteSet = toDeleteIds.toHashSet()
+                    _state.value = _state.value.copy(
+                        messages = _state.value.messages.filterNot { it.id in deleteSet }
+                    )
+                }
+                // 会话预览回到这条用户消息
+                val preview = node.selected.content.take(60)
+                localStore.touch(
+                    _state.value.currentConvId,
+                    preview,
+                    System.currentTimeMillis()
+                )
+                // 上下文自然以该用户消息结尾，普通补发一轮即可
                 maybeDispatchLocal()
                 return@launch
             }
-            val newIdx = targetNode.versions.size
+            val newIdx = node.versions.size
             generatingJob = viewModelScope.launch {
                 runLocalGeneration(
                     botId = _state.value.currentBotId,
                     trimTrailingAssistant = true,
-                    versionAnchorId = targetNode.anchorId,
+                    versionAnchorId = node.anchorId,
                     versionIdx = newIdx,
-                    versionAnchorTs = targetNode.anchorTs
+                    versionAnchorTs = node.anchorTs
                 )
             }
         }

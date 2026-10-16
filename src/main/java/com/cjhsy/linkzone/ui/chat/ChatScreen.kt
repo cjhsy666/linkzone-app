@@ -656,8 +656,8 @@ private fun MessageList(
     val nodes = remember(state.messages) { state.messages.toMessageNodes().resolveVisible() }
 
     // 当前分支最后一条 AI 回复：只有它允许「重新生成 / 多模型重答」。
-    // 历史轮次不提供重生成入口——对中间消息重答天然产生分叉，ChatGPT/豆包同样只在
-    // 最后一条回复上开放；用户消息想改问法走「编辑重发」（显式分叉，可切回旧版）。
+    // 用户消息上的「重新生成」走截断语义（删除其后全部消息再重答，见 VM.regenerateAt），
+    // 任何一轮都可用；想保留旧答案改问法请走「编辑重发」（显式分叉，可切回旧版）。
     val lastBotAnchor = remember(nodes) { nodes.lastOrNull { !it.isSelf }?.anchorId }
 
     // 列表头部在有更多历史时多一个「加载更早」按钮项，node 的列表下标 = 节点下标 + 头部项数
@@ -836,10 +836,12 @@ private fun MessageList(
                         isLocal = isLocal,
                         agentEmoji = agentEmoji,
                         streaming = streaming,
-                        // 回复/撤回云端与本地均开放；重生成/多模型仅本地会话最后一条 AI 回复
+                        // 回复/撤回云端与本地均开放；重生成：本地会话用户消息（截断重答）
+                        // 或当前分支最后一条 AI 回复（当前线路重发）
                         canReply = true,
                         canRecall = true,
-                        canRegenerate = isLocal && !node.isSelf && node.anchorId == lastBotAnchor,
+                        canRegenerate = isLocal &&
+                            (node.isSelf || node.anchorId == lastBotAnchor),
                         // 版本链（RikkaHub 式）：仅编辑重发/重发的用户消息显示 ‹ n/m › 切换器；
                         // AI 回复重新生成走当前线路（旧版不占线），MessageActionBar 不渲染切换器
                         versionCount = node.versions.size,
