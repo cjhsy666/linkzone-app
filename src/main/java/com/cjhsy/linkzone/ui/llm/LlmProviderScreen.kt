@@ -290,7 +290,7 @@ class LlmProviderViewModel(
                     }
                 } + provider.models.filter { it.modelId !in remoteIds }
                 val added = merged.size - provider.models.size
-                persistProviderModelChange(provider, merged)
+                persistProviderModelChange(provider, provider.copyProvider(models = merged))
                 _state.value = _state.value.copy(
                     fetchingModelsFor = null,
                     message = "拉取完成：共 ${merged.size} 个" +
