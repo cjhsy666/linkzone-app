@@ -72,6 +72,7 @@ import com.cjhsy.linkzone.ai.ui.StreamChunk
 import com.cjhsy.linkzone.ai.ui.UIMessage
 import com.cjhsy.linkzone.ai.ui.UIMessagePart
 import com.cjhsy.linkzone.data.repository.LlmRepository
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -379,7 +380,7 @@ class LlmProviderViewModel(
             val provider = providerManager.getProviderByType(setting)
             // 非流式
             setTestItem(nonStream = TestItemState.Loading)
-            val nonStream = kotlinx.coroutines.async {
+            val nonStream = async {
                 runCatching {
                     val result = provider.generateText(
                         providerSetting = setting,
@@ -395,7 +396,7 @@ class LlmProviderViewModel(
             }
             // 流式
             setTestItem(stream = TestItemState.Loading)
-            val stream = kotlinx.coroutines.async {
+            val stream = async {
                 runCatching {
                     val sb = StringBuilder()
                     provider.streamText(
@@ -413,7 +414,7 @@ class LlmProviderViewModel(
             }
             // 工具调用
             setTestItem(tools = TestItemState.Loading)
-            val tools = kotlinx.coroutines.async {
+            val tools = async {
                 runCatching {
                     val testTool = Tool(
                         name = "get_current_time",
