@@ -230,13 +230,17 @@ class ChatViewModel(
     val localAgents: StateFlow<List<LlmAgent>> = llmRepository.observeAgents()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** 当前智能体关联的快捷指令（输入区上方一键填入 chips） */
+    /** 当前会话输入区上方的快捷指令：本地智能体按关联过滤；云端主会话显示勾选了「云端显示」的 */
     val quickMessages: StateFlow<List<LlmQuickMessage>> = combine(
         _state,
         llmRepository.observeQuickMessages()
     ) { s, all ->
-        val ids = s.currentAgent?.quickMessageIds ?: emptySet()
-        if (ids.isEmpty()) emptyList() else all.filter { it.id in ids }
+        if (isLocalConvId(s.currentConvId)) {
+            val ids = s.currentAgent?.quickMessageIds ?: emptySet()
+            if (ids.isEmpty()) emptyList() else all.filter { it.id in ids }
+        } else {
+            all.filter { it.showInCloud }
+        }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 可选模型列表（多模型重答选择器，打开选择器时加载） */

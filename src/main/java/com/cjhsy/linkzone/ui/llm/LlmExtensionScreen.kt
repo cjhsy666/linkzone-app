@@ -1002,7 +1002,7 @@ private fun QuickMessagesTab(state: LlmExtensionUiState, viewModel: LlmExtension
         if (state.quickMessages.isEmpty()) {
             item {
                 Text(
-                    "快捷指令是一段可一键填入聊天输入框的常用文本，在智能体编辑页按智能体关联。",
+                    "快捷指令是一段可一键填入聊天输入框的常用文本：本地智能体按关联显示；开启「在云端助手显示」后也会出现在云端对话。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1017,7 +1017,21 @@ private fun QuickMessagesTab(state: LlmExtensionUiState, viewModel: LlmExtension
             ) {
                 Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            if (item.showInCloud) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "云端",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
                         Text(
                             item.content,
                             style = MaterialTheme.typography.bodySmall,
@@ -1060,6 +1074,23 @@ private fun QuickMessageEditor(item: LlmQuickMessage, viewModel: LlmExtensionVie
                     label = { Text("填入输入框的内容") },
                     modifier = Modifier.fillMaxWidth().height(120.dp)
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("在云端助手显示", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "开启后出现在云端对话输入框上方；本地智能体仍按各自关联显示",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = item.showInCloud,
+                        onCheckedChange = { v -> viewModel.updateEditingQuickMessage { it.copy(showInCloud = v) } }
+                    )
+                }
             }
         },
         confirmButton = { TextButton(onClick = viewModel::saveQuickMessage) { Text("保存") } },
