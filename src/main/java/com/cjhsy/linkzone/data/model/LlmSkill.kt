@@ -66,15 +66,26 @@ data class LlmSkill(
 
 /**
  * 快捷指令 —— 移植自 RikkaHub QuickMessage：点击后把 [content] 填入聊天输入框。
- * 本地智能体会话按智能体关联（LlmAgent.quickMessageIds）；
- * [showInCloud] 为 true 时同时出现在云端助手主会话输入框上方。
+ * 仅用于本地智能体会话（按 LlmAgent.quickMessageIds 关联）；
+ * 云端助手主会话使用独立的 [CloudQuickCommand]。
  */
 @Serializable
 data class LlmQuickMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
     val title: String = "",
     val content: String = "",
-    /** 是否在云端助手主会话显示（本地智能体关联不受影响） */
-    val showInCloud: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+/**
+ * 云端快捷指令 —— 云端助手主会话输入框上方的快捷命令条，
+ * 用于存放服务端插件命令等常用文本，点击填入输入框。
+ * 与本地智能体的 [LlmQuickMessage] 完全独立，支持 JSON 导入导出。
+ */
+@Serializable
+data class CloudQuickCommand(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String = "",
+    val content: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )

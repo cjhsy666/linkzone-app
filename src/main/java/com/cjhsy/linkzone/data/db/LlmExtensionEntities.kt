@@ -119,3 +119,25 @@ interface LlmQuickMessageDao {
     @Query("DELETE FROM llm_quick_message WHERE id = :id")
     suspend fun deleteById(id: String)
 }
+
+// ---------- cloud_quick_command（云端助手快捷指令） ----------
+
+@Entity(tableName = "cloud_quick_command")
+data class CloudQuickCommandEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    val sort: Long,
+    val json: String,
+)
+
+@Dao
+interface CloudQuickCommandDao {
+    @Query("SELECT * FROM cloud_quick_command ORDER BY sort ASC")
+    fun observeAll(): Flow<List<CloudQuickCommandEntity>>
+
+    @Upsert
+    suspend fun upsert(entity: CloudQuickCommandEntity)
+
+    @Query("DELETE FROM cloud_quick_command WHERE id = :id")
+    suspend fun deleteById(id: String)
+}

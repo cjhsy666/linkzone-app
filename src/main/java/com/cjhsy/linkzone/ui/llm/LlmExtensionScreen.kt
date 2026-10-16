@@ -59,17 +59,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 
-/** AI 扩展管理页状态：技能 / 提示词（模式注入+世界书）/ 快捷指令 */
+/** AI 扩展管理页状态：技能 / 提示词（模式注入+世界书）/ 快捷指令 / 云端指令 */
 data class LlmExtensionUiState(
     val skills: List<LlmSkill> = emptyList(),
     val prompts: List<LlmPrompt> = emptyList(),
     val lorebooks: List<LlmLorebook> = emptyList(),
     val quickMessages: List<LlmQuickMessage> = emptyList(),
+    val cloudCommands: List<com.cjhsy.linkzone.data.model.CloudQuickCommand> = emptyList(),
     /** 非空时显示编辑表单（当前 tab 的编辑对象） */
     val editingSkill: LlmSkill? = null,
     val editingPrompt: LlmPrompt? = null,
     val editingLorebook: LlmLorebook? = null,
     val editingQuickMessage: LlmQuickMessage? = null,
+    val editingCloudCommand: com.cjhsy.linkzone.data.model.CloudQuickCommand? = null,
+    val message: String? = null,
     val error: String? = null
 )
 
@@ -101,6 +104,11 @@ class LlmExtensionViewModel(
         viewModelScope.launch {
             llmRepository.observeQuickMessages().collect { list ->
                 _state.value = _state.value.copy(quickMessages = list)
+            }
+        }
+        viewModelScope.launch {
+            llmRepository.observeCloudQuickCommands().collect { list ->
+                _state.value = _state.value.copy(cloudCommands = list)
             }
         }
     }
@@ -259,6 +267,102 @@ class LlmExtensionViewModel(
         viewModelScope.launch { llmRepository.deleteQuickMessage(item.id) }
     }
 
+    // ---- 云端指令（云端助手主会话快捷命令，支持 JSON 导入导出） ----
+
+    fun startCreateCloudCommand() {
+        _state.value = _state.value.copy(
+            editingCloudCommand = com.cjhsy.linkzone.data.model.CloudQuickCommand(),
+            error = null
+        )
+    }
+
+    fun startEditCloudCommand(item: com.cjhsy.linkzone.data.model.CloudQuickCommand) {
+        _state.value = _state.value.copy(editingCloudCommand = item, error = null)
+    }
+
+    fun updateEditingCloudCommand(
+        transform: (com.cjhsy.linkzone.data.model.CloudQuickCommand) -> com.cjhsy.linkzone.data.model.CloudQuickCommand
+    ) {
+        _state.value = _state.value.editingCloudCommand?.let { cur ->
+            _state.value.copy(editingCloudCommand = transform(cur))
+        } ?: _state.value
+    }
+
+    fun saveCloudCommand() {
+        val editing = _state.value.editingCloudCommand ?: return
+        if (editing.title.isBlank() || editing.content.isBlank()) {
+            _state.value = _state.value.copy(error = "标题和内容不能为空")
+            return
+        }
+        viewModelScope.launch {
+            llmRepository.upsertCloudQuickCommand(editing)
+            _state.value = _state.value.copy(editingCloudCommand = null, error = null)
+        }
+    }
+
+    fun deleteCloudCommand(item: com.cjhsy.linkzone.data.model.CloudQuickCommand) {
+        viewModelScope.launch { llmRepository.deleteCloudQuickCommand(item.id) }
+    }
+
+    /** 云端指令导出文件格式（type 字段用于导入校验；commands 内只保留 title/content/id） */
+    fun exportCloudCommandsJson(): String {
+        val items = _state.value.cloudCommands
+        val inner = items.joinToString(",") { c ->
+            "{\"id\":${jsonStr(c.id)},\"title\":${jsonStr(c.title)},\"content\":${jsonStr(c.content)}}"
+        }
+        return "{\"app\":\"linkzone\",\"type\":\"cloud_quick_commands\",\"count\":${items.size},\"commands\":[$inner]}"
+    }
+
+    /** 从导出 JSON 文本导入云端指令：保留原 id（同 id 覆盖），新增排序按文件顺序 */
+    fun importCloudCommandsJson(text: String) {
+        viewModelScope.launch {
+            try {
+                val parsed = cloudCommandsJson.decodeFromString<CloudCommandsExport>(text)
+                if (parsed.type != "cloud_quick_commands") {
+                    throw IllegalArgumentException("不是云端指令导出文件")
+                }
+                if (parsed.commands.isEmpty()) throw IllegalArgumentException("文件内没有指令")
+                var sort = System.currentTimeMillis()
+                parsed.commands.forEach { c ->
+                    if (c.title.isBlank() || c.content.isBlank()) return@forEach
+                    llmRepository.upsertCloudQuickCommand(
+                        com.cjhsy.linkzone.data.model.CloudQuickCommand(
+                            id = c.id.ifBlank { java.util.UUID.randomUUID().toString() },
+                            title = c.title,
+                            content = c.content,
+                            createdAt = sort++
+                        )
+                    )
+                }
+                _state.value = _state.value.copy(
+                    message = "已导入 ${parsed.commands.size} 条云端指令",
+                    error = null
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = "导入失败：${e.message ?: "文件格式不正确"}")
+            }
+        }
+    }
+
+    fun importCloudCommands(uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                val text = app.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: throw IllegalArgumentException("无法读取所选文件")
+                importCloudCommandsJson(text)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = "导入失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    private fun jsonStr(s: String): String =
+        "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") + "\""
+
+    fun clearMessage() {
+        _state.value = _state.value.copy(message = null)
+    }
+
     fun clearError() {
         _state.value = _state.value.copy(error = null)
     }
@@ -270,10 +374,29 @@ class LlmExtensionViewModel(
             editingPrompt = null,
             editingLorebook = null,
             editingQuickMessage = null,
+            editingCloudCommand = null,
             error = null
         )
     }
 }
+
+/** 云端指令导入导出文件结构 */
+@kotlinx.serialization.Serializable
+private data class CloudCommandsExport(
+    val app: String = "linkzone",
+    val type: String = "",
+    val count: Int = 0,
+    val commands: List<CloudCommandItem> = emptyList()
+)
+
+@kotlinx.serialization.Serializable
+private data class CloudCommandItem(
+    val id: String = "",
+    val title: String = "",
+    val content: String = ""
+)
+
+private val cloudCommandsJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
 private val POSITION_LABELS = mapOf(
     LlmInjectionPosition.BEFORE_SYSTEM_PROMPT to "系统提示前",
@@ -302,7 +425,7 @@ fun LlmExtensionScreen(
         }
 
         TabRow(selectedTabIndex = tab) {
-            listOf("技能", "提示词注入", "快捷指令").forEachIndexed { index, label ->
+            listOf("技能", "提示词注入", "快捷指令", "云端指令").forEachIndexed { index, label ->
                 Tab(
                     selected = tab == index,
                     onClick = { tab = index },
@@ -314,7 +437,8 @@ fun LlmExtensionScreen(
         when (tab) {
             0 -> SkillsTab(state, viewModel)
             1 -> PromptsTab(state, viewModel)
-            else -> QuickMessagesTab(state, viewModel)
+            2 -> QuickMessagesTab(state, viewModel)
+            else -> CloudCommandsTab(state, viewModel)
         }
     }
 
@@ -330,6 +454,9 @@ fun LlmExtensionScreen(
     }
     state.editingQuickMessage?.let { editing ->
         QuickMessageEditor(editing, viewModel)
+    }
+    state.editingCloudCommand?.let { editing ->
+        CloudCommandEditor(editing, viewModel)
     }
 }
 
@@ -1002,7 +1129,7 @@ private fun QuickMessagesTab(state: LlmExtensionUiState, viewModel: LlmExtension
         if (state.quickMessages.isEmpty()) {
             item {
                 Text(
-                    "快捷指令是一段可一键填入聊天输入框的常用文本：本地智能体按关联显示；开启「在云端助手显示」后也会出现在云端对话。",
+                    "快捷指令是一段可一键填入聊天输入框的常用文本，在智能体编辑页按智能体关联（仅本地会话）。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1017,21 +1144,7 @@ private fun QuickMessagesTab(state: LlmExtensionUiState, viewModel: LlmExtension
             ) {
                 Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                            if (item.showInCloud) {
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    "云端",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
-                                        .padding(horizontal = 6.dp, vertical = 1.dp)
-                                )
-                            }
-                        }
+                        Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
                         Text(
                             item.content,
                             style = MaterialTheme.typography.bodySmall,
@@ -1074,26 +1187,136 @@ private fun QuickMessageEditor(item: LlmQuickMessage, viewModel: LlmExtensionVie
                     label = { Text("填入输入框的内容") },
                     modifier = Modifier.fillMaxWidth().height(120.dp)
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text("在云端助手显示", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "开启后出现在云端对话输入框上方；本地智能体仍按各自关联显示",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = item.showInCloud,
-                        onCheckedChange = { v -> viewModel.updateEditingQuickMessage { it.copy(showInCloud = v) } }
-                    )
-                }
             }
         },
         confirmButton = { TextButton(onClick = viewModel::saveQuickMessage) { Text("保存") } },
+        dismissButton = { TextButton(onClick = viewModel::clearEdit) { Text("取消") } }
+    )
+}
+
+// ==================== 云端指令 ====================
+
+@Composable
+private fun CloudCommandsTab(state: LlmExtensionUiState, viewModel: LlmExtensionViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let(viewModel::importCloudCommands) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().imePadding(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 12.dp)
+    ) {
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = viewModel::startCreateCloudCommand) { Text("+ 新建") }
+                TextButton(onClick = {
+                    importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                }) { Text("导入") }
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            runCatching {
+                                val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+                                val file = java.io.File(dir, "cloud_commands_${System.currentTimeMillis()}.json")
+                                file.writeText(viewModel.exportCloudCommandsJson())
+                                val uri = androidx.core.content.FileProvider.getUriForFile(
+                                    context, "${context.packageName}.fileprovider", file
+                                )
+                                val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "application/json"
+                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(
+                                    android.content.Intent.createChooser(intent, "导出云端指令")
+                                )
+                            }.onFailure { e ->
+                                android.widget.Toast.makeText(
+                                    context, "导出失败：${e.message ?: "未知错误"}", android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = state.cloudCommands.isNotEmpty()
+                ) { Text("导出") }
+            }
+        }
+        if (state.cloudCommands.isEmpty()) {
+            item {
+                Text(
+                    "云端指令显示在云端助手对话输入框上方，点击即填入，适合存放常用插件命令。支持 JSON 导入导出，可与本地智能体的快捷指令互不影响。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        state.message?.let {
+            item { Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall) }
+        }
+        state.error?.let {
+            item { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        }
+        items(state.cloudCommands, key = { it.id }) { item ->
+            Card(
+                modifier = Modifier.fillMaxWidth().clickable { viewModel.startEditCloudCommand(item) },
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
+                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(
+                            item.content,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                    Text(
+                        "删除",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .clickable { viewModel.deleteCloudCommand(item) }
+                    )
+                }
+            }
+        }
+        item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@Composable
+private fun CloudCommandEditor(
+    item: com.cjhsy.linkzone.data.model.CloudQuickCommand,
+    viewModel: LlmExtensionViewModel
+) {
+    AlertDialog(
+        onDismissRequest = viewModel::clearEdit,
+        title = { Text("编辑云端指令") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = item.title,
+                    onValueChange = { v -> viewModel.updateEditingCloudCommand { it.copy(title = v) } },
+                    label = { Text("标题") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = item.content,
+                    onValueChange = { v -> viewModel.updateEditingCloudCommand { it.copy(content = v) } },
+                    label = { Text("填入输入框的内容（如插件命令）") },
+                    modifier = Modifier.fillMaxWidth().height(120.dp)
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = viewModel::saveCloudCommand) { Text("保存") } },
         dismissButton = { TextButton(onClick = viewModel::clearEdit) { Text("取消") } }
     )
 }

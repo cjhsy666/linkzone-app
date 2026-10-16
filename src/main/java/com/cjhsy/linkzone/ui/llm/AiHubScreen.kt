@@ -185,7 +185,7 @@ private val aiHubEntries = listOf(
     AiHubEntry(
         icon = Icons.Filled.Extension,
         title = "AI 扩展",
-        desc = "技能 / 提示词 / 快捷指令",
+        desc = "技能 / 提示词 / 快捷指令 / 云端指令",
         route = Routes.LLM_EXTENSIONS
     ),
     AiHubEntry(

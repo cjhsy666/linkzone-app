@@ -6,6 +6,7 @@ import com.cjhsy.linkzone.ai.util.json as jsonFormat
 import com.cjhsy.linkzone.data.ai.LocalToolOption
 import com.cjhsy.linkzone.data.ai.mcp.McpServerConfig
 import com.cjhsy.linkzone.data.db.AppDatabase
+import com.cjhsy.linkzone.data.db.CloudQuickCommandEntity
 import com.cjhsy.linkzone.data.db.LlmAgentEntity
 import com.cjhsy.linkzone.data.db.LlmLorebookEntity
 import com.cjhsy.linkzone.data.db.LlmMcpServerEntity
@@ -16,6 +17,7 @@ import com.cjhsy.linkzone.data.db.LlmQuickMessageEntity
 import com.cjhsy.linkzone.data.db.LlmSearchProviderEntity
 import com.cjhsy.linkzone.data.db.LlmSkillEntity
 import com.cjhsy.linkzone.data.model.AssistantMemory
+import com.cjhsy.linkzone.data.model.CloudQuickCommand
 import com.cjhsy.linkzone.data.model.LlmAgent
 import com.cjhsy.linkzone.data.model.LlmLorebook
 import com.cjhsy.linkzone.data.model.LlmPrompt
@@ -272,6 +274,26 @@ class LlmRepository(
         db.llmQuickMessageDao().deleteById(id)
     }
 
+    // ============ 云端快捷指令（云端助手主会话，独立于本地快捷指令） ============
+
+    fun observeCloudQuickCommands(): Flow<List<CloudQuickCommand>> =
+        db.cloudQuickCommandDao().observeAll().map { list -> list.mapNotNull { it.toCloudQuickCommand() } }
+
+    suspend fun upsertCloudQuickCommand(item: CloudQuickCommand) {
+        db.cloudQuickCommandDao().upsert(
+            CloudQuickCommandEntity(
+                id = item.id,
+                title = item.title,
+                sort = item.createdAt,
+                json = json.encodeToString(CloudQuickCommand.serializer(), item)
+            )
+        )
+    }
+
+    suspend fun deleteCloudQuickCommand(id: String) {
+        db.cloudQuickCommandDao().deleteById(id)
+    }
+
     // ============ MCP 服务器 ============
 
     fun observeMcpServers(): Flow<List<McpServerConfig>> =
@@ -437,6 +459,9 @@ class LlmRepository(
 
     private fun LlmQuickMessageEntity.toQuickMessage(): LlmQuickMessage? =
         runCatching { jsonFormat.decodeFromString(LlmQuickMessage.serializer(), json) }.getOrNull()
+
+    private fun CloudQuickCommandEntity.toCloudQuickCommand(): CloudQuickCommand? =
+        runCatching { jsonFormat.decodeFromString(CloudQuickCommand.serializer(), json) }.getOrNull()
 
     private fun LlmMcpServerEntity.toMcpServer(): McpServerConfig? =
         runCatching { jsonFormat.decodeFromString(McpServerConfig.serializer(), json) }.getOrNull()

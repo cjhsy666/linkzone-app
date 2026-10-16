@@ -25,8 +25,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LlmMemoryEntity::class,
         LocalConversationEntity::class,
         LocalMessageEntity::class,
+        CloudQuickCommandEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -41,6 +42,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun llmSearchProviderDao(): LlmSearchProviderDao
     abstract fun llmMemoryDao(): LlmMemoryDao
     abstract fun localChatDao(): LocalChatDao
+    abstract fun cloudQuickCommandDao(): CloudQuickCommandDao
 
     companion object {
         const val DB_NAME = "linkzone.db"
@@ -206,6 +208,22 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE llm_local_conversation ADD COLUMN agentOverrideJson TEXT"
+                )
+            }
+        }
+
+        /** v7 → v8：云端助手快捷指令表（独立于本地智能体的 llm_quick_message） */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cloud_quick_command (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        sort INTEGER NOT NULL,
+                        json TEXT NOT NULL
+                    )
+                    """.trimIndent()
                 )
             }
         }
