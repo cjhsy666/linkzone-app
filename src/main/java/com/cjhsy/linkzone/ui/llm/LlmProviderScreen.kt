@@ -21,8 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Search
@@ -62,9 +61,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cjhsy.linkzone.ai.core.Tool
 import com.cjhsy.linkzone.ai.provider.Model
-import com.cjhsy.linkzone.ai.provider.ModelAbility
 import com.cjhsy.linkzone.ai.provider.ModelType
-import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.ProviderManager
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.ai.provider.TextGenerationParams
@@ -103,6 +100,8 @@ data class LlmProviderUiState(
     val showAddSheet: Boolean = false,
     val balances: Map<String, BalanceUi> = emptyMap(),
     val connectionTest: ConnectionTestState? = null,
+    /** editing 非空时：true = 模型管理页，false = 服务商配置页 */
+    val modelsPage: Boolean = false,
 )
 
 /**
@@ -150,6 +149,7 @@ class LlmProviderViewModel(
             showAddSheet = false,
             error = null,
             message = null,
+            modelsPage = false,
         )
     }
 
@@ -161,15 +161,27 @@ class LlmProviderViewModel(
             ProviderSetting.Google::class.java -> ProviderSetting.Google()
             else -> ProviderSetting.Claude()
         }
-        _state.value = _state.value.copy(editing = setting, error = null, message = null)
+        _state.value = _state.value.copy(
+            editing = setting, error = null, message = null, modelsPage = false,
+        )
     }
 
     fun startEdit(provider: ProviderSetting) {
-        _state.value = _state.value.copy(editing = provider, error = null, message = null)
+        _state.value = _state.value.copy(
+            editing = provider, error = null, message = null, modelsPage = false,
+        )
     }
 
     fun cancelEdit() {
-        _state.value = _state.value.copy(editing = null, connectionTest = null)
+        _state.value = _state.value.copy(editing = null, connectionTest = null, modelsPage = false)
+    }
+
+    fun openModelsPage() {
+        _state.value = _state.value.copy(modelsPage = true)
+    }
+
+    fun closeModelsPage() {
+        _state.value = _state.value.copy(modelsPage = false)
     }
 
     fun updateEditing(transform: (ProviderSetting) -> ProviderSetting) {
@@ -206,14 +218,19 @@ class LlmProviderViewModel(
         _state.value = _state.value.copy(saving = true, error = null)
         viewModelScope.launch {
             llmRepository.upsertProvider(toSave)
-            _state.value = _state.value.copy(editing = null, saving = false, connectionTest = null, message = "已保存")
+            _state.value = _state.value.copy(
+                editing = null, saving = false, connectionTest = null, modelsPage = false,
+                message = "已保存",
+            )
         }
     }
 
     fun delete(id: String) {
         viewModelScope.launch {
             llmRepository.deleteProvider(id)
-            _state.value = _state.value.copy(editing = null, connectionTest = null, message = "已删除")
+            _state.value = _state.value.copy(
+                editing = null, connectionTest = null, modelsPage = false, message = "已删除",
+            )
         }
     }
 
@@ -240,27 +257,44 @@ class LlmProviderViewModel(
 
     // ============ 拉取模型 ============
 
-    /** 调 Provider 的 listModels 并把结果写回 provider 配置 */
+    /**
+     * 拉取远端模型并与本地合并：
+     * - 已有同 modelId 的模型保留用户配置（改名、能力、排序中的位置）
+     * - 新增模型经 ModelRegistry 识别后写入默认模态/能力
+     * - 本地独有（远端已下线或手动添加）的模型保留，不被全量覆盖
+     */
     fun fetchModels(provider: ProviderSetting) {
         if (_state.value.fetchingModelsFor != null) return
-        _state.value = _state.value.copy(fetchingModelsFor = provider.id, error = null)
+        _state.value = _state.value.copy(fetchingModelsFor = provider.id, error = null, message = null)
         viewModelScope.launch {
             try {
-                val models = providerManager.getProviderByType(provider).listModels(provider)
-                if (models.isEmpty()) {
+                val remote = providerManager.getProviderByType(provider).listModels(provider)
+                if (remote.isEmpty()) {
                     _state.value = _state.value.copy(
                         fetchingModelsFor = null,
                         error = "服务返回空模型列表，请检查地址与 Key"
                     )
                     return@launch
                 }
-                llmRepository.upsertProvider(provider.copyProvider(models = models))
+                val existingById = provider.models.associateBy { it.modelId }
+                val remoteIds = remote.mapTo(HashSet()) { it.modelId }
+                val merged = remote.map { fetched ->
+                    val old = existingById[fetched.modelId]
+                    if (old != null) {
+                        // 远端能更准确识别 embedding 等类型
+                        if (old.type == ModelType.CHAT && fetched.type != ModelType.CHAT) {
+                            old.copy(type = fetched.type)
+                        } else old
+                    } else {
+                        recognizeFetched(fetched)
+                    }
+                } + provider.models.filter { it.modelId !in remoteIds }
+                val added = merged.size - provider.models.size
+                persistProviderModelChange(provider, merged)
                 _state.value = _state.value.copy(
-                    editing = _state.value.editing?.let { e ->
-                        if (e.id == provider.id) e.copyProvider(models = models) else e
-                    },
                     fetchingModelsFor = null,
-                    message = "已拉取 ${models.size} 个模型"
+                    message = "拉取完成：共 ${merged.size} 个" +
+                        if (added > 0) "，新增 $added 个" else "（无新增）",
                 )
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
@@ -271,32 +305,40 @@ class LlmProviderViewModel(
         }
     }
 
+    /** 新拉取到的模型：用内置注册表填充默认模态与能力 */
+    private fun recognizeFetched(model: Model): Model {
+        val rec = recognizeModelId(model.modelId)
+        return model.copy(
+            inputModalities = rec.inputModalities,
+            outputModalities = rec.outputModalities,
+            abilities = rec.abilities,
+            type = if (model.type == ModelType.CHAT) {
+                inferModelType(model.modelId, rec.outputModalities)
+            } else model.type,
+        )
+    }
+
     fun removeModel(provider: ProviderSetting, model: Model) {
         viewModelScope.launch {
-            val updated = provider.delModel(model)
-            llmRepository.upsertProvider(updated)
-            _state.value = _state.value.copy(
-                editing = _state.value.editing?.let { e -> if (e.id == provider.id) updated else e }
-            )
+            persistProviderModelChange(provider, provider.delModel(model))
         }
     }
 
-    /** 手动添加模型（拉取不可用或服务未实现 /models 时使用） */
-    fun addManualModel(provider: ProviderSetting, modelId: String, displayName: String) {
-        val id = modelId.trim()
-        if (id.isBlank()) return
-        val model = Model(
-            modelId = id,
-            displayName = displayName.trim().ifBlank { id },
-            type = ModelType.CHAT,
-        )
+    /** 新建或编辑模型后保存（同 id 或同 modelId 存在则覆盖，否则追加，避免重复） */
+    fun saveModel(provider: ProviderSetting, draft: Model) {
         viewModelScope.launch {
-            val updated = provider.addModel(model)
-            llmRepository.upsertProvider(updated)
-            _state.value = _state.value.copy(
-                editing = _state.value.editing?.let { e -> if (e.id == provider.id) updated else e },
-                message = "已添加模型 $id",
-            )
+            val updated = when {
+                provider.models.any { it.id == draft.id } -> provider.editModel(draft)
+                else -> {
+                    val sameModelId = provider.models.firstOrNull { it.modelId == draft.modelId }
+                    if (sameModelId != null) {
+                        provider.editModel(draft.copy(id = sameModelId.id))
+                    } else {
+                        provider.addModel(draft)
+                    }
+                }
+            }
+            persistProviderModelChange(provider, updated)
         }
     }
 
@@ -305,25 +347,19 @@ class LlmProviderViewModel(
         val models = provider.models
         if (from !in models.indices || to !in models.indices) return
         viewModelScope.launch {
-            val updated = provider.moveMove(from, to)
-            llmRepository.upsertProvider(updated)
-            _state.value = _state.value.copy(
-                editing = _state.value.editing?.let { e -> if (e.id == provider.id) updated else e }
-            )
+            persistProviderModelChange(provider, provider.moveMove(from, to))
         }
     }
 
-    /** 更新模型能力（UI 上勾选图片/工具/推理开关时调用） */
-    fun updateModel(provider: ProviderSetting, updated: Model) {
-        viewModelScope.launch {
-            val newProvider = provider.editModel(updated)
-            llmRepository.upsertProvider(newProvider)
-            _state.value = _state.value.copy(
-                editing = _state.value.editing?.let { e ->
-                    if (e.id == provider.id) newProvider else e
-                }
-            )
-        }
+    /** 模型变更统一落库并同步编辑草稿（模型操作即时生效，无需再点保存） */
+    private suspend fun persistProviderModelChange(
+        provider: ProviderSetting,
+        updated: ProviderSetting,
+    ) {
+        llmRepository.upsertProvider(updated)
+        _state.value = _state.value.copy(
+            editing = _state.value.editing?.let { e -> if (e.id == provider.id) updated else e }
+        )
     }
 
     // ============ 余额 ============
@@ -502,12 +538,21 @@ fun LlmProviderScreen(
 
     val editing = state.editing
     if (editing != null) {
-        ProviderEditor(
-            provider = editing,
-            state = state,
-            viewModel = viewModel,
-            onBack = viewModel::cancelEdit
-        )
+        if (state.modelsPage) {
+            ProviderModelsPage(
+                provider = editing,
+                state = state,
+                viewModel = viewModel,
+                onBack = viewModel::closeModelsPage,
+            )
+        } else {
+            ProviderEditor(
+                provider = editing,
+                state = state,
+                viewModel = viewModel,
+                onBack = viewModel::cancelEdit
+            )
+        }
         return
     }
 
@@ -738,7 +783,6 @@ private fun ProviderEditor(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    var showAddModelDialog by remember { mutableStateOf(false) }
 
     // Vertex 服务账号 JSON 选择
     val serviceAccountLauncher = rememberLauncherForActivityResult(
@@ -768,16 +812,6 @@ private fun ProviderEditor(
             onSelectModel = viewModel::selectTestModel,
             onRun = viewModel::runConnectionTest,
             onDismiss = viewModel::closeConnectionTest,
-        )
-    }
-
-    if (showAddModelDialog) {
-        ManualAddModelDialog(
-            onDismiss = { showAddModelDialog = false },
-            onConfirm = { modelId, displayName ->
-                viewModel.addManualModel(provider, modelId, displayName)
-                showAddModelDialog = false
-            }
         )
     }
 
@@ -873,61 +907,13 @@ private fun ProviderEditor(
             }) { Text("+ 添加请求头") }
         }
 
-        // ===== 模型列表 =====
+        // ===== 模型入口（独立页面） =====
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("模型（${provider.models.size}）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Row {
-                    TextButton(onClick = { showAddModelDialog = true }) {
-                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.height(16.dp).width(16.dp))
-                        Spacer(Modifier.width(2.dp))
-                        Text("手动添加")
-                    }
-                    TextButton(onClick = { viewModel.fetchModels(provider) }, enabled = state.fetchingModelsFor == null) {
-                        Text("拉取模型")
-                    }
-                }
-            }
-        }
-        if (provider.models.isEmpty()) {
-            item {
-                Text(
-                    "暂无模型。可点「拉取模型」从服务获取，或「手动添加」直接填写模型 ID。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        items(provider.models, key = { it.id }) { model ->
-            val index = provider.models.indexOf(model)
-            ModelCapabilityRow(
+            ModelEntryCard(
                 provider = provider,
-                model = model,
-                index = index,
-                moveEnabled = provider.models.size > 1,
-                onMoveUp = { viewModel.moveModel(provider, index, index - 1) },
-                onMoveDown = { viewModel.moveModel(provider, index, index + 1) },
-                onToggleVision = { vision ->
-                    val newModalities = if (vision) listOf(Modality.TEXT, Modality.IMAGE) else listOf(Modality.TEXT)
-                    viewModel.updateModel(provider, model.copy(inputModalities = newModalities))
-                },
-                onToggleTools = { tools ->
-                    val newAbilities = (model.abilities.toSet() - ModelAbility.TOOL).toMutableSet().apply {
-                        if (tools) add(ModelAbility.TOOL)
-                    }.toList()
-                    viewModel.updateModel(provider, model.copy(abilities = newAbilities))
-                },
-                onToggleReasoning = { reasoning ->
-                    val newAbilities = (model.abilities.toSet() - ModelAbility.REASONING).toMutableSet().apply {
-                        if (reasoning) add(ModelAbility.REASONING)
-                    }.toList()
-                    viewModel.updateModel(provider, model.copy(abilities = newAbilities))
-                },
-                onRemove = { viewModel.removeModel(provider, model) }
+                fetching = state.fetchingModelsFor == provider.id,
+                onClick = viewModel::openModelsPage,
+                onFetch = { viewModel.fetchModels(provider) },
             )
         }
 
@@ -940,48 +926,63 @@ private fun ProviderEditor(
     }
 }
 
-/** 手动添加模型对话框 */
+/** 模型入口卡片：展示数量与前几个模型，点击进入模型管理页 */
 @Composable
-private fun ManualAddModelDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (modelId: String, displayName: String) -> Unit,
+private fun ModelEntryCard(
+    provider: ProviderSetting,
+    fetching: Boolean,
+    onClick: () -> Unit,
+    onFetch: () -> Unit,
 ) {
-    var modelId by remember { mutableStateOf("") }
-    var displayName by remember { mutableStateOf("") }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("手动添加模型") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = modelId,
-                    onValueChange = { modelId = it },
-                    label = { Text("模型 ID *") },
-                    placeholder = { Text("如 gpt-4o-mini、deepseek-chat") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = displayName,
-                    onValueChange = { displayName = it },
-                    label = { Text("显示名称（可选）") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
                 Text(
-                    "添加后可在模型行展开，配置视觉、工具、推理能力。",
+                    "模型 · ${provider.models.size}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = if (provider.models.isEmpty()) {
+                        "点此拉取或手动添加模型"
+                    } else {
+                        provider.models.take(3)
+                            .joinToString("、") { it.displayName.ifBlank { it.modelId } }
+                            .let { if (provider.models.size > 3) "$it …" else it }
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
                 )
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(modelId, displayName) }, enabled = modelId.isNotBlank()) {
-                Text("添加")
+            IconButton(onClick = onFetch, enabled = !fetching) {
+                if (fetching) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.height(18.dp).width(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Icon(Icons.Filled.Refresh, contentDescription = "拉取模型")
+                }
             }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
+            Icon(
+                Icons.Filled.KeyboardArrowRight,
+                contentDescription = "进入模型管理",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 /** API Key / 私钥类敏感输入：遮罩 + 眼睛切换 */
@@ -1305,107 +1306,8 @@ private fun LazyListScope.ClaudeFields(provider: ProviderSetting.Claude, viewMod
 }
 
 /**
- * Provider 模型列表里的一行：名称 + 当前能力摘要 + 可展开的能力开关面板。
- * 用户没手动配置时能力可能为空（= 默认行为：registry 查表 / 工具全开 / 图片直传 API），
- * 用户手动勾选后会写入模型自身的 inputModalities / abilities 字段，覆盖默认行为。
+ * 带说明文字的开关行（协议字段用）。
  */
-@Composable
-private fun ModelCapabilityRow(
-    provider: ProviderSetting,
-    model: Model,
-    index: Int,
-    moveEnabled: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    onToggleVision: (Boolean) -> Unit,
-    onToggleTools: (Boolean) -> Unit,
-    onToggleReasoning: (Boolean) -> Unit,
-    onRemove: () -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    // 当前能力状态：模型自身显式声明优先，否则走 registry fallback 显示
-    val vision = Modality.IMAGE in model.inputModalities
-    val tools = ModelAbility.TOOL in model.abilities || model.abilities.isEmpty()
-    val reasoning = ModelAbility.REASONING in model.abilities
-    val isImageModel = model.type == ModelType.IMAGE
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-        tonalElevation = 0.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable { expanded = !expanded }
-            .padding(vertical = 2.dp)
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = model.displayName.ifBlank { model.modelId },
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = model.modelId,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (isImageModel) CapChip("🎨")
-                    if (vision) CapChip("📷")
-                    if (tools) CapChip("🔧")
-                    if (reasoning) CapChip("🧠")
-                }
-            }
-            if (expanded) {
-                Spacer(Modifier.height(8.dp))
-                if (!isImageModel) {
-                    LabeledSwitch("支持图片输入（视觉）", vision, null, onToggleVision)
-                    LabeledSwitch("支持工具调用", tools, null) { onToggleTools(it) }
-                    LabeledSwitch("支持深度思考（推理）", reasoning, null, onToggleReasoning)
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row {
-                        IconButton(onClick = onMoveUp, enabled = moveEnabled && index > 0) {
-                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "上移")
-                        }
-                        IconButton(
-                            onClick = onMoveDown,
-                            enabled = moveEnabled && index < provider.models.size - 1
-                        ) {
-                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "下移")
-                        }
-                    }
-                    TextButton(onClick = onRemove) {
-                        Text("移除", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 极简能力小徽章 */
-@Composable
-private fun CapChip(text: String) {
-    Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-        )
-    }
-}
-
 @Composable
 private fun LabeledSwitch(
     label: String,
