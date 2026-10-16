@@ -831,11 +831,11 @@ private fun MessageList(
                         canReply = true,
                         canRecall = true,
                         canRegenerate = isLocal,
-                        // 版本链（RikkaHub 式）：多版本节点从长按菜单「历史版本」切回
+                        // 版本链（RikkaHub 式）：仅编辑重发/重发的用户消息显示 ‹ n/m › 切换器；
+                        // AI 回复重新生成走当前线路（旧版不占线），MessageActionBar 不渲染切换器
                         versionCount = node.versions.size,
                         versionIndex = node.selectedIndex,
                         onSelectVersion = { idx -> onSelectVersion(node.anchorId, idx) },
-                        versionPreviews = node.versions.map { it.previewText() },
                         highlight = node.versions.any { it.id == state.highlightMessageId },
                         onReply = { onReply(msg) },
                         onRecall = { onRecall(msg) },

@@ -176,13 +176,3 @@ fun MessageItem.visibleSegments(): List<MessageSegment> =
 /** 思考过程文本（thinking 段拼接） */
 fun MessageItem.thinkingText(): String =
     segments?.filter { it.type == "thinking" }?.joinToString("") { it.get("text") }.orEmpty()
-
-/** 历史版本列表项预览：正文段拼接（截断），无正文时回退 content 字段 */
-fun MessageItem.previewText(): String =
-    segments.orEmpty()
-        .filter { it.type == "text" || it.type == "markdown" }
-        .map { it.get("text", "content") }
-        .filter { it.isNotBlank() }
-        .joinToString("\n")
-        .ifBlank { content }
-        .take(60)

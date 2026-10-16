@@ -51,12 +51,13 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -65,7 +66,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -120,10 +120,9 @@ private val DOCUMENT_FRIENDLY_TYPES = setOf(
  * @param canReply 可引用回复（云端/本地均开放）
  * @param canRecall 可撤回（云端/本地均开放；云端乐观消息除外）
  * @param canRegenerate 可重新生成（仅本地智能体）
- * @param versionCount 版本链节点版本数（>1 时菜单提供「历史版本」入口，RikkaHub 式）
+ * @param versionCount 版本链节点版本数（用户消息 >1 时显示 ‹ n/m › 切换器，RikkaHub 式）
  * @param versionIndex 当前选中版本序号（0 起）
  * @param onSelectVersion 切换版本回调（参数为目标序号）
- * @param versionPreviews 各版本文本预览（历史版本对话框列表项，长度与 versionCount 对齐）
  * @param highlight 搜索定位高亮
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -148,7 +147,6 @@ fun MessageItemView(
     versionCount: Int = 1,
     versionIndex: Int = 0,
     onSelectVersion: ((Int) -> Unit)? = null,
-    versionPreviews: List<String> = emptyList(),
     highlight: Boolean = false,
     /** 当前用户昵称/头像（用户消息显示在右侧头像旁） */
     userName: String = "",
@@ -159,8 +157,6 @@ fun MessageItemView(
     // 长按弹出完整操作菜单；「自由复制」进入内联选择模式，点空白退出恢复原样
     var menuOpen by remember { mutableStateOf(false) }
     var freeCopy by remember { mutableStateOf(false) }
-    // 历史版本对话框（替代原 ‹ n/m › 切换器，从长按菜单进入）
-    var versionPickerOpen by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
     // 段提取统一走 MessageNodes 扩展（thinking→思考面板；sys.ver/sys.br→过滤；其余→正文）
@@ -387,6 +383,9 @@ fun MessageItemView(
                     hasText = hasText,
                     canEdit = hasText || hasImage,
                     canRegenerate = canRegenerate,
+                    versionCount = versionCount,
+                    versionIndex = versionIndex,
+                    onSelectVersion = onSelectVersion,
                     timestamp = message.displayTimestamp(),
                     onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
                     onEdit = onEdit,
@@ -476,16 +475,6 @@ fun MessageItemView(
                         )
                     }
                 }
-                // 历史版本：重生成/编辑重发留下的旧版本不再占用切换器，改由此处切回
-                if (versionCount > 1 && onSelectVersion != null) {
-                    DropdownMenuItem(
-                        text = { Text("历史版本") },
-                        onClick = {
-                            menuOpen = false
-                            versionPickerOpen = true
-                        }
-                    )
-                }
                 // 撤回：云端乐观消息（local- 前缀)服务端尚不存在，不能撤回
                 if (canRecall && message.isSelf &&
                     (isLocal || !message.id.startsWith(LOCAL_PREFIX))
@@ -506,19 +495,6 @@ fun MessageItemView(
                     }
                 )
             }
-        }
-
-        // 历史版本对话框（长按菜单「历史版本」打开；替代原 ‹ n/m › 切换器）
-        if (versionPickerOpen && versionCount > 1 && onSelectVersion != null) {
-            VersionHistoryDialog(
-                previews = List(versionCount) { versionPreviews.getOrNull(it).orEmpty() },
-                selected = versionIndex,
-                onPick = { idx ->
-                    versionPickerOpen = false
-                    onSelectVersion(idx)
-                },
-                onDismiss = { versionPickerOpen = false }
-            )
         }
     }
 }
@@ -802,8 +778,8 @@ private fun FailedStatusIcon() {
 
 /**
  * 用户消息下方快捷操作行（RikkaHub 式，右对齐）：
- * 时间戳 / 复制 / 编辑重发（仅本地，含图消息也可编辑）/ 重新生成（仅本地）。
- * 旧版本切换移至长按菜单「历史版本」，操作行不再被 ‹ n/m › 占用。
+ * 时间戳 / 复制 / 编辑重发（仅本地，含图消息也可编辑）/ 重新生成（仅本地）/ ‹ n/m › 版本切换。
+ * 编辑重发保留版本链（可切回旧版）；AI 回复的重新生成不产生可见分支，故不在此操作行。
  */
 @Composable
 private fun SelfMessageActionBar(
@@ -811,6 +787,9 @@ private fun SelfMessageActionBar(
     hasText: Boolean,
     canEdit: Boolean,
     canRegenerate: Boolean,
+    versionCount: Int,
+    versionIndex: Int,
+    onSelectVersion: ((Int) -> Unit)?,
     timestamp: Long,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
@@ -833,6 +812,13 @@ private fun SelfMessageActionBar(
         if (hasText) ActionBarIcon(Icons.Filled.ContentCopy, "复制", onCopy)
         if (isLocal && canEdit) ActionBarIcon(Icons.Filled.Edit, "编辑重发", onEdit)
         if (canRegenerate) ActionBarIcon(Icons.Filled.Refresh, "重新生成", onRegenerate)
+        if (versionCount > 1 && onSelectVersion != null) {
+            VersionSwitcher(
+                versionCount = versionCount,
+                versionIndex = versionIndex,
+                onSelectVersion = onSelectVersion
+            )
+        }
     }
 }
 
@@ -914,69 +900,64 @@ private fun ContinueGenerationBar(onClick: () -> Unit) {
 }
 
 /**
- * 历史版本对话框（替代原 ‹ n/m › 切换器）：
- * 重新生成/编辑重发不再把旧版本摆到操作行，旧版本在此按序列出，点选即切回。
+ * 版本切换器（RikkaHub ChatMessageBranch 式）：‹ 当前/总数 ›。
+ * 仅用户消息节点（编辑重发/重发产生的版本链）使用；端点（已是首/末版本）箭头半透明不可用。
  */
 @Composable
-private fun VersionHistoryDialog(
-    previews: List<String>,
-    selected: Int,
-    onPick: (Int) -> Unit,
-    onDismiss: () -> Unit
+private fun VersionSwitcher(
+    versionCount: Int,
+    versionIndex: Int,
+    onSelectVersion: (Int) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("历史版本") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 300.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                previews.forEachIndexed { idx, preview ->
-                    val isSel = idx == selected
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (isSel) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-                                else Color.Transparent
-                            )
-                            .clickable { onPick(idx) }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "${idx + 1}/${previews.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = preview.ifBlank { "（无文本内容）" },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (isSel) {
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "当前",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
+    // 现代化分段胶囊：弱化底座 + ‹ n/m ›，端点箭头降透明表示不可用
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .padding(horizontal = 3.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val canPrev = versionIndex > 0
+        val canNext = versionIndex < versionCount - 1
+        Icon(
+            imageVector = Icons.Filled.KeyboardArrowLeft,
+            contentDescription = "上一版本",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (canPrev) 0.9f else 0.35f),
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .clickable(enabled = canPrev) { onSelectVersion(versionIndex - 1) }
+                .padding(3.dp)
+        )
+        // n/m 计数切换时淡入淡出，避免生硬跳变
+        AnimatedContent(
+            targetState = versionIndex,
+            transitionSpec = {
+                (fadeIn(tween(140)) + scaleIn(tween(140), initialScale = 0.85f))
+                    .togetherWith(fadeOut(tween(110)) + scaleOut(tween(110), targetScale = 0.85f))
+            },
+            label = "versionCount"
+        ) { idx ->
+            Text(
+                text = "${idx + 1}/$versionCount",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 1.dp)
+            )
         }
-    )
+        Icon(
+            imageVector = Icons.Filled.KeyboardArrowRight,
+            contentDescription = "下一版本",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (canNext) 0.9f else 0.35f),
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .clickable(enabled = canNext) { onSelectVersion(versionIndex + 1) }
+                .padding(3.dp)
+        )
+    }
 }
 
 @Composable
