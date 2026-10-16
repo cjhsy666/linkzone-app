@@ -51,6 +51,7 @@ import com.cjhsy.linkzone.data.repository.LlmRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.SharingStarted
@@ -363,7 +364,11 @@ class ChatViewModel(
     init {
         ProcessLifecycleOwner.get().lifecycle.addObserver(appLifecycleObserver)
         viewModelScope.launch {
-            socketManager.events.collect { handleSocketEvent(it) }
+            socketManager.events.collect { event ->
+                // 单个事件处理异常绝不能杀死收集协程：一旦死掉，回显/回复/重连事件全部失联，
+                // 表现为「发送成功但气泡一直转圈，只能手动刷新」（发送走 socket 不受影响）
+                runCatching { handleSocketEvent(event) }
+            }
         }
         viewModelScope.launch {
             // 优先用其他页面已拉取的 profile 缓存，避免启动重复请求
@@ -651,8 +656,38 @@ class ChatViewModel(
     @Volatile
     private var lastSyncAt = 0L
 
+    /** local- 乐观气泡等待服务端回显的兜底任务：clientId -> Job */
+    private val confirmJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
     /**
-     * 重连 / 回前台后的增量同步。
+     * 发送确认兜底：WS 回显因僵尸连接/服务重启/事件异常丢失时，
+     * 超时仍未把 local- 乐观气泡替换掉，就走 HTTP 增量拉取强制确认。
+     */
+    private fun scheduleSendConfirmFallback(clientId: String) {
+        confirmJobs[clientId]?.cancel()
+        confirmJobs[clientId] = viewModelScope.launch {
+            delay(SEND_CONFIRM_TIMEOUT_MS)
+            confirmJobs.remove(clientId)
+            val s = _state.value
+            if (isLocalConvId(s.currentConvId)) return@launch
+            // 已被回显/同步替换（id 不再带 local- 前缀）则无需补拉
+            if (s.messages.none { it.id == LOCAL_PREFIX + clientId }) return@launch
+            incrementalSyncNow()
+        }
+    }
+
+    /**
+     * 重连 / 回前台后的增量同步（带 1s 节流）。
+     */
+    private fun syncAfterReconnect() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastSyncAt < 1_000L) return
+        lastSyncAt = now
+        incrementalSyncNow()
+    }
+
+    /**
+     * 增量同步本体（无节流）。
      *
      * 后台期间 WS 必断或假死，但智能体回复在服务端已落库（数据库即持久消息队列，
      * 不丢消息、不怕服务端重启），所以这里走 HTTP 把断连期间的数据补回来：
@@ -660,12 +695,9 @@ class ChatViewModel(
      * 2. 当前打开的会话以「本地最新已确认消息时间戳」为锚点 after 增量补拉，
      *    只追加缺失消息——不做全量替换，保留用户已向上翻页加载的历史。
      *    锚点只取服务端消息（非 local-），不受手机时钟偏差影响。
+     * 3. 补拉到的服务端正式版会把同 id 的 local- 乐观气泡替换为已确认状态（停止转圈）。
      */
-    private fun syncAfterReconnect() {
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastSyncAt < 1_000L) return
-        lastSyncAt = now
-
+    private fun incrementalSyncNow() {
         viewModelScope.launch {
             refreshConvList()
 
@@ -959,6 +991,7 @@ class ChatViewModel(
                 socketManager.connect()
                 return
             }
+            scheduleSendConfirmFallback(clientId)
             return
         }
 
@@ -1005,6 +1038,7 @@ class ChatViewModel(
                 socketManager.connect()
                 return@launch
             }
+            scheduleSendConfirmFallback(clientId)
             // 上传完成：本地段替换为服务端 URL
             replaceLocalSegments(clientId, remoteSegs)
         }
@@ -1170,6 +1204,7 @@ class ChatViewModel(
                 socketManager.connect()
                 return@launch
             }
+            scheduleSendConfirmFallback(clientId)
             // ③ 已进入发送通道：本地消息替换为服务端 URL（防止缓存文件被清理后裂图），
             //    保持 local- id 直到服务端确认消息到达
             replaceLocalSegments(clientId, remoteSegs)
@@ -1329,6 +1364,7 @@ class ChatViewModel(
         if (replySeg != null) {
             _state.value = _state.value.copy(replyTo = null)
         }
+        scheduleSendConfirmFallback(clientId)
         return true
     }
 
@@ -2554,6 +2590,7 @@ class ChatViewModel(
             val existingLocal = s.messages.firstOrNull { cleanId(it.id) == clean && it.id.startsWith(LOCAL_PREFIX) }
             if (existingLocal != null && !msg.id.startsWith(LOCAL_PREFIX)) {
                 // 服务端确认到达：替换乐观气泡，保留其他状态（recalled 等由后续事件处理）
+                confirmJobs.remove(clean)?.cancel()
                 _state.value = s.copy(
                     messages = s.messages.map { if (it.id == existingLocal.id) msg else it }
                         .sortedBy { it.timestamp },
@@ -3161,6 +3198,8 @@ class ChatViewModel(
         const val MAIN_BOT_ID = "linkzone-bot"
         /** 云端唯一主会话固定名称（固定入口，不随消息自动命名） */
         const val MAIN_CONV_NAME = "LinkZone 对话"
+        /** 云端发送后等待服务端回显的超时：超时未确认走增量拉取强制确认 */
+        private const val SEND_CONFIRM_TIMEOUT_MS = 4_000L
 
         /** 主会话 id 判定（UI 层可用）：conv-{ownerId}-linkzone-bot */
         fun isMainConvId(ownerId: String, convId: String): Boolean =
