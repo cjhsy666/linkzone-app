@@ -326,9 +326,15 @@ fun rememberOffscreenRender(
     transparent: Boolean = false,
 ): MdOffscreen.Result? {
     val context = LocalContext.current
-    LaunchedEffect(page, renderFn, content, tint, transparent) {
-        delay(300)
-        MdOffscreen.request(context.applicationContext, page, renderFn, content, maxWidthPx, tint, transparent)
+    val key = MdOffscreen.keyOf(page, renderFn, content, tint)
+    val result = MdOffscreen.results[key]
+    // 仅在结果为空时请求：覆盖首次渲染，也覆盖位图被 LruCache 淘汰后结果消失的情况
+    // （此时重新渲染，界面不会永久停在占位）；Ready/Failed 均不重复触发
+    LaunchedEffect(key, result) {
+        if (result == null) {
+            delay(300)
+            MdOffscreen.request(context.applicationContext, page, renderFn, content, maxWidthPx, tint, transparent)
+        }
     }
-    return MdOffscreen.results[MdOffscreen.keyOf(page, renderFn, content, tint)]
+    return result
 }

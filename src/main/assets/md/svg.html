@@ -36,14 +36,16 @@
       var svg = c.querySelector('svg');
       if (!svg) throw new Error('内容中没有 svg 元素');
       // 固定像素宽高且没有 viewBox 时，内部坐标不随视口缩放，max-width 只会把内容裁掉：
-      // 用声明的宽高合成 viewBox，让整图等比缩放到容器宽
+      // 用声明的宽高合成 viewBox，让整图可以等比缩放
       var wAttr = svg.getAttribute('width');
       var hAttr = svg.getAttribute('height');
       var fixedPx = /^\d+(\.\d+)?(px)?$/;
       if (!svg.getAttribute('viewBox') && fixedPx.test(wAttr || '') && fixedPx.test(hAttr || '')) {
         svg.setAttribute('viewBox', '0 0 ' + parseFloat(wAttr) + ' ' + parseFloat(hAttr));
       }
-      if (svg.getAttribute('viewBox')) {
+      // 仅当自然宽度超过容器时才拉满缩放；小图保持自然尺寸居中，不被放大
+      if (svg.getAttribute('viewBox') &&
+          svg.getBoundingClientRect().width > c.clientWidth) {
         svg.removeAttribute('height');
         svg.setAttribute('width', '100%');
       }
