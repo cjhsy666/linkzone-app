@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  #c { width: 100%; overflow: hidden; }
+  #c svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+<div id="c"></div>
+<script>
+  // 上报 SVG 实际包围盒高度（相对容器顶部），与 mermaid 页同一约定
+  function reportGeometry() {
+    if (!window.LinkZone) return;
+    var c = document.getElementById('c');
+    var svg = c.querySelector('svg');
+    if (!svg) return;
+    var cr = c.getBoundingClientRect();
+    var sr = svg.getBoundingClientRect();
+    var h = Math.ceil((sr.bottom - cr.top) * (window.devicePixelRatio || 1));
+    if (h > 0) LinkZone.onHeight(h);
+  }
+
+  var rendering = false;
+  var pending = null;   // 渲染中收到的新代码：渲染完成后补渲染，避免流式末尾内容被丢弃
+
+  window.renderSvg = async function (code) {
+    if (rendering) { pending = code; return; }
+    rendering = true;
+    try {
+      var c = document.getElementById('c');
+      c.innerHTML = code;
+      var svg = c.querySelector('svg');
+      if (!svg) throw new Error('内容中没有 svg 元素');
+      // 仅有 viewBox 而没有宽高时，给定初始宽度让 CSS 按宽高比自适应
+      if (!svg.getAttribute('width') && svg.getAttribute('viewBox')) {
+        svg.setAttribute('width', '100%');
+      }
+      reportGeometry();
+      // 字体/布局稳定后再报一次，避免首次高度偏小；fonts.ready 加 300ms 竞速兜底
+      setTimeout(reportGeometry, 50);
+      if (document.fonts && document.fonts.ready) {
+        Promise.race([
+          document.fonts.ready,
+          new Promise(function (resolve) { setTimeout(resolve, 300); })
+        ]).then(reportGeometry);
+      }
+    } catch (e) {
+      if (window.LinkZone) LinkZone.onError(String((e && e.message) || e));
+    } finally {
+      rendering = false;
+      if (pending !== null) {
+        var next = pending;
+        pending = null;
+        window.renderSvg(next);
+      }
+    }
+  };
+
+  if (window.ResizeObserver) {
+    new ResizeObserver(reportGeometry).observe(document.getElementById('c'));
+  }
+</script>
+</body>
+</html>

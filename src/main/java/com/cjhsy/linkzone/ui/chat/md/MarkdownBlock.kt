@@ -1119,11 +1119,19 @@ internal fun HighlightCodeBlock(
     completeCodeBlock: Boolean = true,
 ) {
     val textColor = LocalContentColor.current
-    if (language.trim().lowercase() == "mermaid") {
-        Box(modifier = modifier) {
-            MdMermaidIsland(code, textColor)
+    when (language.trim().lowercase()) {
+        "mermaid" -> {
+            Box(modifier = modifier) {
+                MdMermaidIsland(code, textColor)
+            }
+            return
         }
-        return
+        "svg" -> {
+            Box(modifier = modifier) {
+                MdSvgIsland(code, textColor)
+            }
+            return
+        }
     }
     val highlightsBuilder = rememberMdHighlightsBuilder(dark = textColor.luminance() > 0.5f)
     Box(modifier = modifier) {

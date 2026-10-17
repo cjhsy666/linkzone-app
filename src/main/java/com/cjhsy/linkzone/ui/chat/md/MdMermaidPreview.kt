@@ -49,7 +49,7 @@ private val PREVIEW_TEXT = Color(0xFF1F2328)
 private val PREVIEW_SUB = Color(0xFF6B7280)
 
 /**
- * Mermaid 图全屏预览：顶部「预览 / 代码」双 tab + 右上角关闭，系统返回键关闭。
+ * 富内容全屏预览（Mermaid 图 / SVG 图形）：顶部「预览 / 代码」双 tab + 右上角关闭，系统返回键关闭。
  * 预览 tab 独立新建 WebView 实例（与消息内小岛互不共享状态），同一 assets 页面与
  * 渲染管线，开启捏合缩放；渲染失败回退源码卡片。代码 tab 复用 MdCodeCard。
  */
@@ -57,6 +57,9 @@ private val PREVIEW_SUB = Color(0xFF6B7280)
 fun MdMermaidPreviewDialog(
     code: String,
     onDismiss: () -> Unit,
+    page: String = "mermaid.html",
+    renderFn: String = "renderDiagram",
+    language: String = "mermaid",
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -86,6 +89,9 @@ fun MdMermaidPreviewDialog(
                 when (tab) {
                     0 -> MdMermaidPreviewIsland(
                         code = code,
+                        page = page,
+                        renderFn = renderFn,
+                        language = language,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
@@ -98,7 +104,7 @@ fun MdMermaidPreviewDialog(
                     ) {
                         MdCodeCard(
                             code = code,
-                            language = "mermaid",
+                            language = language,
                             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                             textColor = PREVIEW_TEXT,
                             highlightsBuilder = rememberMdHighlightsBuilder(dark = false),
@@ -124,17 +130,23 @@ private fun PreviewTab(title: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 /**
- * 全屏预览用 Mermaid 小岛：独立 WebView 实例，fillMaxSize 高度 + WebView 内部滚动，
+ * 全屏预览用小岛：独立 WebView 实例，fillMaxSize 高度 + WebView 内部滚动，
  * 捏合缩放（无缩放按钮）；失败回退 MdCodeCard。高度上报忽略（全屏自适应）。
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun MdMermaidPreviewIsland(code: String, modifier: Modifier = Modifier) {
+private fun MdMermaidPreviewIsland(
+    code: String,
+    page: String,
+    renderFn: String,
+    language: String,
+    modifier: Modifier = Modifier,
+) {
     var error by remember { mutableStateOf<String?>(null) }
     if (error != null) {
         MdCodeCard(
             code = code,
-            language = "mermaid",
+            language = language,
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             textColor = PREVIEW_TEXT,
             highlightsBuilder = rememberMdHighlightsBuilder(dark = false),
@@ -163,7 +175,7 @@ private fun MdMermaidPreviewIsland(code: String, modifier: Modifier = Modifier) 
 
                     override fun onPageFinished(view: WebView, url: String) {
                         view.evaluateJavascript(
-                            "window.renderDiagram(${JSONObject.quote(code) ?: "\"\""})",
+                            "window.$renderFn(${JSONObject.quote(code) ?: "\"\""})",
                             null,
                         )
                     }
@@ -179,7 +191,7 @@ private fun MdMermaidPreviewIsland(code: String, modifier: Modifier = Modifier) 
                         mainHandler.post { error = msg }
                     }
                 }, "LinkZone")
-                loadUrl("https://appassets.androidplatform.net/assets/md/mermaid.html")
+                loadUrl("https://appassets.androidplatform.net/assets/md/$page")
             }
         },
         onRelease = { it.destroy() },

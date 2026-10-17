@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
@@ -231,6 +232,12 @@ private fun HtmlBlockElement(
         )
 
         "pre" -> HtmlCodeBlock(element = element)
+
+        // 内联 HTML 中的独立 <svg> 块：走离屏渲染位图（与 svg 代码围栏同一管线）
+        "svg" -> MdSvgIsland(
+            code = element.outerHtml(),
+            textColor = LocalContentColor.current,
+        )
 
         "blockquote" -> HtmlStyledElement(element = element) {
             HtmlBlockquote(element = element, onClickCitation = onClickCitation)

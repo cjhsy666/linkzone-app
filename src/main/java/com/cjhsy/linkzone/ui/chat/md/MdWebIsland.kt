@@ -117,3 +117,67 @@ fun MdMermaidIsland(code: String, textColor: Color) {
         MdMermaidPreviewDialog(code = code, onDismiss = { showPreview = false })
     }
 }
+
+/**
+ * SVG 图形：与 Mermaid 同一离屏管线渲染白底位图（svg.html），点击弹全屏预览；
+ * 失败/非 SVG 内容回退源码卡片。
+ */
+@Composable
+fun MdSvgIsland(code: String, textColor: Color) {
+    var showPreview by remember { mutableStateOf(false) }
+    val result = rememberOffscreenRender("svg.html", "renderSvg", code, ISLAND_MAX_WIDTH_PX)
+    val cardShape = RoundedCornerShape(12.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clip(cardShape)
+            .background(mdNeutralCard(textColor))
+            .padding(10.dp)
+    ) {
+        when (result) {
+            is MdOffscreen.Result.Ready -> Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White)
+            ) {
+                Image(
+                    bitmap = result.bitmap.asImageBitmap(),
+                    contentDescription = "图形",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // 全屏预览点击层
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { showPreview = true }
+                )
+                // 可点击提示：右上角小图标
+                Icon(
+                    imageVector = Icons.Filled.Fullscreen,
+                    contentDescription = "全屏预览",
+                    tint = mdSecondaryText(textColor),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(16.dp)
+                )
+            }
+            is MdOffscreen.Result.Failed -> MdIslandFallback(code, "svg", textColor)
+            null -> MdIslandPlaceholder("渲染图形…", 120.dp, textColor)
+        }
+    }
+    if (showPreview) {
+        MdMermaidPreviewDialog(
+            code = code,
+            onDismiss = { showPreview = false },
+            page = "svg.html",
+            renderFn = "renderSvg",
+            language = "svg",
+        )
+    }
+}
