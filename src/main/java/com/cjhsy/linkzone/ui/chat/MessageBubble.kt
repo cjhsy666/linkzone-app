@@ -305,8 +305,8 @@ fun MessageItemView(
                             isSelf = false,
                             baseUrl = baseUrl,
                             freeCopy = freeCopy,
-                            // 用户文本段(text)按 markdown 渲染，获得与 AI 回复一致的排版能力
-                            forceMarkdown = true,
+                            // 与 AI 回复同一渲染器；短消息按内容收宽贴右，块级元素撑满 85% 限宽
+                            fillWidth = false,
                             onMediaLongClick = { menuOpen = true },
                             onTextClick = {
                                 if (freeCopy) freeCopy = false
