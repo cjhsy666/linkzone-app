@@ -3,17 +3,18 @@
 package com.cjhsy.linkzone.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +28,51 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.max
+
+/** 列宽收缩时的硬下限（即便调用方未指定 columnMinWidths），避免列被压到不可读 */
+private val HARD_MIN_COLUMN_WIDTH = 56.dp
+
+/**
+ * 等比收缩列宽到 [target]：触达下限的列固定，剩余列继续承担收缩；
+ * 若下限总和已超过 [target] 则放弃（调用方保留横向滚动）。返回是否完成收缩。
+ */
+private fun shrinkColumnWidths(widths: IntArray, floors: IntArray, target: Int): Boolean {
+    var floorSum = 0
+    for (f in floors) floorSum += f
+    if (floorSum >= target) return false
+
+    val fixed = BooleanArray(widths.size)
+    var remain = target
+    repeat(widths.size) {
+        var activeSum = 0
+        for (i in widths.indices) if (!fixed[i]) activeSum += widths[i]
+        if (activeSum <= remain) return true
+        var hitFloor = false
+        for (i in widths.indices) {
+            if (fixed[i]) continue
+            val scaled = widths[i].toLong() * remain / activeSum
+            if (scaled <= floors[i]) {
+                fixed[i] = true
+                widths[i] = floors[i]
+                remain -= floors[i]
+                hitFloor = true
+            }
+        }
+        if (!hitFloor) {
+            var assigned = 0
+            var last = -1
+            for (i in widths.indices) if (!fixed[i]) last = i
+            for (i in widths.indices) {
+                if (fixed[i] || i == last) continue
+                widths[i] = (widths[i].toLong() * remain / activeSum).toInt()
+                assigned += widths[i]
+            }
+            if (last >= 0) widths[last] = (remain - assigned).coerceAtLeast(floors[last])
+            return true
+        }
+    }
+    return true
+}
 
 /**
  * DataTable（自定义布局 + 横向滚动 + 行内等高）—— 移植自 RikkaHub (me.rerere.ui.table.DataTable)
@@ -49,8 +95,10 @@ fun DataTable(
     outerBorder: BorderStroke? = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     shape: Shape = MaterialTheme.shapes.small,
     stretchToFillWidth: Boolean = true,
+    /** 表格内容标识：流式更新/列表复用导致槽位漂移时，滚动位置按内容隔离，避免初始停在中段 */
+    scrollKey: Any? = null,
 ) {
-    val hScroll = rememberScrollState()
+    val hScroll = remember(scrollKey) { ScrollState(initial = 0) }
     val surfaceContainer = MaterialTheme.colorScheme.surfaceContainer
 
     BoxWithConstraints(
@@ -72,14 +120,15 @@ fun DataTable(
             // ---------- 参数 & 中间结果容器 ----------
             val infinity = Constraints.Infinity
             val unbounded = Constraints(0, infinity, 0, infinity)
-            val minWidthsPx = IntArray(columnCount) { i -> columnMinWidths.getOrNull(i)?.roundToPx() ?: 0 }
+            val hardMinPx = HARD_MIN_COLUMN_WIDTH.roundToPx()
+            val minWidthsPx = IntArray(columnCount) { i ->
+                max(columnMinWidths.getOrNull(i)?.roundToPx() ?: 0, hardMinPx)
+            }
             val maxWidthsPx = IntArray(columnCount) { i -> columnMaxWidths.getOrNull(i)?.roundToPx() ?: Int.MAX_VALUE }
             val colWidths = IntArray(columnCount) { 0 }
-            val headerP1 = arrayOfNulls<Placeable>(columnCount)
-            val bodyP1 = arrayOfNulls<Placeable>(rowCount * columnCount)
 
-            // ---------- 第一阶段：自然尺寸测量（估列宽、算行高） ----------
-            fun subcomposeHeaderOnce(c: Int): Placeable {
+            // ---------- 第一阶段：自然尺寸测量（估列宽） ----------
+            fun subcomposeHeaderOnce(c: Int) {
                 val measurables = subcompose("h1_$c") {
                     CellBox(
                         padding = cellPadding,
@@ -90,67 +139,102 @@ fun DataTable(
                         headers.getOrNull(c)?.invoke()
                     }
                 }
-                val constraints = if (maxWidthsPx[c] != Int.MAX_VALUE) {
+                val cs = if (maxWidthsPx[c] != Int.MAX_VALUE) {
                     Constraints(0, maxWidthsPx[c], 0, infinity)
                 } else {
                     unbounded
                 }
-                val p = measurables.first().measure(constraints)
+                val p = measurables.first().measure(cs)
                 colWidths[c] = max(colWidths[c], max(p.width, minWidthsPx[c])).coerceAtMost(maxWidthsPx[c])
-                return p
             }
 
-            fun subcomposeBodyOnce(r: Int, c: Int): Placeable {
+            fun subcomposeBodyOnce(r: Int, c: Int) {
                 val bg = if (zebraStriping && r % 2 == 1) surfaceContainer else Color.Transparent
                 val measurables = subcompose("b1_${r}_$c") {
                     CellBox(padding = cellPadding, border = cellBorder, background = bg, alignment = cellAlignment) {
                         rows[r].getOrNull(c)?.invoke()
                     }
                 }
-                val constraints = if (maxWidthsPx[c] != Int.MAX_VALUE) {
+                val cs = if (maxWidthsPx[c] != Int.MAX_VALUE) {
                     Constraints(0, maxWidthsPx[c], 0, infinity)
                 } else {
                     unbounded
                 }
-                val p = measurables.first().measure(constraints)
+                val p = measurables.first().measure(cs)
                 colWidths[c] = max(colWidths[c], max(p.width, minWidthsPx[c])).coerceAtMost(maxWidthsPx[c])
-                return p
             }
 
-            for (c in 0 until columnCount) headerP1[c] = subcomposeHeaderOnce(c)
-            for (r in 0 until rowCount) for (c in 0 until columnCount) bodyP1[r * columnCount + c] =
-                subcomposeBodyOnce(r, c)
+            for (c in 0 until columnCount) subcomposeHeaderOnce(c)
+            for (r in 0 until rowCount) for (c in 0 until columnCount) subcomposeBodyOnce(r, c)
+
+            // ---------- 列宽适配视口：窄则等比铺满，宽则等比收缩（单元格内换行），
+            //            连列下限总和都放不下时才保留横向滚动 ----------
+            val naturalWidth = colWidths.sum()
+            if (stretchToFillWidth &&
+                viewportMaxWidth != Constraints.Infinity &&
+                naturalWidth > 0
+            ) {
+                if (viewportMaxWidth > naturalWidth) {
+                    val extra = viewportMaxWidth - naturalWidth
+                    var distributed = 0
+                    for (c in 0 until columnCount) {
+                        val add = if (c == columnCount - 1) {
+                            extra - distributed
+                        } else {
+                            (extra.toLong() * colWidths[c] / naturalWidth).toInt()
+                        }
+                        colWidths[c] += add
+                        distributed += add
+                    }
+                } else if (viewportMaxWidth < naturalWidth) {
+                    shrinkColumnWidths(colWidths, minWidthsPx, viewportMaxWidth)
+                }
+            }
+
+            // ---------- 第二阶段：按最终列宽测量（不限制高度），拿到收缩换行后的真实行高 ----------
+            fun widthConstraints(colWidth: Int): Constraints = Constraints(
+                minWidth = colWidth.coerceAtLeast(0),
+                maxWidth = colWidth.coerceAtLeast(0),
+                minHeight = 0,
+                maxHeight = infinity,
+            )
+
+            val headerP2 = Array(columnCount) { c ->
+                val measurables = subcompose("h2_$c") {
+                    CellBox(
+                        padding = cellPadding,
+                        border = cellBorder,
+                        background = headerBackground,
+                        alignment = cellAlignment
+                    ) {
+                        headers.getOrNull(c)?.invoke()
+                    }
+                }
+                measurables.first().measure(widthConstraints(colWidths[c]))
+            }
+
+            val bodyP2 = Array(rowCount * columnCount) { i ->
+                val r = i / columnCount
+                val c = i % columnCount
+                val bg = if (zebraStriping && r % 2 == 1) surfaceContainer else Color.Transparent
+                val measurables = subcompose("b2_${r}_$c") {
+                    CellBox(padding = cellPadding, border = cellBorder, background = bg, alignment = cellAlignment) {
+                        rows[r].getOrNull(c)?.invoke()
+                    }
+                }
+                measurables.first().measure(widthConstraints(colWidths[c]))
+            }
 
             val rowHeights = IntArray(rowCount) { r ->
                 var h = 0
                 for (c in 0 until columnCount) {
-                    h = max(h, bodyP1[r * columnCount + c]!!.height)
+                    h = max(h, bodyP2[r * columnCount + c].height)
                 }
                 h
             }
-            val headerHeight = headerP1.maxOf { it?.height ?: 0 }
+            val headerHeight = headerP2.maxOf { it.height }
 
-            // ---------- 列宽拉伸：内容较窄时按比例铺满视口宽度 ----------
-            val naturalWidth = colWidths.sum()
-            if (stretchToFillWidth &&
-                viewportMaxWidth != Constraints.Infinity &&
-                viewportMaxWidth > naturalWidth &&
-                naturalWidth > 0
-            ) {
-                val extra = viewportMaxWidth - naturalWidth
-                var distributed = 0
-                for (c in 0 until columnCount) {
-                    val add = if (c == columnCount - 1) {
-                        extra - distributed
-                    } else {
-                        (extra.toLong() * colWidths[c] / naturalWidth).toInt()
-                    }
-                    colWidths[c] += add
-                    distributed += add
-                }
-            }
-
-            // ---------- 第二阶段：固定列宽 + 统一行高重新测量 ----------
+            // ---------- 第三阶段：固定列宽 + 统一行高重新测量（背景/边框铺满整行） ----------
             fun constraintsFor(colWidth: Int, minH: Int): Constraints {
                 val safeColWidth = colWidth.coerceAtLeast(0)
                 val safeMinH = minH.coerceAtLeast(0)
@@ -163,7 +247,7 @@ fun DataTable(
             }
 
             val headerPlaceables = Array(columnCount) { c ->
-                val measurables = subcompose("h2_$c") {
+                val measurables = subcompose("h3_$c") {
                     CellBox(
                         padding = cellPadding,
                         border = cellBorder,
@@ -181,7 +265,7 @@ fun DataTable(
                 val c = i % columnCount
                 val bg =
                     if (zebraStriping && r % 2 == 1) surfaceContainer else Color.Transparent
-                val measurables = subcompose("b2_${r}_$c") {
+                val measurables = subcompose("b3_${r}_$c") {
                     CellBox(padding = cellPadding, border = cellBorder, background = bg, alignment = cellAlignment) {
                         rows[r].getOrNull(c)?.invoke()
                     }

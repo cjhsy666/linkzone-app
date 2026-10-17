@@ -151,7 +151,7 @@ fun MarkdownNew(
     }
 
     ProvideTextStyle(style) {
-        Column(modifier = modifier.padding(start = 4.dp)) {
+        Column(modifier = modifier.padding(horizontal = 4.dp)) {
             document.body().childNodes().fastForEach { node ->
                 HtmlBodyNode(node = node, onClickCitation = onClickCitation)
             }
@@ -611,12 +611,16 @@ private fun HtmlTable(element: Element, onClickCitation: (String) -> Unit) {
         }
     }
 
+    // 表格 HTML 作为滚动状态隔离 key（流式更新/槽位复用时不继承陈旧横滑偏移）
+    val tableKey = remember(element) { element.html() }
+
     DataTable(
         headers = headers,
         rows = rows,
         modifier = Modifier.padding(vertical = 8.dp),
         columnMinWidths = List(columnCount) { 80.dp },
         columnMaxWidths = List(columnCount) { 200.dp },
+        scrollKey = tableKey,
     )
 }
 

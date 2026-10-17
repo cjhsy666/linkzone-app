@@ -55,6 +55,8 @@ object MdOffscreen {
     private const val TIMEOUT_MS = 8000L
     // 几何上报后等一短拍再截屏：等字体加载/布局稳定，期间如有更新几何以最新为准
     private const val DRAW_DELAY_MS = 120L
+    // 截到空白位图时，延迟重渲重试的间隔
+    private const val BLANK_RETRY_DELAY_MS = 250L
     private const val PAGE_URL = "https://appassets.androidplatform.net/assets/md/"
 
     /** Compose 可观察的结果表（key=[keyOf]）；无记录表示尚未就绪 */
@@ -88,11 +90,20 @@ object MdOffscreen {
         var current: Job? = null
         var currentW = 0
         var currentH = 0
+        var blankRetried = false
         val queue = ArrayDeque<Job>()
         val enqueued = mutableSetOf<String>()
 
         private val timeoutRunnable = Runnable { current?.let(::fail) }
         private val drawRunnable = Runnable { drawCurrent() }
+        private val blankRetryRunnable = Runnable {
+            // 空白位图多为截图早于绘制：重新触发一次渲染并重新走几何上报→截图流程
+            val job = current ?: return@Runnable
+            val wv = webView ?: return@Runnable
+            wv.evaluateJavascript(job.jsCall, null)
+            handler.removeCallbacks(timeoutRunnable)
+            handler.postDelayed(timeoutRunnable, TIMEOUT_MS)
+        }
 
         @SuppressLint("SetJavaScriptEnabled")
         fun ensure(context: Context) {
@@ -169,6 +180,7 @@ object MdOffscreen {
             current = job
             currentW = 0
             currentH = 0
+            blankRetried = false
             // 宽上限 AT_MOST：页面 #c width:100% 撑满测量宽，内容据此排版
             wv.measure(
                 View.MeasureSpec.makeMeasureSpec(job.maxWidthPx, View.MeasureSpec.AT_MOST),
@@ -209,6 +221,15 @@ object MdOffscreen {
             }.getOrNull()
             if (bitmap == null) {
                 fail(job)
+            } else if (!job.transparent && isMostlyBlank(bitmap)) {
+                // 白底位图但截不到内容：几何已上报而图形未上屏。延迟重渲一次，仍空白则判失败，
+                // 调用方回退源码卡片，避免给用户展示一个巨大的空白盒
+                if (!blankRetried) {
+                    blankRetried = true
+                    handler.postDelayed(blankRetryRunnable, BLANK_RETRY_DELAY_MS)
+                } else {
+                    fail(job)
+                }
             } else {
                 cache.put(job.key, bitmap)
                 results[job.key] = Result.Ready(bitmap)
@@ -224,6 +245,7 @@ object MdOffscreen {
         private fun next() {
             handler.removeCallbacks(timeoutRunnable)
             handler.removeCallbacks(drawRunnable)
+            handler.removeCallbacks(blankRetryRunnable)
             busy = false
             current = null
             pump()
@@ -262,6 +284,31 @@ object MdOffscreen {
 
     private fun runnerFor(page: String): Runner =
         runners.getOrPut(page) { Runner(page) }
+
+    /** 采样检测白底位图是否基本无内容（任通道低于阈值即视为墨迹）。
+     *  mermaid 节点描边/文字均为深色，正常图表采样点远超阈值；空白位图为 0。 */
+    private fun isMostlyBlank(bitmap: Bitmap): Boolean {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return true
+        val strideX = (bitmap.width / 180).coerceAtLeast(3)
+        val strideY = (bitmap.height / 180).coerceAtLeast(3)
+        var ink = 0
+        var y = 1
+        while (y < bitmap.height) {
+            var x = 1
+            while (x < bitmap.width) {
+                val p = bitmap.getPixel(x, y)
+                if (((p shr 16) and 0xFF) < 245 ||
+                    ((p shr 8) and 0xFF) < 245 ||
+                    (p and 0xFF) < 245
+                ) {
+                    if (++ink >= 12) return false
+                }
+                x += strideX
+            }
+            y += strideY
+        }
+        return true
+    }
 }
 
 /**

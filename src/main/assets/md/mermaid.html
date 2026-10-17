@@ -15,12 +15,17 @@
 <script>
   mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
 
-  function reportHeight() {
-    var h = document.getElementById('c').getBoundingClientRect().height;
-    if (h > 0 && window.LinkZone) {
-      // 上报物理像素：css px * devicePixelRatio，原生侧按 density 转回 dp
-      LinkZone.onHeight(Math.ceil(h * (window.devicePixelRatio || 1)));
-    }
+  // 上报 SVG 实际包围盒高度（相对容器顶部），而不是容器高度：
+  // 容器高度可能混入残留布局/留白，导致位图底部出现大片白边。
+  function reportGeometry() {
+    if (!window.LinkZone) return;
+    var c = document.getElementById('c');
+    var svg = c.querySelector('svg');
+    if (!svg) return;
+    var cr = c.getBoundingClientRect();
+    var sr = svg.getBoundingClientRect();
+    var h = Math.ceil((sr.bottom - cr.top) * (window.devicePixelRatio || 1));
+    if (h > 0) LinkZone.onHeight(h);
   }
 
   function cleanupStale() {
@@ -43,9 +48,15 @@
       cleanupStale();
       var result = await mermaid.render('g', code);
       document.getElementById('c').innerHTML = result.svg;
-      reportHeight();
-      // 字体/布局稳定后再报一次，避免首次高度偏小
-      setTimeout(reportHeight, 50);
+      reportGeometry();
+      // 字体/布局稳定后再报两次，避免首次高度偏小；fonts.ready 加 300ms 竞速兜底
+      setTimeout(reportGeometry, 50);
+      if (document.fonts && document.fonts.ready) {
+        Promise.race([
+          document.fonts.ready,
+          new Promise(function (resolve) { setTimeout(resolve, 300); })
+        ]).then(reportGeometry);
+      }
     } catch (e) {
       cleanupStale();
       if (window.LinkZone) LinkZone.onError(String((e && e.message) || e));
@@ -60,7 +71,7 @@
   };
 
   if (window.ResizeObserver) {
-    new ResizeObserver(reportHeight).observe(document.getElementById('c'));
+    new ResizeObserver(reportGeometry).observe(document.getElementById('c'));
   }
 </script>
 </body>

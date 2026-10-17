@@ -886,6 +886,7 @@ private fun TableNode(node: ASTNode, content: String, modifier: Modifier = Modif
             columnMaxWidths = List(columnCount) { 200.dp },
             outerBorder = null,
             shape = RectangleShape,
+            scrollKey = tableMarkdown,
         )
     }
 }
