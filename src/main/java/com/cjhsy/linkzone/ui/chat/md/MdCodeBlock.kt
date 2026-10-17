@@ -38,9 +38,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.drawWithCache
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -233,7 +233,7 @@ private fun MdCodeAction(
 }
 
 /** 横滑边缘渐隐：代码隐入卡片底色，克制提示该方向仍有内容 */
-private fun Modifier.edgeFade(edgeColor: Color, atLeft: Boolean): Modifier = drawWithCache {
+private fun Modifier.edgeFade(edgeColor: Color, atLeft: Boolean): Modifier = drawBehind {
     val fadePx = 28.dp.toPx()
     val brush = if (atLeft) {
         Brush.horizontalGradient(listOf(edgeColor, Color.Transparent), startX = 0f, endX = fadePx)
@@ -244,7 +244,7 @@ private fun Modifier.edgeFade(edgeColor: Color, atLeft: Boolean): Modifier = dra
             endX = size.width,
         )
     }
-    onDrawBehind { drawRect(brush) }
+    drawRect(brush)
 }
 
 /** 常见语言 → 文件扩展名（下载用），未识别回退 txt */
