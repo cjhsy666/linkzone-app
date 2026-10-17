@@ -52,15 +52,23 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.net.URI
 
 /**
- * 文本是否含块级 markdown 语法（代码围栏/标题/引用/列表/表格/缩进代码/行内代码）。
- * 用户消息默认仍按纯文本右对齐渲染（短消息贴右、不被 fillMaxWidth 撑宽）；
- * 只有命中这些语法时才升级为 markdown 文档渲染，获得代码块/列表等排版。
+ * 文本是否含 markdown/HTML 语法（块级 + 图片/链接/加粗等行内语法）。
+ * 用户消息默认仍按纯文本右对齐渲染（短消息贴右、裸 URL 自动成链接）；
+ * 只有命中这些语法时才升级为 markdown 文档渲染，获得与 AI 回复一致的排版。
  */
 private val MD_BLOCK_REGEX = Regex(
     """(?m)(^\s{0,3}(#{1,6}\s|>|```|~~~|[-*+]\s|\d+[.)]\s)|^\s{4,}\S|\|.+\||`[^`\n]+`)"""
 )
+// 行内语法：图片/链接、加粗/删除线、常见 HTML 标签（含内联 svg）。
+// 裸 URL 不在此列——纯文本走 AutoLinkText 即可自动成链接，无需升级为文档渲染。
+// HTML 只认真正富文本/媒体标签且要求闭合尖括号，避免把 "a < b 且 c > d" 这类数学比较误判成标签。
+private val MD_INLINE_REGEX = Regex(
+    """!\[[^\]]*\]\(|\[[^\]]+\]\([^)\s]+\)|(\*\*|__|~~)[^*_~]+(\*\*|__|~~)|""" +
+        """</?(?:svg|img|video|br|strong|em|code|span|div|table|ul|ol|h[1-6])(?:\s[^<>]*)?/?>""",
+    RegexOption.IGNORE_CASE,
+)
 private fun looksLikeMarkdown(text: String): Boolean =
-    text.contains("```") || MD_BLOCK_REGEX.containsMatchIn(text)
+    text.contains("```") || MD_BLOCK_REGEX.containsMatchIn(text) || MD_INLINE_REGEX.containsMatchIn(text)
 
 /**
  * 消息段渲染入口：
