@@ -3,6 +3,7 @@ package com.cjhsy.linkzone.ui.chat
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.widget.Toast
 import com.cjhsy.linkzone.ui.components.AutoAIIcon
 import com.cjhsy.linkzone.ui.components.computeAIIconByName
 import androidx.compose.animation.AnimatedContent
@@ -900,7 +901,11 @@ private fun MessageActionBar(
             ActionBarIcon(
                 icon = if (playingThis) Icons.Filled.Stop else Icons.Filled.VolumeUp,
                 label = if (playingThis) "停止朗读" else "朗读",
-                onClick = { TtsPlayer.toggle(context, speakKey, speakText) },
+                onClick = {
+                    TtsPlayer.toggle(context, speakKey, speakText)?.let { msg ->
+                        Toast.makeText(context, "朗读启动失败：$msg", Toast.LENGTH_SHORT).show()
+                    }
+                },
                 active = playingThis
             )
         }

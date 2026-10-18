@@ -37,22 +37,30 @@ object TtsPlayer {
     /** 未读完的 utterance id 集合；TTS 回调在 binder 线程，用锁同步 */
     private val pendingIds = mutableSetOf<String>()
 
-    /** 点按切换：同 key 再点=停止；不同 key=打断当前并切换 */
-    fun toggle(context: Context, key: String, rawText: String) {
+    /**
+     * 点按切换：同 key 再点=停止；不同 key=打断当前并切换。
+     * 返回 null=已启动/已停止；非 null=启动失败原因（TTS 引擎属外部系统服务，
+     * 各 ROM 行为差异大，任何异常都只上报不外抛，调用方以 Toast 呈现）
+     */
+    fun toggle(context: Context, key: String, rawText: String): String? = runCatching {
         if (currentKey == key) {
             stop()
-            return
+            return null
         }
         stop()
         val chunks = speakableChunks(rawText)
-        if (chunks.isEmpty()) return // 没有可读文本（如纯代码），不进入播放态
+        if (chunks.isEmpty()) return null // 没有可读文本（如纯代码），不进入播放态
         currentKey = key
         val engine = ensureEngine(context)
         if (engine == null) {
             awaitingInit = chunks
-            return
+            return null
         }
         enqueue(engine, chunks)
+        null
+    }.getOrElse { e ->
+        reset()
+        e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
     }
 
     /** 停止朗读并复位状态 */
@@ -64,25 +72,28 @@ object TtsPlayer {
         speaking = false
     }
 
-    /** 懒创建引擎；未初始化完成时返回 null（由回调续播 [awaitingInit]） */
+    /** 懒创建引擎；未初始化完成时返回 null（由回调续播 [awaitingInit]）。
+     *  回调在 binder 线程，未捕获异常同样杀死进程，整体兜底 */
     private fun ensureEngine(context: Context): TextToSpeech? {
         tts?.let { return if (initOk) it else null }
         // 回调里不能引用自身初始化语句中的局部 val，故经实例字段 tts 取实例
         tts = TextToSpeech(context.applicationContext) { status ->
-            val engine = tts
-            if (status == TextToSpeech.SUCCESS && engine != null) {
-                initOk = true
-                runCatching { engine.setLanguage(Locale.getDefault()) }
-                engine.setOnUtteranceProgressListener(listener)
-                val chunks = awaitingInit
-                awaitingInit = null
-                if (chunks != null) enqueue(engine, chunks)
-            } else {
-                initOk = false
-                runCatching { engine?.shutdown() }
-                tts = null
-                reset()
-            }
+            runCatching {
+                val engine = tts
+                if (status == TextToSpeech.SUCCESS && engine != null) {
+                    initOk = true
+                    runCatching { engine.setLanguage(Locale.getDefault()) }
+                    engine.setOnUtteranceProgressListener(listener)
+                    val chunks = awaitingInit
+                    awaitingInit = null
+                    if (chunks != null) enqueue(engine, chunks)
+                } else {
+                    initOk = false
+                    runCatching { engine?.shutdown() }
+                    tts = null
+                    reset()
+                }
+            }.onFailure { reset() }
         }
         return null
     }

@@ -25,6 +25,14 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
+    <!-- 朗读（TtsPlayer）：targetSdk 30+ 包可见性过滤，需声明才能发现系统 TTS 引擎；
+         缺失时部分国产 ROM（小米等）解析 TTS 引擎直接崩溃 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".LinkZoneApp"
         android:allowBackup="true"
