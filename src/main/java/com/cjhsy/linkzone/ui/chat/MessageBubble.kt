@@ -58,7 +58,9 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -83,6 +85,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -427,6 +430,8 @@ fun MessageItemView(
                         canRegenerate = canRegenerate,
                         versionCount = versionCount,
                         timestamp = message.displayTimestamp(),
+                        speakKey = message.id,
+                        speakText = copyableText,
                         onCopy = { clipboard.setText(AnnotatedString(copyableText)) },
                         onEdit = onModify,
                         onRegenerate = onRegenerate,
@@ -863,8 +868,9 @@ private fun SelfMessageActionBar(
 
 /**
  * AI 消息下方快捷操作行（RikkaHub 式）：
- * 复制 / 编辑回答（仅本地，直接改内容）/ 重新生成 / 多模型重答 / 行尾时间戳。
+ * 复制 / 编辑回答（仅本地，直接改内容）/ 朗读 / 重新生成 / 多模型重答 / 行尾时间戳。
  * 弱化小图标，不抢正文视觉。
+ * 朗读：点按朗读消息（自动去除 markdown 语法噪音），同一条再点停止，点别的消息切换。
  */
 @Composable
 private fun MessageActionBar(
@@ -873,6 +879,8 @@ private fun MessageActionBar(
     canRegenerate: Boolean,
     versionCount: Int,
     timestamp: Long,
+    speakKey: String? = null,
+    speakText: String? = null,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
     onRegenerate: () -> Unit,
@@ -886,6 +894,16 @@ private fun MessageActionBar(
     ) {
         if (hasText) ActionBarIcon(Icons.Filled.ContentCopy, "复制", onCopy)
         if (canEdit && hasText) ActionBarIcon(Icons.Filled.Edit, "编辑回答", onEdit)
+        if (!speakKey.isNullOrBlank() && !speakText.isNullOrBlank()) {
+            val context = LocalContext.current
+            val playingThis = TtsPlayer.currentKey == speakKey
+            ActionBarIcon(
+                icon = if (playingThis) Icons.Filled.Stop else Icons.Filled.VolumeUp,
+                label = if (playingThis) "停止朗读" else "朗读",
+                onClick = { TtsPlayer.toggle(context, speakKey, speakText) },
+                active = playingThis
+            )
+        }
         if (canRegenerate) {
             ActionBarIcon(Icons.Filled.Refresh, "重新生成", onRegenerate)
             ActionBarIcon(Icons.Filled.SwapHoriz, "多模型重答", onRegenerateWithModel)
@@ -1003,12 +1021,18 @@ private fun VersionSwitcher(
 }
 
 @Composable
-private fun ActionBarIcon(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun ActionBarIcon(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    active: Boolean = false
+) {
     IconButton(onClick = onClick, modifier = Modifier.size(28.dp)) {
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            tint = if (active) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
             modifier = Modifier.size(16.dp)
         )
     }

@@ -31,7 +31,8 @@ sealed class LocalToolOption {
     @SerialName("calendar")
     object Calendar : LocalToolOption()
 
-    /** 语音播报 text_to_speech（朗读文本） */
+    /** [已废弃] 语音播报工具已移除（改为消息操作栏「朗读」按钮，见 ui/chat/TtsPlayer）；
+     *  子类保留仅为了旧数据（可能存过 "tts"）能正常反序列化，不再注入工具也不在 UI 展示 */
     @Serializable
     @SerialName("tts")
     object Tts : LocalToolOption()

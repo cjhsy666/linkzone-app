@@ -1142,7 +1142,6 @@ internal fun LocalToolSwitchList(
         Triple("剪贴板", "读取或写入剪贴板文本", LocalToolOption.Clipboard),
         Triple("主动追问", "信息不足时暂停生成向你提问（可跳过）", LocalToolOption.AskUser),
         Triple("日历读写", "查询/创建系统日历日程", LocalToolOption.Calendar),
-        Triple("语音播报", "朗读文本给用户听（系统 TTS）", LocalToolOption.Tts),
         Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript),
         Triple(
             "手机控制",

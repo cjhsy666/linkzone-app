@@ -8,7 +8,6 @@ import android.content.ContentUris
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.provider.CalendarContract
-import android.speech.tts.TextToSpeech
 import androidx.core.content.ContextCompat
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.add
@@ -47,7 +46,6 @@ fun createLocalTools(
     if (options.contains(LocalToolOption.TimeInfo)) add(buildTimeInfoTool())
     if (options.contains(LocalToolOption.Clipboard)) add(buildClipboardTool(context))
     if (options.contains(LocalToolOption.AskUser)) add(buildAskUserTool(askUser))
-    if (options.contains(LocalToolOption.Tts)) add(buildTextToSpeechTool(context))
     if (options.contains(LocalToolOption.Javascript)) add(buildJavascriptTool())
     if (options.contains(LocalToolOption.Calendar)) {
         add(buildCalendarQueryTool(context))
@@ -595,77 +593,3 @@ private fun parseCalendarTime(raw: String, zone: ZoneId): ZonedDateTime {
     error("Invalid time format: '$raw'. Use ISO-8601 date/date-time or epoch milliseconds.")
 }
 
-// ===================== text_to_speech =====================
-
-private fun buildTextToSpeechTool(context: Context): Tool = Tool(
-    name = "text_to_speech",
-    description = """
-        Speak text aloud to the user using the device's text-to-speech engine.
-        Provide the text to speak. The tool returns after the speech finishes.
-        Only call this when the user explicitly asks to hear or listen to something.
-    """.trimIndent().replace("\n", " "),
-    parameters = {
-        InputSchema.Obj(
-            properties = buildJsonObject {
-                put("text", buildJsonObject {
-                    put("type", "string")
-                    put("description", "The text to speak aloud.")
-                })
-            },
-            required = listOf("text")
-        )
-    },
-    execute = { args ->
-        val text = args.jsonObject["text"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-            ?: error("text is required")
-        speakText(context.applicationContext, text)
-        listOf(UIMessagePart.Text(buildJsonObject {
-            put("success", true)
-            put("spoken_chars", text.length)
-        }.toString()))
-    }
-)
-
-/** 用系统 TextToSpeech 朗读文本（阻塞直到读完或出错） */
-private suspend fun speakText(context: Context, text: String) {
-    val result = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { cont ->
-        var tts: TextToSpeech? = null
-        tts = TextToSpeech(context) { status ->
-            val instance = tts
-            if (instance == null) {
-                cont.resumeWith(Result.success(false))
-                return@TextToSpeech
-            }
-            if (status != TextToSpeech.SUCCESS) {
-                runCatching { instance.shutdown() }
-                cont.resumeWith(Result.success(false))
-                return@TextToSpeech
-            }
-            instance.setLanguage(java.util.Locale.getDefault())
-            instance.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-                override fun onDone(utteranceId: String?) {
-                    runCatching { instance.shutdown() }
-                    cont.resumeWith(Result.success(true))
-                }
-                override fun onError(utteranceId: String?) {
-                    runCatching { instance.shutdown() }
-                    cont.resumeWith(Result.success(false))
-                }
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?, errorCode: Int) {
-                    runCatching { instance.shutdown() }
-                    cont.resumeWith(Result.success(false))
-                }
-                override fun onStart(utteranceId: String?) {}
-            })
-            runCatching {
-                instance.speak(text, TextToSpeech.QUEUE_FLUSH, null, "linkzone-tts-${System.nanoTime()}")
-            }.onFailure {
-                runCatching { instance.shutdown() }
-                cont.resumeWith(Result.success(false))
-            }
-        }
-        cont.invokeOnCancellation { runCatching { tts?.stop(); tts?.shutdown() } }
-    }
-    if (!result) error("Text-to-speech failed or is not available on this device.")
-}
