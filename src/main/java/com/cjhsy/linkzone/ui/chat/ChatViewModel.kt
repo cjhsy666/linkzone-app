@@ -2381,7 +2381,7 @@ class ChatViewModel(
     ): List<UIMessagePart.Tool> = calls.map { call ->
         val def = tools.firstOrNull { it.name == call.toolName }
         val output = if (def == null) {
-            listOf(UIMessagePart.Text(errorJson("Tool '${call.toolName}' not found")))
+            listOf(UIMessagePart.Text(errorJson("工具 '${call.toolName}' 不存在")))
         } else {
             runCatching {
                 val args = json.parseToJsonElement(call.input.ifBlank { "{}" })

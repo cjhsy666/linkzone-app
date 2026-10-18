@@ -300,23 +300,44 @@ fun ChatScreen(
                 )
             }
 
-            // 错误条：展开/收起带动画，点击清除
+            // 错误卡片：展开/收起带动画，仅右侧关闭按钮可清除（避免误触）
             AnimatedVisibility(
                 visible = state.error != null,
                 enter = expandVertically(tween(200)) + fadeIn(tween(200)),
                 exit = shrinkVertically(tween(200)) + fadeOut(tween(200))
             ) {
                 state.error?.let { err ->
-                    Text(
-                        text = err,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(onClick = viewModel::clearError)
-                            .padding(horizontal = 16.dp, vertical = 6.dp)
-                    )
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.08f))
+                            .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.ErrorOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = err,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = viewModel::clearError, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "关闭",
+                                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
             }
 

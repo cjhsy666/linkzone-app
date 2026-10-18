@@ -14,7 +14,7 @@ import javax.net.ssl.SSLException
  * 2. 网络异常（超时 / 断连 / 域名解析失败 / SSL）—— 按类型翻译
  * 3. LLM Provider / MCP / 解析等内部英文异常 —— 按消息关键字翻译
  *
- * 无法识别时返回 [fallback]（业务语义兜底），保证 UI 永远不展示英文堆栈。
+ * 无法识别时透传原始 message（保留诊断信息），仅当 message 为空时返回 [fallback]。
  */
 fun Throwable.toUserMessage(fallback: String = ErrorMessages.GENERIC): String {
     // 协程取消：不应展示错误
@@ -46,25 +46,20 @@ fun Throwable.toUserMessage(fallback: String = ErrorMessages.GENERIC): String {
     // 空消息直接兜底
     if (raw.isBlank()) return fallback
 
-    // 3. 按关键字翻译（匹配优先级：具体 > 通用）
+    // 3. 按关键字翻译（只保留精准匹配，宽泛匹配宁可透传原文）
     return when {
         // HTTP 状态码透出
         raw.contains("401") -> ErrorMessages.AUTH_EXPIRED
         raw.contains("403") -> ErrorMessages.AUTH_FORBIDDEN
-        raw.contains("404") -> ErrorMessages.AUTH_NOT_FOUND
         raw.contains("429") || raw.contains("rate limit", ignoreCase = true)
             || raw.contains("too many requests", ignoreCase = true) -> ErrorMessages.RATE_LIMITED
-        raw.startsWith("5") -> ErrorMessages.SERVER_ERROR
         raw.contains("insufficient", ignoreCase = true)
             || raw.contains("quota", ignoreCase = true)
             || raw.contains("balance", ignoreCase = true) -> ErrorMessages.MODEL_NO_BALANCE
 
         // 模型服务
-        raw.contains("Failed to get response", ignoreCase = true)
-            || raw.contains("model", ignoreCase = true) && raw.contains("error", ignoreCase = true)
-            -> ErrorMessages.MODEL_RESPONSE_FAIL
+        raw.contains("Failed to get response", ignoreCase = true) -> ErrorMessages.MODEL_RESPONSE_FAIL
         raw.contains("Stream failed", ignoreCase = true) -> ErrorMessages.MODEL_STREAM_FAIL
-        raw.contains("Unknown error", ignoreCase = true) -> ErrorMessages.MODEL_RESPONSE_FAIL
 
         // 工具
         raw.contains("MCP", ignoreCase = true) -> ErrorMessages.MCP_EXEC_FAIL
@@ -82,6 +77,7 @@ fun Throwable.toUserMessage(fallback: String = ErrorMessages.GENERIC): String {
         // 已是中文或包含中文 → 直接用原文
         raw.any { it.code in 0x4E00..0x9FFF } -> raw
 
-        else -> fallback
+        // 识别不了：透传原文，便于用户/开发者定位真实原因
+        else -> raw
     }
 }
