@@ -2316,7 +2316,7 @@ class ChatViewModel(
                 })
             }
             firstError?.let {
-                _state.value = _state.value.copy(error = "${ErrorMessages.IMAGE_ENCODE_FAIL}：${it.toUserMessage()}")
+                _state.value = _state.value.copy(error = "${ErrorMessages.IMAGE_ENCODE_FAIL}：$it")
             }
             out
         }

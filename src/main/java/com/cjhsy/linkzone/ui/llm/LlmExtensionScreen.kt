@@ -50,6 +50,7 @@ import com.cjhsy.linkzone.data.model.LlmInjectionPosition
 import com.cjhsy.linkzone.data.model.LlmLorebook
 import com.cjhsy.linkzone.data.model.LlmLorebookEntry
 import com.cjhsy.linkzone.core.error.toUserMessage
+import com.cjhsy.linkzone.data.model.LlmPrompt
 import com.cjhsy.linkzone.data.model.LlmQuickMessage
 import com.cjhsy.linkzone.data.model.LlmSkill
 import com.cjhsy.linkzone.data.repository.LlmRepository
