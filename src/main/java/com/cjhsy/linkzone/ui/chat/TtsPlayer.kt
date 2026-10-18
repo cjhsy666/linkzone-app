@@ -67,21 +67,23 @@ object TtsPlayer {
     /** 懒创建引擎；未初始化完成时返回 null（由回调续播 [awaitingInit]） */
     private fun ensureEngine(context: Context): TextToSpeech? {
         tts?.let { return if (initOk) it else null }
-        val created = TextToSpeech(context.applicationContext) { status ->
-            initOk = status == TextToSpeech.SUCCESS
-            if (!initOk) {
-                runCatching { created.shutdown() }
-                if (tts === created) tts = null
+        // 回调里不能引用自身初始化语句中的局部 val，故经实例字段 tts 取实例
+        tts = TextToSpeech(context.applicationContext) { status ->
+            val engine = tts
+            if (status == TextToSpeech.SUCCESS && engine != null) {
+                initOk = true
+                runCatching { engine.setLanguage(Locale.getDefault()) }
+                engine.setOnUtteranceProgressListener(listener)
+                val chunks = awaitingInit
+                awaitingInit = null
+                if (chunks != null) enqueue(engine, chunks)
+            } else {
+                initOk = false
+                runCatching { engine?.shutdown() }
+                tts = null
                 reset()
-                return@TextToSpeech
             }
-            runCatching { created.setLanguage(Locale.getDefault()) }
-            created.setOnUtteranceProgressListener(listener)
-            val chunks = awaitingInit
-            awaitingInit = null
-            if (chunks != null) enqueue(created, chunks)
         }
-        tts = created
         return null
     }
 
