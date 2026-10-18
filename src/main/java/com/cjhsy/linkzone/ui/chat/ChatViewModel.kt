@@ -601,7 +601,9 @@ class ChatViewModel(
                 // 不做未读累加
                 val isSelfEcho = event.senderId == myId
 
-                val convId = event.convId.ifEmpty { _state.value.currentConvId }
+                // conv_id 缺失（旧服务端/异常推送）：按用户唯一云端主会话规则推导，
+                // 而不是碰运气塞进当前打开的会话（会把别的会话的消息串进来）
+                val convId = event.convId.ifEmpty { "conv-$myId-$MAIN_BOT_ID" }
                 // 本地会话不产生服务器事件：防御性跳过
                 if (isLocalConvId(convId)) return
                 val preview = event.text.ifBlank {
