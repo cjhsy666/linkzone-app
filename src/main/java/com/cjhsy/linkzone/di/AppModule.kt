@@ -189,6 +189,9 @@ val appModule = module {
 
     single { LlmRepository(androidContext(), get()) }
 
+    // LLM 功能域偏好（WebDAV/翻译/历史保留工具调用等开关）
+    single { com.cjhsy.linkzone.core.storage.LlmPrefs(androidContext(), get()) }
+
     // 本地智能体会话存储（RikkaHub 式，完全脱离服务器）
     single { LocalChatStore(get(), get()) }
 
@@ -228,5 +231,5 @@ val appModule = module {
     viewModel { LlmMemoryViewModel(get()) }
     viewModel { com.cjhsy.linkzone.ui.stats.StatsViewModel(get()) }
     viewModel { com.cjhsy.linkzone.ui.workspace.WorkspaceViewModel(androidContext()) }
-    viewModel { SettingsViewModel(get(), get()) }
+    viewModel { SettingsViewModel(get(), get(), get()) }
 }

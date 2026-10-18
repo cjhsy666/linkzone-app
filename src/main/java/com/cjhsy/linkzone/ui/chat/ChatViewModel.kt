@@ -121,6 +121,10 @@ const val LOCAL_PREFIX = "local-"
 /** 本地智能体单次回复的最大工具调用轮数（防失控循环） */
 private const val MAX_TOOL_STEPS = 32
 
+/** 工具段落库的输入/输出截断长度（字符）：控制消息体积与回传上下文的 token 占用 */
+private const val TOOL_OUTPUT_MAX = 2000
+private const val TOOL_INPUT_MAX = 1000
+
 data class ChatUiState(
     val currentConvId: String = "",
     /** 当前会话的 bot_id（= 会话 target_id），发送消息时携带 */
@@ -222,6 +226,9 @@ class ChatViewModel(
 
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    /** LLM 功能域偏好（「历史保留工具调用」开关等）：SharedPreferences 同步读写，按需懒加载 */
+    private val llmPrefs by lazy { com.cjhsy.linkzone.core.storage.LlmPrefs(appContext, json) }
 
     /** 当前用户资料（消息气泡显示昵称/头像用），直接透传 UserRepository 的流 */
     val userProfile: StateFlow<com.cjhsy.linkzone.data.model.UserProfile?> = userRepository.profile
@@ -1809,9 +1816,16 @@ class ChatViewModel(
                 // 否则 sys.stop 标记与 generating 复位被跳过，
                 // UI 永远卡在生成态、中断后不出现「继续生成」按钮
                 runCatching {
+                    // 收集本轮全部已执行工具调用（多轮工具循环累积在同一助手消息的 parts 里），
+                    // 随消息落库为 tool 段：UI 可回看、历史可回传给 AI
+                    val executedToolParts = uiMessages.lastOrNull()
+                        ?.takeIf { it.role == MessageRole.ASSISTANT }
+                        ?.parts?.filterIsInstance<UIMessagePart.Tool>()
+                        ?.filter { it.isExecuted }
+                        .orEmpty()
                     finalizeLocalBotMessage(
                         convId, botId, agent, model, botMsgId, senderName,
-                        latestText, latestThinking, generatedImageUrls
+                        latestText, latestThinking, generatedImageUrls, executedToolParts
                     )
                 }
                 // 用户主动中断：在气泡尾部追加"已中断"标记（正文保留不撤回），
@@ -1869,28 +1883,38 @@ class ChatViewModel(
         senderName: String,
         text: String,
         thinking: String = "",
-        imageUrls: List<String> = emptyList()
+        imageUrls: List<String> = emptyList(),
+        /** 本轮已执行的工具调用：落库为 tool 段（输入/输出截断），UI 折叠卡片展示 */
+        toolParts: List<UIMessagePart.Tool> = emptyList()
     ) {
         val trimmed = text.trim()
         // 剥离正文中的 <think> 标签（部分模型把思考过程写进正文而非 reasoning 通道）
         val (thinkFromText, cleanText) = extractThinkTags(trimmed)
         val finalText = cleanText.trim()
         val finalThinking = (thinking + thinkFromText).trim()
+        // 续写时若本轮没有新工具调用，沿用气泡上已落库的 tool 段，避免被整体重建冲掉
+        val placeholderSegs = _state.value.messages.firstOrNull { it.id == botMsgId }?.segments
+        val toolSegs = if (toolParts.isNotEmpty()) {
+            toolParts.map { it.toToolSegment() }
+        } else {
+            placeholderSegs?.filter { it.type == "tool" }.orEmpty()
+        }
         // 用户中断时即使正文还没开始（只有思考过程），也保留气泡：思考内容可回看，
         // 且下方需要出现「继续生成」按钮；无思考无正文（刚发就停）才移除占位
         val keepThinkingOnly = interruptedByUser && finalThinking.isNotBlank()
-        if (finalText.isEmpty() && imageUrls.isEmpty() && !keepThinkingOnly) {
+        if (finalText.isEmpty() && imageUrls.isEmpty() && toolSegs.isEmpty() && !keepThinkingOnly) {
             _state.value = _state.value.copy(
                 messages = _state.value.messages.filterNot { it.id == botMsgId }
             )
             return
         }
         // 版本化生成的消息：保留占位气泡携带的版本/分支元数据段（sys.ver / sys.br）
-        val sysSegs = _state.value.messages.firstOrNull { it.id == botMsgId }
-            ?.segments?.filter { it.type == VERSION_SEG || it.type == BRANCH_SEG }.orEmpty()
+        val sysSegs = placeholderSegs
+            ?.filter { it.type == VERSION_SEG || it.type == BRANCH_SEG }.orEmpty()
         val segments = buildList {
             addAll(sysSegs)
             if (finalThinking.isNotBlank()) add(Segments.thinking(finalThinking))
+            addAll(toolSegs)
             if (finalText.isNotBlank()) add(Segments.markdown(finalText))
             imageUrls.forEach { url -> add(Segments.image(url = url)) }
         }
@@ -2403,6 +2427,24 @@ class ChatViewModel(
         )
 
     /**
+     * 已执行工具 part → tool 消息段（落库用）：
+     * 输入/输出都做截断，避免超长工具结果（网页全文/shell 输出）撑爆消息 JSON 与上下文 token。
+     */
+    private fun UIMessagePart.Tool.toToolSegment(): MessageSegment {
+        val outText = output.filterIsInstance<UIMessagePart.Text>()
+            .joinToString("\n") { it.text }.trim()
+        val clippedOut = if (outText.length > TOOL_OUTPUT_MAX) {
+            outText.take(TOOL_OUTPUT_MAX) + "\n…(输出过长已截断)"
+        } else outText
+        val clippedIn = if (input.length > TOOL_INPUT_MAX) {
+            input.take(TOOL_INPUT_MAX) + "…(已截断)"
+        } else input
+        // errorJson 产物视为失败调用（UI 状态标记用）
+        val ok = !outText.trimStart().startsWith("{\"error\"")
+        return Segments.tool(toolCallId, toolName, clippedIn, clippedOut, ok)
+    }
+
+    /**
      * 剥离正文中的 `<think>...</think>` 块，把思考内容合并进 thinking 段。
      * 兼容流式输出中 `<think>` 未闭合的情况（末尾残缺标签当思考处理）。
      * 返回 (思考文本, 清理后的正文)。
@@ -2434,16 +2476,33 @@ class ChatViewModel(
      * - image（http/file://）→ 视觉 part
      * - file（本地 file:// 文档）→ 解析 PDF/DOCX/PPTX/XLSX/EPUB/文本/HTML，
      *   包装为 <UploadFile> prompt 块插到 parts 最前面（进程内缓存，多轮对话只解析一次）
+     * - tool → 还原为 Tool part（含调用与结果），Provider 层按原生 tool_use/tool_result 回传；
+     *   受「历史保留工具调用」开关控制，关闭则跳过以节省 token
      */
     private suspend fun MessageItem.toLlmUIMessage(): UIMessage? {
         val parts = mutableListOf<UIMessagePart>()
         val docs = StringBuilder()
+        // 「历史保留工具调用」开关：默认开启，关闭后历史 tool 段不回传给 AI
+        val keepTools = llmPrefs.getBoolean(com.cjhsy.linkzone.core.storage.LlmPrefs.KEY_HISTORY_KEEP_TOOLS, true)
         segments?.forEach { seg ->
             when (seg.type) {
                 "text" -> seg.get("text").takeIf { it.isNotBlank() }
                     ?.let { parts += UIMessagePart.Text(it) }
                 "markdown" -> seg.get("content").takeIf { it.isNotBlank() }
                     ?.let { parts += UIMessagePart.Text(it) }
+                "tool" -> if (keepTools) {
+                    // 还原已执行工具调用：调用 id/名称/入参/结果完整回传，
+                    // Provider 层（ProviderMessageUtils）会转成各平台原生 tool 消息
+                    val name = seg.get("name")
+                    if (name.isNotBlank()) {
+                        parts += UIMessagePart.Tool(
+                            toolCallId = seg.get("call_id").ifBlank { "hist-tool-$id" },
+                            toolName = name,
+                            input = seg.get("input"),
+                            output = listOf(UIMessagePart.Text(seg.get("output")))
+                        )
+                    }
+                }
                 "image" -> {
                     // 服务端上传后段里存的是自托管相对路径（/public/...）：
                     // 非空即保留为图片 part；真正发送前由 ensureImagesEncoded

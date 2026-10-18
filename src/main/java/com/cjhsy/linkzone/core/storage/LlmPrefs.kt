@@ -116,5 +116,8 @@ class LlmPrefs(context: Context, @PublishedApi internal val json: Json) {
 
         /** WebDAV 上次同步时间戳（毫秒） */
         const val KEY_WEBDAV_LAST_SYNC = "llm_webdav_last_sync"
+
+        /** 历史保留工具调用：开启时历史消息中的工具调用/结果回传给 AI（关闭省 token，但 AI 看不到历史工具结果） */
+        const val KEY_HISTORY_KEEP_TOOLS = "llm_history_keep_tools"
     }
 }

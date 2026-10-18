@@ -19,7 +19,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Poll
@@ -39,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -240,6 +244,8 @@ private fun SegmentView(
 
         "rps" -> RpsBlock(seg, onSurface)
 
+        "tool" -> ToolBlock(seg, onSurface)
+
         "sys.abort" -> Text(
             "已终止${seg.get("reason").let { if (it.isNotBlank()) "：$it" else "" }}",
             style = MaterialTheme.typography.bodySmall, color = muted
@@ -257,6 +263,85 @@ private fun SegmentView(
         else -> Text(
             seg.display, style = MaterialTheme.typography.bodyMedium, color = onSurface
         )
+    }
+}
+
+// ============================================================================
+// 工具调用段
+// ============================================================================
+
+/**
+ * 工具调用折叠卡片（本地智能体消息）：
+ * 一行摘要 = 图标 + 工具名 + 成功/失败，点击展开查看输入/输出（等宽字体）。
+ * 刻意保持轻量：浅色底、无阴影、无边框，与思考过程面板的视觉层级一致。
+ */
+@Composable
+private fun ToolBlock(seg: MessageSegment, onSurface: Color) {
+    val name = seg.get("name").ifBlank { "工具调用" }
+    val ok = seg.getBool("ok")
+    var expanded by remember { mutableStateOf(false) }
+    val muted = onSurface.copy(alpha = 0.6f)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(onSurface.copy(alpha = 0.06f))
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Filled.Build, contentDescription = null,
+                tint = muted, modifier = Modifier.size(14.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                name,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                if (ok) "成功" else "失败",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+            Spacer(Modifier.width(2.dp))
+            Icon(
+                if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = muted, modifier = Modifier.size(16.dp)
+            )
+        }
+        if (expanded) {
+            val input = seg.get("input")
+            val output = seg.get("output")
+            if (input.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text("输入", style = MaterialTheme.typography.labelSmall, color = muted)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    input,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = onSurface.copy(alpha = 0.85f)
+                )
+            }
+            if (output.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text("输出", style = MaterialTheme.typography.labelSmall, color = muted)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    output,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = onSurface.copy(alpha = 0.85f)
+                )
+            }
+        }
     }
 }
 

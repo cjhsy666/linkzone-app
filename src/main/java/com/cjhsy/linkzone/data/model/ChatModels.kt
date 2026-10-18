@@ -248,6 +248,11 @@ data class MessageSegment(
             }
             // 思考过程段：仅本地智能体消息内嵌展示，不参与展示文本摘要
             "thinking" -> ""
+            // 工具调用段：会话列表等纯文本场景只留一行摘要
+            "tool" -> {
+                val name = get("name")
+                if (name.isNotBlank()) "[工具:$name]" else "[工具调用]"
+            }
             // 版本链元数据段（sys.ver）与分支约束段（sys.br）：不参与展示文本摘要
             "sys.ver" -> ""
             "sys.br" -> ""
@@ -330,6 +335,13 @@ object Segments {
 
     /** 思考过程段（仅本地智能体会话持久化，云端协议不产生该类型） */
     fun thinking(content: String): MessageSegment = seg("thinking", "text" to content)
+
+    /**
+     * 工具调用段（仅本地智能体会话持久化）：记录一次已执行的工具调用。
+     * ok=false 时字段被 seg() 省略（读取侧 getBool 默认 false，语义一致）。
+     */
+    fun tool(callId: String, name: String, input: String, output: String, ok: Boolean = true) =
+        seg("tool", "call_id" to callId, "name" to name, "input" to input, "output" to output, "ok" to ok)
 
     fun mention(userId: String, name: String = "", platform: String = ""): MessageSegment =
         seg("mention", "user_id" to userId, "name" to name, "platform" to platform)

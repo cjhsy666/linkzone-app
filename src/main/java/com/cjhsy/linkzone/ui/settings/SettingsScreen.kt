@@ -24,6 +24,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cjhsy.linkzone.core.storage.LlmPrefs
 import com.cjhsy.linkzone.data.model.SessionItem
 import com.cjhsy.linkzone.data.repository.AuthRepository
 import com.cjhsy.linkzone.data.repository.UserRepository
@@ -51,21 +53,35 @@ data class SettingsUiState(
     val loading: Boolean = false,
     val error: String? = null,
     val message: String? = null,
-    val loggedOut: Boolean = false
+    val loggedOut: Boolean = false,
+    /** 历史保留工具调用：开启时历史消息中的工具调用/结果回传给 AI */
+    val keepToolHistory: Boolean = true
 )
 
 /**
- * 设置 ViewModel：登录设备管理、踢出设备、退出所有设备、注销账号。
+ * 设置 ViewModel：登录设备管理、踢出设备、退出所有设备、注销账号、AI 偏好开关。
  */
 class SettingsViewModel(
     private val userRepository: UserRepository,
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val llmPrefs: LlmPrefs
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
 
-    init { refresh() }
+    init {
+        refresh()
+        _state.value = _state.value.copy(
+            keepToolHistory = llmPrefs.getBoolean(LlmPrefs.KEY_HISTORY_KEEP_TOOLS, true)
+        )
+    }
+
+    /** 切换「历史保留工具调用」：关闭可节省 token，但 AI 无法看到历史工具结果 */
+    fun setKeepToolHistory(keep: Boolean) {
+        llmPrefs.putBoolean(LlmPrefs.KEY_HISTORY_KEEP_TOOLS, keep)
+        _state.value = _state.value.copy(keepToolHistory = keep)
+    }
 
     fun refresh() {
         if (_state.value.loading) return
@@ -165,6 +181,25 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("历史保留工具调用", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "关闭可节省 token，但 AI 无法看到历史工具结果",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = state.keepToolHistory,
+                            onCheckedChange = viewModel::setKeepToolHistory
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
                     SettingsActionButton(label = "进入 AI 中心", onClick = onAiHub)
                     Spacer(Modifier.height(8.dp))
