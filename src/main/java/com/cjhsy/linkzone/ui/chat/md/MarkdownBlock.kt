@@ -84,6 +84,8 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
 import androidx.core.net.toUri
+import com.cjhsy.linkzone.ui.charts.ChartCard
+import com.cjhsy.linkzone.ui.charts.ChartSpec
 import com.cjhsy.linkzone.ui.components.DataTable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
@@ -91,6 +93,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import org.intellij.markdown.IElementType
 import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.MarkdownTokenTypes
@@ -1111,6 +1114,9 @@ private fun AnnotatedString.Builder.appendMarkdownNodeContent(
     }
 }
 
+/** ```chart 围栏 JSON 解析（宽松模式，容忍模型输出的引号/转义瑕疵） */
+private val LENIENT_JSON = Json { isLenient = true; ignoreUnknownKeys = true }
+
 @Composable
 internal fun HighlightCodeBlock(
     code: String,
@@ -1131,6 +1137,19 @@ internal fun HighlightCodeBlock(
                 MdSvgIsland(code, textColor)
             }
             return
+        }
+        "chart" -> {
+            // ```chart 围栏：内容为 JSON（与 ChartSpec 相同结构），解析成功渲染原生图表卡片，
+            // 失败（含流式输出未写完）回退普通代码块
+            val spec = remember(code) {
+                runCatching { ChartSpec.fromJson(LENIENT_JSON.parseToJsonElement(code)) }.getOrNull()
+            }
+            if (spec != null) {
+                Box(modifier = modifier) {
+                    ChartCard(spec = spec)
+                }
+                return
+            }
         }
     }
     val highlightsBuilder = rememberMdHighlightsBuilder(dark = textColor.luminance() > 0.5f)

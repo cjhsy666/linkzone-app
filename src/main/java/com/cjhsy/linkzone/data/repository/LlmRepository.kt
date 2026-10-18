@@ -29,6 +29,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * LLM 本地配置仓库：Provider / Agent 的 CRUD 与 Room 流。
@@ -430,10 +434,24 @@ class LlmRepository(
         }.getOrNull()
 
     private fun LlmAgentEntity.toAgent(): LlmAgent? {
-        val base = runCatching { jsonFormat.decodeFromString(LlmAgent.serializer(), json) }.getOrNull()
+        // 早期版本存过已废弃的 "chart_display" 开关（图表已改为 ```chart 围栏渲染），
+        // 剔除后才能安全解码，否则未知子类会让整个智能体反序列化失败
+        val base = runCatching { jsonFormat.decodeFromString(LlmAgent.serializer(), stripLegacyChartTool(json)) }
+            .getOrNull()
             ?: return null
         // localTools 以独立列为准（v5 起），JSON 列仅冗余
         return base.copy(localTools = decodeLocalTools(localTools))
+    }
+
+    /** 从 agent 整行 JSON 的 localTools 数组剔除已废弃的 chart_display（无该值时原样返回） */
+    private fun stripLegacyChartTool(raw: String): String {
+        val obj = runCatching { jsonFormat.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return raw
+        val arr = obj["localTools"] as? JsonArray ?: return raw
+        val cleaned = arr.filterNot { (it as? JsonPrimitive)?.contentOrNull == "chart_display" }
+        if (cleaned.size == arr.size) return raw
+        return runCatching {
+            jsonFormat.encodeToString(JsonObject.serializer(), JsonObject(obj + ("localTools" to JsonArray(cleaned))))
+        }.getOrDefault(raw)
     }
 
     /** 本地工具开关列表 → 列存储 JSON（失败回退空数组） */
@@ -442,10 +460,15 @@ class LlmRepository(
             json.encodeToString(ListSerializer(LocalToolOption.serializer()), list)
         }.getOrDefault("[]")
 
-    /** 列存储 JSON → 本地工具开关列表（损坏回退空数组） */
+    /** 列存储 JSON → 本地工具开关列表（剔除已废弃的 chart_display；损坏回退空数组） */
     private fun decodeLocalTools(raw: String): List<LocalToolOption> =
         runCatching {
-            json.decodeFromString(ListSerializer(LocalToolOption.serializer()), raw)
+            val arr = json.parseToJsonElement(raw) as? JsonArray ?: return emptyList()
+            val cleaned = arr.filterNot { (it as? JsonPrimitive)?.contentOrNull == "chart_display" }
+            json.decodeFromString(
+                ListSerializer(LocalToolOption.serializer()),
+                JsonArray(cleaned).toString()
+            )
         }.getOrDefault(emptyList())
 
     private fun LlmSkillEntity.toSkill(): LlmSkill? =

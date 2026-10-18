@@ -45,7 +45,7 @@ data class LlmAgent(
     val enableWebSearch: Boolean = false,
     /** 关联的 MCP 服务器 id 列表（llm_mcp_server 表，启用且已连接的服务器工具会被注入） */
     val mcpServers: Set<String> = emptySet(),
-    /** 本地工具开关（如图表渲染 chart_display，本地执行的工具） */
+    /** 本地工具开关（时间/剪贴板/日历/手机控制等本地执行的工具） */
     val localTools: List<LocalToolOption> = emptyList(),
     /** 时间感知：在首条/间隔较大的用户消息前注入当前时间提醒（RikkaHub TimeReminderTransformer） */
     val enableTimeReminder: Boolean = true,

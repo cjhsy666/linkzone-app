@@ -50,7 +50,8 @@ data class ChartSpec(
 
     companion object {
         /**
-         * 从 chart_display 工具参数解析图表, 尽量宽松; 无法构成有效图表时返回 null
+         * 解析图表 JSON（```chart 围栏内容，结构同原 chart_display 工具参数），尽量宽松;
+         * 无法构成有效图表时返回 null
          */
         fun fromJson(element: JsonElement): ChartSpec? {
             val obj = element as? JsonObject ?: return null

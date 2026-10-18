@@ -38,8 +38,6 @@ import java.util.Locale
  * - [LocalToolOption.Clipboard] → clipboard_tool
  * - [LocalToolOption.AskUser] → ask_user（经 [askUser] 桥接挂起等用户作答）
  * - [LocalToolOption.Calendar] → calendar_query + calendar_create（需系统日历权限）
- *
- * ChartDisplay 未接线：气泡内图表渲染尚未实现，接入后模型会调用但用户看不到结果。
  */
 fun createLocalTools(
     context: Context,

@@ -6,15 +6,12 @@ import kotlinx.serialization.Serializable
 /**
  * 本地工具开关选项（对齐 RikkaHub LocalToolOption 的裁剪版）
  *
- * 新增子类必须带 @SerialName 且旧值不变：开关以 JSON 存进 Room（llm_agent.localTools），
- * 反序列化遇到未知 serial 名会失败，故只增不改。
+ * 增删子类的约束：开关以 JSON 存进 Room（llm_agent.localTools 及整行 agent JSON），
+ * 删除子类时必须在 LlmRepository 解码前从存储 JSON 剔除其 serial 名，
+ * 否则旧数据遇到未知子类会让整个列表（乃至整个智能体）反序列化失败。
  */
 @Serializable
 sealed class LocalToolOption {
-    @Serializable
-    @SerialName("chart_display")
-    object ChartDisplay : LocalToolOption()
-
     /** 时间感知 get_time_info（查询设备当前日期时间） */
     @Serializable
     @SerialName("time_info")

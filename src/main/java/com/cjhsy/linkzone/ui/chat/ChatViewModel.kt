@@ -1537,7 +1537,15 @@ class ChatViewModel(
         // 记忆与工具索引拼进系统提示（顺序对齐 RikkaHub：记忆块在前、工具索引在后）
         val memoryPrompt = if (agent.enableMemory) buildMemoryPrompt(memories) else ""
         val toolPrompt = tools.joinToString("\n") { it.systemPrompt(model, context) }.trim()
-        val extraPrompt = listOf(memoryPrompt.trim(), toolPrompt)
+        // ```chart 围栏图表：模型无法凭训练数据得知该约定，需注入简短语法说明
+        val chartPrompt = """
+            # Chart rendering
+            To present data as a chart (numeric comparison, trend, distribution), output a ```chart fenced code block containing a JSON object:
+            {"style":"bar","title":"Title","x_axis":{"title":"X","data":["A","B"]},"y_axis":{"title":"Y"},"series":[{"name":"S1","values":[10,20]}]}
+            style: bar | line | scatter. For scatter use "points":[{"x":1,"y":2}] instead of "values". Multiple series compare side by side.
+            Do NOT use charts for ordinary prose; skip the fence when a chart adds nothing.
+        """.trimIndent()
+        val extraPrompt = listOf(memoryPrompt.trim(), chartPrompt, toolPrompt)
             .filter { it.isNotBlank() }
             .joinToString("\n")
         val baseContext = if (extraPrompt.isNotBlank()) mergeSystemPrompt(context, extraPrompt) else context

@@ -1138,7 +1138,6 @@ internal fun LocalToolSwitchList(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { }
     val tools = listOf(
-        Triple("图表渲染", "允许模型通过 chart_display 渲染图表", LocalToolOption.ChartDisplay),
         Triple("时间查询", "查询设备当前日期、时间与时区", LocalToolOption.TimeInfo),
         Triple("剪贴板", "读取或写入剪贴板文本", LocalToolOption.Clipboard),
         Triple("主动追问", "信息不足时暂停生成向你提问（可跳过）", LocalToolOption.AskUser),
