@@ -219,7 +219,7 @@ val appModule = module {
     viewModel { SignInViewModel(get()) }
     viewModel { NotificationViewModel(get()) }
     viewModel { MainViewModel(get(), get(), get(), get()) }
-    viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { LlmProviderViewModel(get(), get()) }
     viewModel { LlmAgentViewModel(get(), get()) }
     viewModel { LlmExtensionViewModel(androidContext(), get()) }
