@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.llm
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -159,7 +161,7 @@ class LlmMcpViewModel(
     fun syncAll() {
         viewModelScope.launch {
             runCatching { mcpManager.syncAll() }
-                .onFailure { _state.value = _state.value.copy(error = it.message ?: "同步失败") }
+                .onFailure { _state.value = _state.value.copy(error = it.toUserMessage("同步失败")) }
         }
     }
 
@@ -178,7 +180,7 @@ class LlmMcpViewModel(
     fun clearAuthorization(config: McpServerConfig) {
         viewModelScope.launch {
             runCatching { mcpManager.clearAuthorization(config) }
-                .onFailure { _state.value = _state.value.copy(error = it.message ?: "清除授权失败") }
+                .onFailure { _state.value = _state.value.copy(error = it.toUserMessage("清除授权失败")) }
         }
     }
 

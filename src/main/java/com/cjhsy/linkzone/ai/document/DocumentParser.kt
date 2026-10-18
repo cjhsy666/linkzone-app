@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ai.document
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import android.util.LruCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -56,7 +58,7 @@ object DocumentParser {
                 else -> parseUnknown(file)
             }
         }.getOrElse { e ->
-            "[ERROR, failed to read file $fileName: ${e.message ?: e.javaClass.simpleName}]"
+            "[ERROR] 读取文件 $fileName 失败：${e.toUserMessage(e.javaClass.simpleName)}"
         }
 
         val normalized = if (result.isBlank()) "[文档内容为空: $fileName]" else result

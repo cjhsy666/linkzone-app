@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.backup
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -92,7 +94,7 @@ class BackupViewModel(
                 onFailure = { e ->
                     _state.value = _state.value.copy(
                         busy = false,
-                        message = "导出失败：${e.message ?: "未知错误"}"
+                        message = "导出失败：${e.toUserMessage("未知错误")}"
                     )
                 }
             )
@@ -126,7 +128,7 @@ class BackupViewModel(
                 onFailure = { e ->
                     _state.value = _state.value.copy(
                         busy = false,
-                        message = "恢复失败：${e.message ?: "未知错误"}"
+                        message = "恢复失败：${e.toUserMessage("未知错误")}"
                     )
                 }
             )
@@ -161,7 +163,7 @@ class BackupViewModel(
                 onFailure = { e ->
                     _state.value = _state.value.copy(
                         webdavBusy = false,
-                        message = e.message ?: "连接失败"
+                        message = e.toUserMessage("连接失败")
                     )
                 }
             )
@@ -193,7 +195,7 @@ class BackupViewModel(
                 onFailure = { e ->
                     _state.value = _state.value.copy(
                         webdavBusy = false,
-                        message = "上传失败：${e.message ?: "未知错误"}"
+                        message = "上传失败：${e.toUserMessage("未知错误")}"
                     )
                 }
             )
@@ -225,7 +227,7 @@ class BackupViewModel(
                 onFailure = { e ->
                     _state.value = _state.value.copy(
                         webdavBusy = false,
-                        message = "下载/恢复失败：${e.message ?: "未知错误"}"
+                        message = "下载/恢复失败：${e.toUserMessage("未知错误")}"
                     )
                 }
             )

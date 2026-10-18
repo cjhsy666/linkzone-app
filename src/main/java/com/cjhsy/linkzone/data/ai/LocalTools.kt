@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.data.ai
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -295,7 +297,7 @@ private fun buildCalendarQueryTool(context: Context): Tool = Tool(
         } catch (e: Exception) {
             return@Tool listOf(UIMessagePart.Text(buildJsonObject {
                 put("error", "INVALID_TIME")
-                put("message", e.message ?: "Invalid time format for begin/end.")
+                put("message", e.toUserMessage("开始/结束时间格式无效"))
             }.toString()))
         }
 
@@ -473,7 +475,7 @@ private fun buildCalendarCreateTool(context: Context): Tool = Tool(
         } catch (e: Exception) {
             return@Tool listOf(UIMessagePart.Text(buildJsonObject {
                 put("error", "INVALID_TIME")
-                put("message", e.message ?: "Invalid time format.")
+                put("message", e.toUserMessage("时间格式无效"))
             }.toString()))
         }
 

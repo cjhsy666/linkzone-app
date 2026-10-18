@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.settings
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -72,7 +74,7 @@ class SettingsViewModel(
             val result = userRepository.loadSessions()
             _state.value = result.fold(
                 onSuccess = { _state.value.copy(loading = false, sessions = it) },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "加载设备失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("加载设备失败")) }
             )
         }
     }
@@ -84,7 +86,7 @@ class SettingsViewModel(
                     _state.value = _state.value.copy(message = "已下线该设备")
                     refresh()
                 },
-                onFailure = { _state.value = _state.value.copy(error = it.message ?: "操作失败") }
+                onFailure = { _state.value = _state.value.copy(error = it.toUserMessage("操作失败")) }
             )
         }
     }
@@ -103,7 +105,7 @@ class SettingsViewModel(
                     authRepository.clearSession()
                     _state.value = _state.value.copy(loggedOut = true)
                 },
-                onFailure = { _state.value = _state.value.copy(error = it.message ?: "注销失败") }
+                onFailure = { _state.value = _state.value.copy(error = it.toUserMessage("注销失败")) }
             )
         }
     }

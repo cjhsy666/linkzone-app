@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.data.ai
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import com.cjhsy.linkzone.ai.core.InputSchema
 import com.cjhsy.linkzone.ai.core.Tool
 import com.cjhsy.linkzone.ai.ui.UIMessagePart
@@ -134,7 +136,7 @@ internal suspend fun evaluateJavascript(
     } catch (_: QuickJsInterruptedException) {
         errorPayload("JavaScript execution timed out after ${timeoutMillis}ms")
     } catch (e: QuickJsException) {
-        errorPayload((e.message ?: "JavaScript execution failed").take(JS_MAX_LOG_CHARS))
+        errorPayload(e.toUserMessage("JavaScript 执行失败").take(JS_MAX_LOG_CHARS))
     }
 }
 

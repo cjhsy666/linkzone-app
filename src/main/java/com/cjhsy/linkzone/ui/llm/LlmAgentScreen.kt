@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.llm
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -252,7 +254,7 @@ class LlmAgentViewModel(
                 throw e
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
-                    error = "导入失败：${e.message ?: "文件格式不正确"}"
+                    error = "导入失败：${e.toUserMessage("文件格式不正确")}"
                 )
             }
         }
@@ -291,7 +293,7 @@ class LlmAgentViewModel(
                 throw e
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
-                    error = "角色卡导入失败：${e.message ?: "文件格式不正确"}"
+                    error = "角色卡导入失败：${e.toUserMessage("文件格式不正确")}"
                 )
             }
         }
@@ -337,7 +339,7 @@ fun LlmAgentScreen(
                         ?: error("无法读取所选文件")
                     viewModel.importAgentJson(text)
                 }.onFailure { e ->
-                    Toast.makeText(context, "导入失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "导入失败：${e.toUserMessage("未知错误")}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -354,7 +356,7 @@ fun LlmAgentScreen(
                         ?: error("无法读取所选文件")
                     viewModel.importCharacterCard(bytes)
                 }.onFailure { e ->
-                    Toast.makeText(context, "导入失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "导入失败：${e.toUserMessage("未知错误")}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -482,7 +484,7 @@ fun LlmAgentScreen(
                                                 android.content.Intent.createChooser(intent, "导出智能体")
                                             )
                                         }.onFailure { e ->
-                                            Toast.makeText(context, "导出失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "导出失败：${e.toUserMessage("未知错误")}", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 }

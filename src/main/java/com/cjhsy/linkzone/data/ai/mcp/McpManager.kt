@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.data.ai.mcp
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -95,10 +97,10 @@ class McpManager(
         } catch (e: CancellationException) {
             throw e
         } catch (e: McpClientUnavailableException) {
-            listOf(UIMessagePart.Text("Failed to execute MCP tool: ${e.message ?: e.javaClass.name}"))
+            listOf(UIMessagePart.Text("MCP 工具执行失败：${e.toUserMessage(e.javaClass.name)}"))
         } catch (e: Exception) {
             Log.w(TAG, "MCP tool call failed: $toolName on $serverId", e)
-            listOf(UIMessagePart.Text("Failed to execute MCP tool: ${e.message ?: e.javaClass.simpleName}"))
+            listOf(UIMessagePart.Text("MCP 工具执行失败：${e.toUserMessage(e.javaClass.simpleName)}"))
         }
     }
 

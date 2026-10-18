@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.signin
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -83,7 +85,7 @@ class SignInViewModel(
                 status = status.getOrNull() ?: _state.value.status,
                 calendar = calendar.getOrNull() ?: _state.value.calendar,
                 error = listOf(status, calendar)
-                    .firstNotNullOfOrNull { it.exceptionOrNull()?.message }
+                    .firstNotNullOfOrNull { it.exceptionOrNull()?.toUserMessage() }
             )
         }
     }
@@ -95,7 +97,7 @@ class SignInViewModel(
             val result = engageRepository.signIn()
             _state.value = result.fold(
                 onSuccess = { _state.value.copy(loading = false, message = "签到成功，积分 +${it.points}") },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "签到失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("签到失败")) }
             )
             refresh()
         }

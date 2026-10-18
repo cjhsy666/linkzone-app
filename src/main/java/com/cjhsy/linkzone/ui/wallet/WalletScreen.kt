@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.wallet
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -108,7 +110,7 @@ class WalletViewModel(
                     config = r.config.getOrNull() ?: s.config,
                     withdrawals = r.withdrawals.getOrNull()?.items ?: s.withdrawals,
                     error = listOf(r.balance, r.logs, r.config, r.withdrawals)
-                        .firstNotNullOfOrNull { it.exceptionOrNull()?.message }
+                        .firstNotNullOfOrNull { it.exceptionOrNull()?.toUserMessage() }
                 )
             }
         }
@@ -139,7 +141,7 @@ class WalletViewModel(
             val result = assetRepository.applyWithdraw(amount, method, account)
             _state.value = result.fold(
                 onSuccess = { _state.value.copy(loading = false, message = "提现申请已提交") },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "提交失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("提交失败")) }
             )
             refresh()
         }

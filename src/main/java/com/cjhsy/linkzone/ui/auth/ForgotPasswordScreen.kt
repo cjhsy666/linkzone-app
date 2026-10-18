@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.auth
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -76,7 +78,7 @@ class ForgotPasswordViewModel(
             val result = authRepository.forgotPassword(s.identifier)
             _state.value = result.fold(
                 onSuccess = { _state.value.copy(loading = false, codeSent = true) },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "发送失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("发送失败")) }
             )
         }
     }
@@ -101,7 +103,7 @@ class ForgotPasswordViewModel(
             val result = authRepository.resetPassword(s.identifier, s.code, s.newPassword)
             _state.value = result.fold(
                 onSuccess = { _state.value.copy(loading = false, done = true) },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "重置失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("重置失败")) }
             )
         }
     }

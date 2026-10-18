@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.data.backup
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -119,7 +121,7 @@ class WebDavSync(client: OkHttpClient, private val tempDir: File? = null) {
                     FileOutputStream(tmp).use { output -> input.copyTo(output) }
                 } catch (e: Exception) {
                     tmp.delete()
-                    throw WebDavException("下载中断：${e.message ?: "IO 错误"}", e)
+                    throw WebDavException("下载中断：${e.toUserMessage("IO 错误")}", e)
                 }
                 if (tmp.length() == 0L) {
                     tmp.delete()
@@ -163,7 +165,7 @@ class WebDavSync(client: OkHttpClient, private val tempDir: File? = null) {
         } catch (e: WebDavException) {
             throw e
         } catch (e: Exception) {
-            throw WebDavException("无法连接服务器：${e.message ?: "网络错误"}", e)
+            throw WebDavException("无法连接服务器：${e.toUserMessage("网络错误")}", e)
         }
     }
 

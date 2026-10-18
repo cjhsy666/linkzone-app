@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.stats
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cjhsy.linkzone.data.stats.UsageSnapshot
@@ -47,7 +49,7 @@ class StatsViewModel(
                     _state.value = StatsUiState(loading = false, snapshot = snap)
                 },
                 onFailure = { e ->
-                    _state.value = StatsUiState(loading = false, error = e.message ?: "加载统计失败")
+                    _state.value = StatsUiState(loading = false, error = e.toUserMessage("加载统计失败"))
                 }
             )
         }

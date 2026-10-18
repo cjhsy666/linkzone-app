@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.profile
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cjhsy.linkzone.core.network.ApiException
@@ -80,7 +82,7 @@ class ProfileViewModel(
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         error = if (isAuth) "登录已过期，请重新登录"
-                        else (throwable.message ?: "加载失败，请稍后重试"),
+                        else throwable.toUserMessage("加载失败，请稍后重试"),
                         loggedOut = isAuth
                     )
                 }

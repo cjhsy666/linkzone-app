@@ -4,6 +4,8 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.cjhsy.linkzone.core.error.ErrorMessages
+import com.cjhsy.linkzone.core.error.toUserMessage
 import com.cjhsy.linkzone.data.model.ConvItem
 import com.cjhsy.linkzone.data.model.MessageItem
 import com.cjhsy.linkzone.data.model.MessageSegment
@@ -423,7 +425,7 @@ class ChatViewModel(
         if (target != null) {
             openConv(target)
         } else {
-            _state.value = _state.value.copy(loading = false, error = "云端主会话不可用，请检查网络后重试")
+            _state.value = _state.value.copy(loading = false, error = ErrorMessages.CHAT_CONV_UNAVAILABLE)
         }
     }
 
@@ -446,7 +448,7 @@ class ChatViewModel(
                 refreshConvList()
                 openConv(conv)
             }.onFailure { e ->
-                _state.value = _state.value.copy(error = e.message ?: "打开云端对话失败")
+                _state.value = _state.value.copy(error = e.toUserMessage("打开云端对话失败"))
             }
         }
     }
@@ -532,7 +534,7 @@ class ChatViewModel(
                     }
                     updateConvInList(convId) { it.copy(last_msg = "", unread = 0) }
                 }
-                .onFailure { _state.value = _state.value.copy(error = it.message ?: "清空失败") }
+                .onFailure { _state.value = _state.value.copy(error = it.toUserMessage(ErrorMessages.CHAT_CLEAR_FAIL)) }
         }
     }
 
@@ -861,7 +863,7 @@ class ChatViewModel(
             }.onFailure {
                 _state.value = _state.value.copy(
                     loading = false,
-                    error = it.message ?: "加载消息失败"
+                    error = it.toUserMessage(ErrorMessages.CHAT_LOAD_HISTORY)
                 )
             }
         }
@@ -905,7 +907,7 @@ class ChatViewModel(
                     return@launch
                 }
                 if (items.isEmpty()) {
-                    _state.value = _state.value.copy(loading = false, error = it.message ?: "加载失败")
+                    _state.value = _state.value.copy(loading = false, error = it.toUserMessage(ErrorMessages.CHAT_LOAD_MORE))
                 } else {
                     val merged = (items + _state.value.messages)
                         .distinctBy { cleanId(it.id) }
@@ -1035,7 +1037,7 @@ class ChatViewModel(
                     if (result.isFailure) {
                         allOk = false
                         _state.value = _state.value.copy(
-                            error = result.exceptionOrNull()?.message ?: "图片上传失败"
+                            error = result.exceptionOrNull()?.toUserMessage("图片上传失败") ?: "图片上传失败"
                         )
                         break
                     }
@@ -1087,7 +1089,7 @@ class ChatViewModel(
         if (attachments.isEmpty()) {
             val ok = socketManager.sendSegments(allLocal, s.currentConvId, myId, myId, s.currentBotId, clientId)
             if (!ok) {
-                _state.value = _state.value.copy(error = "连接已断开，消息未发送")
+                _state.value = _state.value.copy(error = ErrorMessages.CHAT_SEND_OFFLINE)
                 socketManager.connect()
                 return
             }
@@ -1121,7 +1123,7 @@ class ChatViewModel(
                 if (result.isFailure) {
                     allOk = false
                     markMediaStatus(clientId, failed = true)
-                    _state.value = _state.value.copy(error = result.exceptionOrNull()?.message ?: "上传失败")
+                    _state.value = _state.value.copy(error = result.exceptionOrNull()?.toUserMessage("上传失败") ?: "上传失败")
                     break
                 }
                 val upload = result.getOrThrow()
@@ -1134,7 +1136,7 @@ class ChatViewModel(
             val ok = socketManager.sendSegments(remoteSegs, s.currentConvId, myId, myId, s.currentBotId, clientId)
             if (!ok) {
                 markMediaStatus(clientId, failed = true)
-                _state.value = _state.value.copy(error = "连接已断开，消息未发送")
+                _state.value = _state.value.copy(error = ErrorMessages.CHAT_SEND_OFFLINE)
                 socketManager.connect()
                 return@launch
             }
@@ -1163,7 +1165,7 @@ class ChatViewModel(
         // 落库存服务端 URL，AI 上下文直接拿到可访问的图片链接（不再 base64）。
         if (isLocalConvId(s.currentConvId)) {
             if (file.length() > MAX_UPLOAD_BYTES) {
-                _state.value = _state.value.copy(error = "文件过大，限制 20MB")
+                _state.value = _state.value.copy(error = ErrorMessages.FILE_TOO_LARGE)
                 return
             }
             val clientId = UUID.randomUUID().toString()
@@ -1203,7 +1205,7 @@ class ChatViewModel(
                         messages = _state.value.messages.map { m ->
                             if (m.id == clientId) m.copy(uploading = false, uploadFailed = true) else m
                         },
-                        error = result.exceptionOrNull()?.message ?: "上传失败"
+                        error = result.exceptionOrNull()?.toUserMessage("上传失败") ?: "上传失败"
                     )
                     return@launch
                 }
@@ -1281,7 +1283,7 @@ class ChatViewModel(
             if (result.isFailure) {
                 markMediaStatus(clientId, failed = true)
                 _state.value = _state.value.copy(
-                    error = result.exceptionOrNull()?.message ?: "上传失败"
+                    error = result.exceptionOrNull()?.toUserMessage("上传失败") ?: "上传失败"
                 )
                 return@launch
             }
@@ -1300,7 +1302,7 @@ class ChatViewModel(
             )
             if (!ok) {
                 markMediaStatus(clientId, failed = true)
-                _state.value = _state.value.copy(error = "连接已断开，消息未发送")
+                _state.value = _state.value.copy(error = ErrorMessages.CHAT_SEND_OFFLINE)
                 socketManager.connect()
                 return@launch
             }
@@ -1437,7 +1439,7 @@ class ChatViewModel(
             // 基于最新状态写错误（不能复用入口快照 s，期间状态可能已变化）
             _state.value = _state.value.copy(
                 sending = false,
-                error = "连接已断开，消息未发送"
+                error = ErrorMessages.CHAT_SEND_OFFLINE
             )
             socketManager.connect()
             return false
@@ -1533,7 +1535,7 @@ class ChatViewModel(
         }
         val resolved = if (overrideModelId != null) resolveChatModelById(overrideModelId) else null
         val (setting, model) = resolved ?: (resolveChatModel(agent) ?: run {
-            _state.value = _state.value.copy(error = "尚未配置可用模型，请到「设置 → AI 模型服务」添加")
+            _state.value = _state.value.copy(error = ErrorMessages.MODEL_UNCONFIGURED)
             return
         })
 
@@ -1799,7 +1801,7 @@ class ChatViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _state.value = _state.value.copy(error = e.message ?: "生成失败")
+            _state.value = _state.value.copy(error = e.toUserMessage(ErrorMessages.CHAT_GENERATE))
         } finally {
             // 停止/异常/正常结束统一收尾；NonCancellable 保证取消后仍能落库
             withContext(NonCancellable) {
@@ -2307,14 +2309,14 @@ class ChatViewModel(
                     }
                     result.onFailure { e ->
                         android.util.Log.w("LZC-image", "pre-encode FAILED url=$url", e)
-                        if (firstError == null) firstError = e.message ?: "未知错误"
+                        if (firstError == null) firstError = e.toUserMessage("未知错误")
                     }
                     result.getOrNull()?.let { UIMessagePart.Image(it.base64) }
                         ?: UIMessagePart.Text("[图片读取失败：${url.substringAfterLast('/')}]")
                 })
             }
             firstError?.let {
-                _state.value = _state.value.copy(error = "图片读取失败，AI 看不到这张图：$it")
+                _state.value = _state.value.copy(error = "${ErrorMessages.IMAGE_ENCODE_FAIL}：${it.toUserMessage()}")
             }
             out
         }
@@ -2342,7 +2344,7 @@ class ChatViewModel(
                     maxTokens = 800
                 )
             )
-        }.getOrElse { return "[ERROR, OCR failed: ${it.message ?: "未知错误"}]" }
+        }.getOrElse { return "[ERROR, OCR failed: ${it.toUserMessage("未知错误")}]" }
         val content = result.message.parts
             .filterIsInstance<UIMessagePart.Text>()
             .joinToString("") { it.text }
@@ -2388,7 +2390,7 @@ class ChatViewModel(
                 withContext(Dispatchers.IO) { def.execute(args) }
             }.getOrElse { e ->
                 if (e is CancellationException) throw e
-                listOf(UIMessagePart.Text(errorJson("[${e.javaClass.simpleName}] ${e.message ?: "tool error"}")))
+                listOf(UIMessagePart.Text(errorJson(e.toUserMessage("工具调用失败"))))
             }
         }
         call.copy(output = output)
@@ -2970,7 +2972,7 @@ class ChatViewModel(
         val s = _state.value
         val node = s.messages.toMessageNodes().nodeOf(target.id)
         if (node == null) {
-            _state.value = _state.value.copy(error = "消息已不存在，操作失败")
+            _state.value = _state.value.copy(error = ErrorMessages.CHAT_NOT_EXIST)
             return
         }
         // 旧尾巴钉到当前选中版本（作为旧分支完整保留，切回旧版本时整条换回）

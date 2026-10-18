@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.workspace
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -170,7 +172,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
                 notify("proot 导入成功")
             }.onFailure { e ->
                 _envInstalling.value = null
-                notify(null, "proot 导入失败：${e.message ?: "未知错误"}")
+                notify(null, "proot 导入失败：${e.toUserMessage("未知错误")}")
             }
         }
     }
@@ -193,7 +195,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
                 notify("Linux 环境安装完成，已切换为完整环境")
             }.onFailure { e ->
                 _envInstalling.value = null
-                notify(null, "rootfs 安装失败：${e.message ?: "未知错误"}")
+                notify(null, "rootfs 安装失败：${e.toUserMessage("未知错误")}")
             }
         }
     }
@@ -390,7 +392,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
                 } ?: error("无法读取所选文件")
                 notify("已导入「${target.name}」")
             }.onFailure { e ->
-                notify(null, "导入失败：${e.message ?: "未知错误"}")
+                notify(null, "导入失败：${e.toUserMessage("未知错误")}")
             }
             listDir(_state.value.cwd)
         }
@@ -423,7 +425,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
                     appContext.startActivity(Intent.createChooser(intent, "导出「${entry.name}」"))
                 }
             }.onFailure { e ->
-                notify(null, "导出失败：${e.message ?: "未知错误"}")
+                notify(null, "导出失败：${e.toUserMessage("未知错误")}")
             }
         }
     }
@@ -458,7 +460,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
                 resolver.openOutputStream(doc)?.use { out -> src.inputStream().use { it.copyTo(out) } }
                     ?: error("无法写入目标文件")
                 notify("已保存到所选目录：${entry.name}")
-            }.onFailure { e -> notify(null, "保存失败：${e.message ?: "未知错误"}") }
+            }.onFailure { e -> notify(null, "保存失败：${e.toUserMessage("未知错误")}") }
         }
     }
 
@@ -500,7 +502,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
                 }
                 copyDir(ws.root, folderUri)
                 notify("已导出整个工作区（$count 个文件）到所选目录")
-            }.onFailure { e -> notify(null, "导出失败：${e.message ?: "未知错误"}") }
+            }.onFailure { e -> notify(null, "导出失败：${e.toUserMessage("未知错误")}") }
         }
     }
 
@@ -536,7 +538,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
             val result = runCatching {
                 runner.execute(WorkspaceShellContext(root = ws.root, command = command.trim()))
             }.getOrElse {
-                WorkspaceCommandResult(-1, "", it.message ?: "执行异常", false)
+                WorkspaceCommandResult(-1, "", it.toUserMessage("执行异常"), false)
             }
             val header = "$ ${command.trim()}\n"
             val footer = buildString {

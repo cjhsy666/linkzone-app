@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.notification
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -63,7 +65,7 @@ class NotificationViewModel(
                 onSuccess = {
                     _state.value.copy(loading = false, items = it.items, unreadCount = it.unreadCount)
                 },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "加载失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("加载失败")) }
             )
         }
     }

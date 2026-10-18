@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.data.ai
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -140,7 +142,7 @@ internal fun buildPhoneControlTool(context: Context): Tool = Tool(
                         listOf(UIMessagePart.Text(buildJsonObject {
                             put("success", false)
                             put("error", "NO_HANDLER")
-                            put("message", "没有可打开该链接的应用：${e.message ?: ""}")
+                            put("message", "没有可打开该链接的应用：${e.toUserMessage("")}")
                         }.toString()))
                     }
                 )

@@ -49,7 +49,7 @@ import com.cjhsy.linkzone.data.files.SkillFrontmatterParser
 import com.cjhsy.linkzone.data.model.LlmInjectionPosition
 import com.cjhsy.linkzone.data.model.LlmLorebook
 import com.cjhsy.linkzone.data.model.LlmLorebookEntry
-import com.cjhsy.linkzone.data.model.LlmPrompt
+import com.cjhsy.linkzone.core.error.toUserMessage
 import com.cjhsy.linkzone.data.model.LlmQuickMessage
 import com.cjhsy.linkzone.data.model.LlmSkill
 import com.cjhsy.linkzone.data.repository.LlmRepository
@@ -170,7 +170,7 @@ class LlmExtensionViewModel(
                 )
                 _state.value = _state.value.copy(error = null)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(error = "导入失败：${e.message ?: "未知错误"}")
+                _state.value = _state.value.copy(error = "导入失败：${e.toUserMessage("未知错误")}")
             }
         }
     }
@@ -339,7 +339,7 @@ class LlmExtensionViewModel(
                     error = null
                 )
             } catch (e: Exception) {
-                _state.value = _state.value.copy(error = "导入失败：${e.message ?: "文件格式不正确"}")
+                _state.value = _state.value.copy(error = "导入失败：${e.toUserMessage("文件格式不正确")}")
             }
         }
     }
@@ -351,7 +351,7 @@ class LlmExtensionViewModel(
                     ?: throw IllegalArgumentException("无法读取所选文件")
                 importCloudCommandsJson(text)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(error = "导入失败：${e.message ?: "未知错误"}")
+                _state.value = _state.value.copy(error = "导入失败：${e.toUserMessage("未知错误")}")
             }
         }
     }
@@ -1235,7 +1235,7 @@ private fun CloudCommandsTab(state: LlmExtensionUiState, viewModel: LlmExtension
                                 )
                             }.onFailure { e ->
                                 android.widget.Toast.makeText(
-                                    context, "导出失败：${e.message ?: "未知错误"}", android.widget.Toast.LENGTH_SHORT
+                                    context, "导出失败：${e.toUserMessage("未知错误")}", android.widget.Toast.LENGTH_SHORT
                                 ).show()
                             }
                         }

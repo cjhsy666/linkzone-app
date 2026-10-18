@@ -1,5 +1,8 @@
 package com.cjhsy.linkzone.ui.llm
 
+import com.cjhsy.linkzone.core.error.ErrorMessages
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -272,7 +275,7 @@ class LlmProviderViewModel(
                 if (remote.isEmpty()) {
                     _state.value = _state.value.copy(
                         fetchingModelsFor = null,
-                        error = "服务返回空模型列表，请检查地址与 Key"
+                        error = ErrorMessages.MODEL_LIST_EMPTY
                     )
                     return@launch
                 }
@@ -299,7 +302,7 @@ class LlmProviderViewModel(
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     fetchingModelsFor = null,
-                    error = "拉取失败：${e.message ?: "未知错误"}"
+                    error = "拉取失败：${e.toUserMessage()}"
                 )
             }
         }
@@ -375,7 +378,7 @@ class LlmProviderViewModel(
             }
             val ui = result.fold(
                 onSuccess = { BalanceUi(loading = false, value = it) },
-                onFailure = { BalanceUi(loading = false, error = it.message ?: "获取失败") }
+                onFailure = { BalanceUi(loading = false, error = it.toUserMessage("获取失败")) }
             )
             _state.value = _state.value.copy(
                 balances = _state.value.balances + (provider.id to ui)
@@ -478,7 +481,7 @@ class LlmProviderViewModel(
 
             nonStream.await().fold(
                 onSuccess = { setTestItem(nonStream = TestItemState.Ok(it)) },
-                onFailure = { setTestItem(nonStream = TestItemState.Error(it.message ?: "请求失败")) }
+                onFailure = { setTestItem(nonStream = TestItemState.Error(it.toUserMessage("请求失败"))) }
             )
             stream.await().fold(
                 onSuccess = { text ->
@@ -489,11 +492,11 @@ class LlmProviderViewModel(
                         )
                     )
                 },
-                onFailure = { setTestItem(stream = TestItemState.Error(it.message ?: "请求失败")) }
+                onFailure = { setTestItem(stream = TestItemState.Error(it.toUserMessage("请求失败"))) }
             )
             tools.await().fold(
                 onSuccess = { setTestItem(tools = TestItemState.Ok(it)) },
-                onFailure = { setTestItem(tools = TestItemState.Error(it.message ?: "请求失败")) }
+                onFailure = { setTestItem(tools = TestItemState.Error(it.toUserMessage("请求失败"))) }
             )
             _state.value = _state.value.copy(
                 connectionTest = _state.value.connectionTest?.copy(running = false)
@@ -801,7 +804,7 @@ private fun ProviderEditor(
                 privateKey = obj["private_key"]?.jsonPrimitive?.contentOrNull,
             )
         }.onFailure {
-            viewModel.showMessage("服务账号解析失败：${it.message ?: "文件格式不正确"}")
+            viewModel.showMessage("服务账号解析失败：${it.toUserMessage("文件格式不正确")}")
         }
     }
 

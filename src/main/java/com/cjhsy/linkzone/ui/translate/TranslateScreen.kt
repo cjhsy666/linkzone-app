@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.translate
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -231,7 +233,7 @@ class TranslateViewModel(
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     translating = false,
-                    error = e.message ?: "翻译失败"
+                    error = e.toUserMessage("翻译失败")
                 )
             }
         }

@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.profile
 
+import com.cjhsy.linkzone.core.error.toUserMessage
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -117,7 +119,7 @@ class ProfileEditViewModel(
             )
             _state.value = result.fold(
                 onSuccess = { _state.value.copy(loading = false, saved = true) },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "保存失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("保存失败")) }
             )
         }
     }
@@ -142,7 +144,7 @@ class ProfileEditViewModel(
             val result = userRepository.changePassword(s.oldPassword, s.newPassword)
             _state.value = result.fold(
                 onSuccess = { _state.value.copy(loading = false, error = null, oldPassword = "", newPassword = "", confirmPassword = "", saved = true) },
-                onFailure = { _state.value.copy(loading = false, error = it.message ?: "修改失败") }
+                onFailure = { _state.value.copy(loading = false, error = it.toUserMessage("修改失败")) }
             )
         }
     }
