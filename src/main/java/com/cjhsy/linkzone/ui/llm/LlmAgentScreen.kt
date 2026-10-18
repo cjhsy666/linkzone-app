@@ -3,11 +3,15 @@ package com.cjhsy.linkzone.ui.llm
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -40,10 +45,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -499,7 +506,7 @@ private fun AgentEditor(
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().safeDrawingPadding().imePadding(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 16.dp)
     ) {
         item {
@@ -516,155 +523,128 @@ private fun AgentEditor(
             }
         }
 
-        // ===== 基础 =====
+        // ===== 基础：头像 / 名称 / 对话模型 =====
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = agent.avatarEmoji,
-                    onValueChange = { v -> viewModel.updateEditing { it.copy(avatarEmoji = v.take(2)) } },
-                    label = { Text("头像") },
-                    modifier = Modifier.width(88.dp),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = agent.name,
-                    onValueChange = { v -> viewModel.updateEditing { it.copy(name = v) } },
-                    label = { Text("名称") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
-                )
-            }
-        }
-
-        // ===== 模型绑定 =====
-        item { Text("对话模型", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item {
-            ModelPicker(
-                providers = state.providers,
-                selectedModelId = agent.chatModelId,
-                label = viewModel.modelLabel(agent.chatModelId),
-                onSelect = { modelId -> viewModel.updateEditing { it.copy(chatModelId = modelId) } }
-            )
-        }
-
-        // ===== 提示词 =====
-        item { Text("系统提示词", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item {
-            OutlinedTextField(
-                value = agent.systemPrompt,
-                onValueChange = { v -> viewModel.updateEditing { it.copy(systemPrompt = v) } },
-                label = { Text("定义角色、语气与行为边界") },
-                modifier = Modifier.fillMaxWidth().height(140.dp)
-            )
-        }
-        // 变量点击插入（Rikka 式 available variables）
-        item {
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                listOf(
-                    "{{model}}" to "模型名", "{{model_id}}" to "模型ID", "{{time}}" to "时间", "{{date}}" to "日期",
-                    "{{weekday}}" to "星期", "{{user}}" to "用户名", "{{char}}" to "智能体名", "{{locale}}" to "语言",
-                    "{{timezone}}" to "时区", "{{device_info}}" to "机型", "{{battery}}" to "电量"
-                ).forEach { (token, desc) ->
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-                            .clickable {
-                                viewModel.updateEditing { it.copy(systemPrompt = it.systemPrompt + token) }
-                            }
-                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            "$token $desc",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+            ConfigCard(title = "基础") {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = agent.avatarEmoji,
+                        onValueChange = { v -> viewModel.updateEditing { it.copy(avatarEmoji = v.take(2)) } },
+                        label = { Text("头像") },
+                        modifier = Modifier.width(88.dp),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = agent.name,
+                        onValueChange = { v -> viewModel.updateEditing { it.copy(name = v) } },
+                        label = { Text("名称") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
                 }
+                ModelPicker(
+                    providers = state.providers,
+                    selectedModelId = agent.chatModelId,
+                    label = viewModel.modelLabel(agent.chatModelId),
+                    onSelect = { modelId -> viewModel.updateEditing { it.copy(chatModelId = modelId) } }
+                )
             }
         }
 
-        // ===== 参数 =====
-        item { Text("生成参数", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        // ===== 系统提示词（变量点击插入，Rikka 式 available variables） =====
         item {
-            GatedFloatParam(
-                label = "温度",
-                hint = "0–2，越高越发散；关闭则跟随服务商默认",
-                value = agent.temperature,
-                defaultValue = 0.8f,
-                valueRange = 0f..2f,
-                onValueChange = { v -> viewModel.updateEditing { it.copy(temperature = v) } }
-            )
-        }
-        item {
-            GatedFloatParam(
-                label = "Top P",
-                hint = "0–1 核采样；关闭则跟随服务商默认",
-                value = agent.topP,
-                defaultValue = 1f,
-                valueRange = 0f..1f,
-                onValueChange = { v -> viewModel.updateEditing { it.copy(topP = v) } }
-            )
-        }
-        item {
-            OutlinedTextField(
-                value = agent.maxTokens?.toString() ?: "",
-                onValueChange = { v -> viewModel.updateEditing { it.copy(maxTokens = v.toIntOrNull()) } },
-                label = { Text("最大 Token（留空 = 跟随默认）") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-        }
-        item {
-            OutlinedTextField(
-                value = if (agent.contextMessageLimit == 0) "" else agent.contextMessageLimit.toString(),
-                onValueChange = { v -> viewModel.updateEditing { it.copy(contextMessageLimit = v.toIntOrNull() ?: 0) } },
-                label = { Text("上下文消息条数上限（0 = 不限制）") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-        }
-        item {
-            Text(
-                "推理等级",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ReasoningLevel.entries.forEach { level ->
-                    val selected = agent.reasoningLevel == level
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            ConfigCard(title = "系统提示词", subtitle = "定义角色、语气与行为边界；点击变量插入到提示词末尾") {
+                OutlinedTextField(
+                    value = agent.systemPrompt,
+                    onValueChange = { v -> viewModel.updateEditing { it.copy(systemPrompt = v) } },
+                    modifier = Modifier.fillMaxWidth().height(140.dp)
+                )
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf(
+                        "{{model}}" to "模型名", "{{model_id}}" to "模型ID", "{{time}}" to "时间", "{{date}}" to "日期",
+                        "{{weekday}}" to "星期", "{{user}}" to "用户名", "{{char}}" to "智能体名", "{{locale}}" to "语言",
+                        "{{timezone}}" to "时区", "{{device_info}}" to "机型", "{{battery}}" to "电量"
+                    ).forEach { (token, desc) ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                                .clickable {
+                                    viewModel.updateEditing { it.copy(systemPrompt = it.systemPrompt + token) }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                "$token $desc",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            .clickable { viewModel.updateEditing { it.copy(reasoningLevel = level) } }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            level.name.lowercase(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        }
                     }
                 }
             }
         }
+
+        // ===== 生成参数 =====
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("流式输出", style = MaterialTheme.typography.bodyMedium)
-                Switch(
+            ConfigCard(title = "生成参数", subtitle = "关闭或留空则跟随服务商默认") {
+                GatedFloatParam(
+                    label = "温度",
+                    hint = "0–2，越高越发散；关闭则跟随服务商默认",
+                    value = agent.temperature,
+                    defaultValue = 0.8f,
+                    valueRange = 0f..2f,
+                    onValueChange = { v -> viewModel.updateEditing { it.copy(temperature = v) } }
+                )
+                GatedFloatParam(
+                    label = "Top P",
+                    hint = "0–1 核采样；关闭则跟随服务商默认",
+                    value = agent.topP,
+                    defaultValue = 1f,
+                    valueRange = 0f..1f,
+                    onValueChange = { v -> viewModel.updateEditing { it.copy(topP = v) } }
+                )
+                OutlinedTextField(
+                    value = agent.maxTokens?.toString() ?: "",
+                    onValueChange = { v -> viewModel.updateEditing { it.copy(maxTokens = v.toIntOrNull()) } },
+                    label = { Text("最大 Token（留空 = 跟随默认）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = if (agent.contextMessageLimit == 0) "" else agent.contextMessageLimit.toString(),
+                    onValueChange = { v -> viewModel.updateEditing { it.copy(contextMessageLimit = v.toIntOrNull() ?: 0) } },
+                    label = { Text("上下文消息条数上限（0 = 不限制）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                Text("推理等级", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ReasoningLevel.entries.forEach { level ->
+                        val selected = agent.reasoningLevel == level
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                )
+                                .clickable { viewModel.updateEditing { it.copy(reasoningLevel = level) } }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                level.name.lowercase(),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                SwitchRow(
+                    title = "流式输出",
                     checked = agent.streamOutput,
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(streamOutput = v) } }
                 )
@@ -672,307 +652,219 @@ private fun AgentEditor(
         }
 
         // ===== 对话增强 =====
-        item { Text("对话增强", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("时间感知", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "长间隔消息前注入当前时间，跨天对话不混淆",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
+            ConfigCard(title = "对话增强") {
+                SwitchRow(
+                    title = "时间感知",
+                    desc = "长间隔消息前注入当前时间，跨天对话不混淆",
                     checked = agent.enableTimeReminder,
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableTimeReminder = v) } }
                 )
-            }
-        }
-        if (agent.enableTimeReminder) {
-            item {
-                OutlinedTextField(
-                    value = if (agent.timeReminderIntervalMinutes == 60) "" else agent.timeReminderIntervalMinutes.toString(),
-                    onValueChange = { v ->
-                        val n = v.toIntOrNull()?.coerceAtLeast(1) ?: 60
-                        viewModel.updateEditing { it.copy(timeReminderIntervalMinutes = n) }
-                    },
-                    label = { Text("提醒间隔分钟数（默认 60）") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-            }
-        }
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("上下文压缩", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "超出条数上限时把旧消息总结为检查点而非直接丢弃",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                if (agent.enableTimeReminder) {
+                    OutlinedTextField(
+                        value = if (agent.timeReminderIntervalMinutes == 60) "" else agent.timeReminderIntervalMinutes.toString(),
+                        onValueChange = { v ->
+                            val n = v.toIntOrNull()?.coerceAtLeast(1) ?: 60
+                            viewModel.updateEditing { it.copy(timeReminderIntervalMinutes = n) }
+                        },
+                        label = { Text("提醒间隔分钟数（默认 60）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
                 }
-                Switch(
+                SwitchRow(
+                    title = "上下文压缩",
+                    desc = "超出条数上限时把旧消息总结为检查点而非直接丢弃",
                     checked = agent.enableContextCompression,
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableContextCompression = v) } }
                 )
             }
         }
 
-        // ===== AI 扩展关联 =====
-        item { Text("AI 扩展", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        // ===== AI 扩展 =====
         item {
-            Text(
-                "技能（use_skill 按需加载）、模式注入与世界书（提示词注入）、快捷指令（输入框上方一键填入）。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        ExtensionAssociationBlock(
-            title = "技能",
-            emptyHint = "暂无技能，可在 AI 中心导入后在此关联",
-            items = state.skills.map { it.id to it.name },
-            selectedIds = agent.enabledSkills,
-            onToggle = { id ->
-                viewModel.updateEditing { a -> a.copy(enabledSkills = toggleIn(a.enabledSkills, id)) }
-            }
-        )
-        ExtensionAssociationBlock(
-            title = "模式注入",
-            emptyHint = "暂无模式注入，可在 AI 扩展页创建",
-            items = state.prompts.map { it.id to (it.name.ifBlank { "未命名" }) },
-            selectedIds = agent.promptIds,
-            onToggle = { id ->
-                viewModel.updateEditing { a -> a.copy(promptIds = toggleIn(a.promptIds, id)) }
-            }
-        )
-        ExtensionAssociationBlock(
-            title = "世界书",
-            emptyHint = "暂无世界书，可在 AI 扩展页创建（导入角色卡也会自动生成）",
-            items = state.lorebooks.map { it.id to (it.name.ifBlank { "未命名" }) },
-            selectedIds = agent.lorebookIds,
-            onToggle = { id ->
-                viewModel.updateEditing { a -> a.copy(lorebookIds = toggleIn(a.lorebookIds, id)) }
-            }
-        )
-        ExtensionAssociationBlock(
-            title = "快捷指令",
-            emptyHint = "暂无快捷指令，可在 AI 扩展页创建",
-            items = state.quickMessages.map { it.id to it.title },
-            selectedIds = agent.quickMessageIds,
-            onToggle = { id ->
-                viewModel.updateEditing { a -> a.copy(quickMessageIds = toggleIn(a.quickMessageIds, id)) }
-            }
-        )
-
-        // ===== 工具与记忆 =====
-        item { Text("工具与记忆", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item {
-            Text(
-                "MCP 服务器（启用且已连接的服务器工具会注入对话，命名 mcp__服务器__工具）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        if (state.mcpServers.isEmpty()) {
-            item {
-                Text(
-                    "暂无 MCP 服务器，可在 AI 中心「MCP」页添加",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            item {
-                MultiSelectChips(
-                    items = state.mcpServers.map { it.id to it.commonOptions.name.ifBlank { "未命名" } },
-                    selectedIds = agent.mcpServers,
+            ConfigCard(
+                title = "AI 扩展",
+                subtitle = "技能（use_skill 按需加载）、模式注入与世界书（提示词注入）、快捷指令（输入框上方一键填入）"
+            ) {
+                ExtensionAssociationBlock(
+                    title = "技能",
+                    emptyHint = "暂无技能，可在 AI 中心导入后在此关联",
+                    items = state.skills.map { it.id to it.name },
+                    selectedIds = agent.enabledSkills,
                     onToggle = { id ->
-                        viewModel.updateEditing { a ->
-                            a.copy(mcpServers = toggleIn(a.mcpServers, id))
-                        }
+                        viewModel.updateEditing { a -> a.copy(enabledSkills = toggleIn(a.enabledSkills, id)) }
+                    }
+                )
+                ExtensionAssociationBlock(
+                    title = "模式注入",
+                    emptyHint = "暂无模式注入，可在 AI 扩展页创建",
+                    items = state.prompts.map { it.id to (it.name.ifBlank { "未命名" }) },
+                    selectedIds = agent.promptIds,
+                    onToggle = { id ->
+                        viewModel.updateEditing { a -> a.copy(promptIds = toggleIn(a.promptIds, id)) }
+                    }
+                )
+                ExtensionAssociationBlock(
+                    title = "世界书",
+                    emptyHint = "暂无世界书，可在 AI 扩展页创建（导入角色卡也会自动生成）",
+                    items = state.lorebooks.map { it.id to (it.name.ifBlank { "未命名" }) },
+                    selectedIds = agent.lorebookIds,
+                    onToggle = { id ->
+                        viewModel.updateEditing { a -> a.copy(lorebookIds = toggleIn(a.lorebookIds, id)) }
+                    }
+                )
+                ExtensionAssociationBlock(
+                    title = "快捷指令",
+                    emptyHint = "暂无快捷指令，可在 AI 扩展页创建",
+                    items = state.quickMessages.map { it.id to it.title },
+                    selectedIds = agent.quickMessageIds,
+                    onToggle = { id ->
+                        viewModel.updateEditing { a -> a.copy(quickMessageIds = toggleIn(a.quickMessageIds, id)) }
                     }
                 )
             }
         }
+
+        // ===== 工具：MCP / 本地工具 / 联网 / 记忆 =====
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            ConfigCard(
+                title = "工具",
+                subtitle = "启用且已连接的 MCP 服务器工具会注入对话（命名 mcp__服务器__工具）"
             ) {
-                Text("启用记忆（memory_tool + 记忆注入）", style = MaterialTheme.typography.bodyMedium)
-                Switch(
+                Text("MCP 服务器", style = MaterialTheme.typography.bodyMedium)
+                if (state.mcpServers.isEmpty()) {
+                    Text(
+                        "暂无 MCP 服务器，可在 AI 中心「MCP」页添加",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    MultiSelectChips(
+                        items = state.mcpServers.map { it.id to it.commonOptions.name.ifBlank { "未命名" } },
+                        selectedIds = agent.mcpServers,
+                        onToggle = { id ->
+                            viewModel.updateEditing { a ->
+                                a.copy(mcpServers = toggleIn(a.mcpServers, id))
+                            }
+                        }
+                    )
+                }
+                Text("本地工具", style = MaterialTheme.typography.bodyMedium)
+                com.cjhsy.linkzone.ui.chat.LocalToolSwitchList(
+                    selected = agent.localTools,
+                    onToggle = { option, enable ->
+                        viewModel.updateEditing { a ->
+                            a.copy(
+                                localTools = if (enable) a.localTools + option
+                                else a.localTools.filter { it != option }
+                            )
+                        }
+                    }
+                )
+                SwitchRow(
+                    title = "联网搜索",
+                    desc = "search_web / scrape_web",
+                    checked = agent.enableWebSearch,
+                    onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableWebSearch = v) } }
+                )
+                SwitchRow(
+                    title = "启用记忆",
+                    desc = "注入已有记忆，模型经 memory_tool 增删改",
                     checked = agent.enableMemory,
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableMemory = v) } }
                 )
-            }
-        }
-        if (agent.enableMemory) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("使用全局共享记忆", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
+                if (agent.enableMemory) {
+                    SwitchRow(
+                        title = "使用全局共享记忆",
                         checked = agent.useGlobalMemory,
                         onCheckedChange = { v -> viewModel.updateEditing { it.copy(useGlobalMemory = v) } }
                     )
                 }
             }
         }
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("联网搜索（search_web / scrape_web）", style = MaterialTheme.typography.bodyMedium)
-                Switch(
-                    checked = agent.enableWebSearch,
-                    onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableWebSearch = v) } }
-                )
-            }
-        }
 
-        // ===== 本地工具 =====
-        item { Text("本地工具", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        // ===== 图片能力：生成 + 识别 =====
         item {
-            com.cjhsy.linkzone.ui.chat.LocalToolSwitchList(
-                selected = agent.localTools,
-                onToggle = { option, enable ->
-                    viewModel.updateEditing { a ->
-                        a.copy(
-                            localTools = if (enable) a.localTools + option
-                            else a.localTools.filter { it != option }
-                        )
-                    }
-                }
-            )
-        }
-
-        // ===== 图片生成 =====
-        item { Text("图片生成", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("启用 image_generate 工具（模型按需出图）", style = MaterialTheme.typography.bodyMedium)
-                Switch(
+            ConfigCard(title = "图片能力") {
+                SwitchRow(
+                    title = "图片生成",
+                    desc = "image_generate 工具，模型按需出图",
                     checked = agent.enableImageGeneration,
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableImageGeneration = v) } }
                 )
-            }
-        }
-        if (agent.enableImageGeneration) {
-            item {
-                ModelPicker(
-                    providers = state.providers,
-                    selectedModelId = agent.imageModelId,
-                    label = agent.imageModelId?.let(viewModel::modelLabel) ?: "自动选择第一个图片模型",
-                    onSelect = { modelId -> viewModel.updateEditing { it.copy(imageModelId = modelId) } },
-                    defaultLabel = "自动选择第一个图片模型",
-                    modelFilter = { it.type == com.cjhsy.linkzone.ai.provider.ModelType.IMAGE }
-                )
-            }
-        }
-
-        // ===== OCR 兜底 =====
-        item { Text("图片识别（OCR）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("对话模型不支持图片时，用视觉模型把图片转文字", style = MaterialTheme.typography.bodyMedium)
-                Switch(
+                if (agent.enableImageGeneration) {
+                    ModelPicker(
+                        providers = state.providers,
+                        selectedModelId = agent.imageModelId,
+                        label = agent.imageModelId?.let(viewModel::modelLabel) ?: "自动选择第一个图片模型",
+                        onSelect = { modelId -> viewModel.updateEditing { it.copy(imageModelId = modelId) } },
+                        defaultLabel = "自动选择第一个图片模型",
+                        modelFilter = { it.type == com.cjhsy.linkzone.ai.provider.ModelType.IMAGE }
+                    )
+                }
+                SwitchRow(
+                    title = "图片识别（OCR）",
+                    desc = "对话模型不支持图片时，用视觉模型把图片转文字",
                     checked = agent.enableOcr,
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableOcr = v) } }
                 )
-            }
-        }
-        if (agent.enableOcr) {
-            item {
-                ModelPicker(
-                    providers = state.providers,
-                    selectedModelId = agent.ocrModelId,
-                    label = agent.ocrModelId?.let(viewModel::modelLabel) ?: "自动选择第一个视觉模型",
-                    onSelect = { modelId -> viewModel.updateEditing { it.copy(ocrModelId = modelId) } },
-                    defaultLabel = "自动选择第一个视觉模型",
-                    modelFilter = {
-                        it.type == com.cjhsy.linkzone.ai.provider.ModelType.CHAT &&
-                            com.cjhsy.linkzone.ai.provider.Modality.IMAGE in it.inputModalities
-                    }
-                )
+                if (agent.enableOcr) {
+                    ModelPicker(
+                        providers = state.providers,
+                        selectedModelId = agent.ocrModelId,
+                        label = agent.ocrModelId?.let(viewModel::modelLabel) ?: "自动选择第一个视觉模型",
+                        onSelect = { modelId -> viewModel.updateEditing { it.copy(ocrModelId = modelId) } },
+                        defaultLabel = "自动选择第一个视觉模型",
+                        modelFilter = {
+                            it.type == com.cjhsy.linkzone.ai.provider.ModelType.CHAT &&
+                                com.cjhsy.linkzone.ai.provider.Modality.IMAGE in it.inputModalities
+                        }
+                    )
+                }
             }
         }
 
         // ===== 代码工作区 =====
-        item { Text("代码工作区", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item { WorkspaceSelector(agent, viewModel, onNavigate) }
-
-        // ===== 自定义请求 =====
-        item { Text("自定义请求", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
         item {
-            Text(
-                "追加到每次模型请求的自定义 Header / Body 字段（企业网关或特殊参数）。留空的条目不会发送。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        item {
-            CustomRequestEditor(
-                headers = agent.customHeaders,
-                bodies = agent.customBodies,
-                onHeadersChange = { list -> viewModel.updateEditing { it.copy(customHeaders = list) } },
-                onBodiesChange = { list -> viewModel.updateEditing { it.copy(customBodies = list) } }
-            )
+            ConfigCard(title = "代码工作区", subtitle = "绑定后注入 workspace_read_file / write_file / edit_file / shell 工具") {
+                WorkspaceSelector(agent, viewModel, onNavigate)
+            }
         }
 
-        // ===== 预设对话（RikkaHub presetMessages） =====
-        item { Text("预设对话", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+        // ===== 高级设置（自定义请求 / 预设对话 / 输出正则，默认收起） =====
         item {
-            Text(
-                "新建会话时自动注入的一组示例消息，作为开场白 / few-shot 示例。可指定角色为用户或助手。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        item {
-            PresetMessagesEditor(
-                messages = agent.presetMessages,
-                onChange = { list -> viewModel.updateEditing { it.copy(presetMessages = list) } }
-            )
-        }
-
-        // ===== 输出正则处理（RikkaHub AssistantRegex） =====
-        item { Text("输出正则处理", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
-        item {
-            Text(
-                "对消息文本做正则查找替换，可作用于用户输入或助手输出；仅视觉替换不影响发给模型的上下文。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        item {
-            AgentRegexEditor(
-                regexes = agent.regexes,
-                onChange = { list -> viewModel.updateEditing { it.copy(regexes = list) } }
-            )
+            AdvancedConfigCard(subtitle = "自定义请求、预设对话、输出正则") {
+                AdvancedSection(
+                    title = "自定义请求",
+                    desc = "追加到每次模型请求的自定义 Header / Body 字段（企业网关或特殊参数）。留空的条目不会发送。"
+                ) {
+                    CustomRequestEditor(
+                        headers = agent.customHeaders,
+                        bodies = agent.customBodies,
+                        onHeadersChange = { list -> viewModel.updateEditing { it.copy(customHeaders = list) } },
+                        onBodiesChange = { list -> viewModel.updateEditing { it.copy(customBodies = list) } }
+                    )
+                }
+                AdvancedSection(
+                    title = "预设对话",
+                    desc = "新建会话时自动注入的一组示例消息，作为开场白 / few-shot 示例。可指定角色为用户或助手。"
+                ) {
+                    PresetMessagesEditor(
+                        messages = agent.presetMessages,
+                        onChange = { list -> viewModel.updateEditing { it.copy(presetMessages = list) } }
+                    )
+                }
+                AdvancedSection(
+                    title = "输出正则处理",
+                    desc = "对消息文本做正则查找替换，可作用于用户输入或助手输出；仅视觉替换不影响发给模型的上下文。"
+                ) {
+                    AgentRegexEditor(
+                        regexes = agent.regexes,
+                        onChange = { list -> viewModel.updateEditing { it.copy(regexes = list) } }
+                    )
+                }
+            }
         }
 
         item {
@@ -981,6 +873,129 @@ private fun AgentEditor(
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+/** 配置分组卡片：白卡细边、统一内距；标题 + 可选说明 + 内容 */
+@Composable
+private fun ConfigCard(
+    title: String,
+    subtitle: String? = null,
+    content: ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            content()
+        }
+    }
+}
+
+/** 开关行：标题 + 可选说明 + 右侧 Switch */
+@Composable
+private fun SwitchRow(
+    title: String,
+    desc: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            if (desc != null) {
+                Text(
+                    desc,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/** 高级设置折叠卡：与 ConfigCard 同款视觉，点击标题行展开/收起 */
+@Composable
+private fun AdvancedConfigCard(
+    subtitle: String,
+    content: ColumnScope.() -> Unit
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val rotation by animateFloatAsState(targetValue = if (expanded) 180f else 0f, label = "advancedArrow")
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("高级设置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    modifier = Modifier.rotate(rotation),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    content()
+                }
+            }
+        }
+    }
+}
+
+/** 高级区内的子节：小节标题 + 说明 + 编辑器 */
+@Composable
+private fun AdvancedSection(
+    title: String,
+    desc: String,
+    content: @Composable () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Text(desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        content()
     }
 }
 
@@ -1304,25 +1319,26 @@ private fun CustomRequestEditor(
     }
 }
 
-/** AI 扩展关联块（空列表时展示引导提示，而非整块消失） */
-private fun androidx.compose.foundation.lazy.LazyListScope.ExtensionAssociationBlock(
+/** 扩展关联选择块：标题 + 空态提示或多选 chip 组 */
+@Composable
+private fun ExtensionAssociationBlock(
     title: String,
     emptyHint: String,
     items: List<Pair<String, String>>,
     selectedIds: Set<String>,
     onToggle: (String) -> Unit
 ) {
-    item { Text(title, style = MaterialTheme.typography.bodyMedium) }
-    if (items.isEmpty()) {
-        item {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.bodyMedium)
+        if (items.isEmpty()) {
             Text(
                 emptyHint,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        } else {
+            MultiSelectChips(items = items, selectedIds = selectedIds, onToggle = onToggle)
         }
-    } else {
-        item { MultiSelectChips(items = items, selectedIds = selectedIds, onToggle = onToggle) }
     }
 }
 
