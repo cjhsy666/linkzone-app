@@ -155,7 +155,9 @@ object TtsPlayer {
             .replace(Regex("^#{1,6}\\s+", RegexOption.MULTILINE), "")
             .replace(Regex("^>\\s?", RegexOption.MULTILINE), "")
             .replace(Regex("[*_~`]{1,3}"), "")
-            .replace(Regex("\\{\\{[^}]*}}"), "")
+            // 注意：Android 的 java.util.regex 底层是 ICU 引擎，裸 } 是语法错误（JVM 容忍），
+            // 花括号必须显式转义，否则点朗读按钮即抛 PatternSyntaxException
+            .replace(Regex("\\{\\{[^}]*\\}\\}"), "")
             .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
         if (plain.isBlank()) return emptyList()
