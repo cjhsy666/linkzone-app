@@ -26,8 +26,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LocalConversationEntity::class,
         LocalMessageEntity::class,
         CloudQuickCommandEntity::class,
+        CloudConversationEntity::class,
+        CloudMessageEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -43,6 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun llmMemoryDao(): LlmMemoryDao
     abstract fun localChatDao(): LocalChatDao
     abstract fun cloudQuickCommandDao(): CloudQuickCommandDao
+    abstract fun cloudChatDao(): CloudChatDao
 
     companion object {
         const val DB_NAME = "linkzone.db"
@@ -224,6 +227,49 @@ abstract class AppDatabase : RoomDatabase() {
                         json TEXT NOT NULL
                     )
                     """.trimIndent()
+                )
+            }
+        }
+
+        /** v8 → v9：云端会话/消息缓存两表（QQ 式本地为主，服务端结果幂等 upsert） */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cloud_conversation (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        unread INTEGER NOT NULL,
+                        pinned INTEGER NOT NULL,
+                        targetId TEXT NOT NULL,
+                        lastMsg TEXT NOT NULL,
+                        lastTime INTEGER NOT NULL,
+                        lastMsgId TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cloud_message (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        convId TEXT NOT NULL,
+                        senderId TEXT NOT NULL,
+                        senderName TEXT NOT NULL,
+                        segmentsJson TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        isSelf INTEGER NOT NULL,
+                        recalled INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_cloud_message_convId ON cloud_message(convId)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_cloud_message_timestamp ON cloud_message(timestamp)"
                 )
             }
         }

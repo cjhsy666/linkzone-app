@@ -180,7 +180,8 @@ val appModule = module {
                 AppDatabase.MIGRATION_4_5,
                 AppDatabase.MIGRATION_5_6,
                 AppDatabase.MIGRATION_6_7,
-                AppDatabase.MIGRATION_7_8
+                AppDatabase.MIGRATION_7_8,
+                AppDatabase.MIGRATION_8_9
             )
             .fallbackToDestructiveMigration()
             .build()
@@ -190,6 +191,9 @@ val appModule = module {
 
     // 本地智能体会话存储（RikkaHub 式，完全脱离服务器）
     single { LocalChatStore(get(), get()) }
+
+    // 云端会话本地缓存（QQ 式本地为主：先显缓存秒开，网络结果幂等 upsert）
+    single { com.cjhsy.linkzone.data.repository.CloudChatStore(get(), get()) }
 
     // MCP：管理器内部自建 OkHttpClient（长超时）/状态存储/OAuth 协调器/会话注册表
     single { McpManager(get()) }
@@ -215,7 +219,7 @@ val appModule = module {
     viewModel { SignInViewModel(get()) }
     viewModel { NotificationViewModel(get()) }
     viewModel { MainViewModel(get(), get(), get(), get()) }
-    viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { LlmProviderViewModel(get(), get()) }
     viewModel { LlmAgentViewModel(get(), get()) }
     viewModel { LlmExtensionViewModel(androidContext(), get()) }

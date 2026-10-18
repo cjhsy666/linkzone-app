@@ -11,6 +11,7 @@ import com.cjhsy.linkzone.data.model.Segments
 import com.cjhsy.linkzone.data.model.displayText
 import com.cjhsy.linkzone.data.remote.ChatSocketManager
 import com.cjhsy.linkzone.data.repository.ChatRepository
+import com.cjhsy.linkzone.data.repository.CloudChatStore
 import com.cjhsy.linkzone.data.repository.LocalChatStore
 import com.cjhsy.linkzone.data.repository.UserRepository
 import com.cjhsy.linkzone.ai.core.MessageRole
@@ -202,6 +203,8 @@ data class ChatModelOption(
 class ChatViewModel(
     private val chatRepository: ChatRepository,
     private val localStore: LocalChatStore,
+    /** 云端会话本地缓存（QQ 式本地为主）：先显缓存秒开，网络与 WS 结果幂等落库 */
+    private val cloudStore: CloudChatStore,
     private val userRepository: UserRepository,
     private val socketManager: ChatSocketManager,
     private val llmRepository: LlmRepository,
@@ -406,6 +409,10 @@ class ChatViewModel(
      */
     private suspend fun bootstrapConversations() {
         _state.value = _state.value.copy(loading = true, error = null)
+        // 冷启动先显缓存：会话列表立即有内容，离线也能打开主会话看到消息
+        if (serverConvs.value.isEmpty()) {
+            serverConvs.value = sortConvs(cloudStore.getConversations())
+        }
         chatRepository.deleteAllConversations(keepMain = true)
         val main = chatRepository.ensureConversation(myId, MAIN_BOT_ID, MAIN_CONV_NAME).getOrNull()
         refreshConvList()
@@ -518,6 +525,8 @@ class ChatViewModel(
         viewModelScope.launch {
             chatRepository.clearMessages(convId)
                 .onSuccess {
+                    cloudStore.clearMessages(convId)
+                    cloudStore.resetConversationMeta(convId)
                     if (_state.value.currentConvId == convId) {
                         _state.value = _state.value.copy(messages = emptyList())
                     }
@@ -568,16 +577,31 @@ class ChatViewModel(
             generating = false,
             error = null
         )
+        // QQ 式本地为主：缓存有消息则零等待渲染（不转圈），网络回来后静默覆盖
+        val cached = cloudStore.loadMessagesPage(conv.id, before = null)
+        if (_state.value.currentConvId != conv.id) return
+        if (cached.first.isNotEmpty()) {
+            _state.value = _state.value.copy(
+                loading = false,
+                messages = cached.first,
+                hasMore = cached.second
+            )
+        }
         loadHistory()
         chatRepository.markRead(conv.id)
         // 本地列表立即清未读，后台再同步一次
         updateConvInList(conv.id) { it.copy(unread = 0) }
+        cloudStore.clearUnread(conv.id)
         refreshConvList()
     }
 
     private suspend fun refreshConvList() {
         chatRepository.loadConversations().onSuccess { convs ->
-            serverConvs.value = sortConvs(convs.filter { it.type == "private" })
+            val list = convs.filter { it.type == "private" }
+            serverConvs.value = sortConvs(list)
+            // 刷新结果镜像进缓存（幂等），并清掉服务端已不存在的残留会话
+            cloudStore.upsertConversations(list)
+            cloudStore.pruneConversations(list.map { it.id })
         }
     }
 
@@ -630,18 +654,53 @@ class ChatViewModel(
                     return
                 }
 
-                appendMessage(
-                    MessageItem(
-                        id = event.messageId,
-                        convId = convId,
-                        senderId = event.senderId,
-                        senderName = event.senderName,
-                        segments = event.segments,
-                        content = event.text,
-                        isSelf = isSelfEcho,
-                        timestamp = event.timestamp
-                    )
+                val msg = MessageItem(
+                    id = event.messageId,
+                    convId = convId,
+                    senderId = event.senderId,
+                    senderName = event.senderName,
+                    segments = event.segments,
+                    content = event.text,
+                    isSelf = isSelfEcho,
+                    timestamp = event.timestamp
                 )
+
+                if (convId != _state.value.currentConvId) {
+                    // 自己消息的回显不属于当前会话：说明本地气泡在别的会话，
+                    // 跳过即可（切过去时全量历史会拿到正式消息）
+                    if (isSelfEcho) return
+                    // 其他会话的回复：仅累加未读/预览，不插入消息流
+                    val known = serverConvs.value.any { it.id == convId }
+                    updateConvInList(convId) { c ->
+                        c.copy(
+                            unread = c.unread + 1,
+                            last_msg = preview.ifBlank { c.last_msg },
+                            lastTime = event.timestamp.takeIf { it > 0 } ?: c.lastTime
+                        )
+                    }
+                    // 消息与预览落缓存：下次进会话秒显（QQ 式本地为主）
+                    viewModelScope.launch {
+                        // 空消息 id 无法定位唯一记录，不落缓存（内存仍按原逻辑展示）
+                        if (event.messageId.isNotBlank()) cloudStore.insertMessages(listOf(msg))
+                        if (preview.isNotBlank() && event.timestamp > 0) {
+                            cloudStore.touch(convId, preview, event.timestamp)
+                        }
+                    }
+                    // 列表里没有该会话（可能在其他设备创建）：刷新列表而不是丢消息
+                    if (!known && convId.isNotBlank()) {
+                        viewModelScope.launch { refreshConvList() }
+                    }
+                    return
+                }
+
+                appendMessage(msg)
+                // 消息落缓存：下次进会话秒显（QQ 式本地为主）
+                viewModelScope.launch {
+                    cloudStore.insertMessages(listOf(msg))
+                    if (preview.isNotBlank() && event.timestamp > 0) {
+                        cloudStore.touch(convId, preview, event.timestamp)
+                    }
+                }
                 if (!isSelfEcho) markRead()
                 updateConvInList(convId) { c ->
                     c.copy(
@@ -653,6 +712,8 @@ class ChatViewModel(
             }
 
             is ChatSocketManager.Event.Recalled -> {
+                // 撤回状态同步进缓存（按消息 id 全局标记，与内存行为一致）
+                viewModelScope.launch { cloudStore.setRecalled(event.messageId) }
                 // 本地会话不产生服务器事件：防御性跳过
                 if (isLocalConvId(_state.value.currentConvId)) return@handleSocketEvent
                 // 服务端定向投递且携带 conv_id：只标记本会话；
@@ -743,6 +804,8 @@ class ChatViewModel(
                 if (!resp.hasMore) break
             }
             if (fetched.isEmpty()) return@launch
+            // 补拉结果落库：缓存与内存同步补全（幂等 upsert）
+            cloudStore.insertMessages(fetched)
             if (_state.value.currentConvId != convId) return@launch
 
             // fetched 在前：同一条消息若本地有 local- 乐观版、服务端有正式版，
@@ -755,6 +818,7 @@ class ChatViewModel(
             // 正在看该会话：补拉回来的回复视为已读，清掉红点
             chatRepository.markRead(convId)
             updateConvInList(convId) { it.copy(unread = 0) }
+            cloudStore.clearUnread(convId)
             refreshConvList()
         }
     }
@@ -785,6 +849,10 @@ class ChatViewModel(
             // 响应返回期间用户已切走，丢弃过期结果，防止覆盖新会话
             if (_state.value.currentConvId != convId) return@launch
             result.onSuccess { resp ->
+                // 全量拉取结果落库（幂等覆盖），下次进会话缓存秒显；
+                // 服务端已清空则同步清缓存，避免残留旧消息
+                cloudStore.insertMessages(resp.items)
+                if (resp.items.isEmpty() && !resp.hasMore) cloudStore.clearMessages(convId)
                 _state.value = _state.value.copy(
                     loading = false,
                     messages = resp.items.sortedBy { it.timestamp },
@@ -823,12 +891,29 @@ class ChatViewModel(
                 return@launch
             }
             result.onSuccess { resp ->
+                // 翻页结果落库，缓存随浏览逐步补全
+                cloudStore.insertMessages(resp.items)
                 val merged = (resp.items + _state.value.messages)
                     .distinctBy { cleanId(it.id) }
                     .sortedBy { it.timestamp }
                 _state.value = _state.value.copy(messages = merged, hasMore = resp.hasMore, loading = false)
             }.onFailure {
-                _state.value = _state.value.copy(loading = false, error = it.message ?: "加载失败")
+                // 离线回退：缓存里还有更早的就继续读缓存（QQ 式本地为主）
+                val (items, hasMore) = cloudStore.loadMessagesPage(s.currentConvId, before = oldest)
+                if (_state.value.currentConvId != s.currentConvId) {
+                    _state.value = _state.value.copy(loading = false)
+                    return@launch
+                }
+                if (items.isEmpty()) {
+                    _state.value = _state.value.copy(loading = false, error = it.message ?: "加载失败")
+                } else {
+                    val merged = (items + _state.value.messages)
+                        .distinctBy { cleanId(it.id) }
+                        .sortedBy { it.timestamp }
+                    _state.value = _state.value.copy(
+                        messages = merged, hasMore = hasMore, loading = false, error = null
+                    )
+                }
             }
         }
     }
@@ -2651,7 +2736,11 @@ class ChatViewModel(
             viewModelScope.launch { localStore.clearUnread(convId) }
             return
         }
-        viewModelScope.launch { chatRepository.markRead(convId) }
+        viewModelScope.launch {
+            chatRepository.markRead(convId)
+            // 已读状态同步进缓存，离线冷启动不再弹旧红点
+            cloudStore.clearUnread(convId)
+        }
     }
 
     fun recall(message: MessageItem) {
@@ -2671,6 +2760,7 @@ class ChatViewModel(
         if (message.id.startsWith(LOCAL_PREFIX)) return
         viewModelScope.launch {
             chatRepository.recall(convId, message.id).onSuccess {
+                cloudStore.setRecalled(message.id)
                 _state.value = _state.value.copy(
                     messages = _state.value.messages.map {
                         if (it.id == message.id) it.copy(recalled = true) else it
@@ -2707,6 +2797,7 @@ class ChatViewModel(
         if (convId.isBlank()) return
         viewModelScope.launch {
             chatRepository.deleteMessage(convId, message.id).onSuccess {
+                cloudStore.deleteMessage(message.id)
                 _state.value = _state.value.copy(
                     messages = _state.value.messages.filterNot { it.id == message.id }
                 )
@@ -3260,6 +3351,8 @@ class ChatViewModel(
                 val resp = chatRepository.loadHistory(s.currentConvId, before = oldest, limit = 100).getOrNull()
                     ?: break
                 if (resp.items.isEmpty()) break
+                // 搜索翻页结果顺手落库，缓存随浏览补全
+                cloudStore.insertMessages(resp.items)
                 val merged = (resp.items + _state.value.messages)
                     .distinctBy { cleanId(it.id) }
                     .sortedBy { it.timestamp }
