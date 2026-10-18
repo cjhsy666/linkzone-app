@@ -881,7 +881,7 @@ private fun AgentEditor(
 private fun ConfigCard(
     title: String,
     subtitle: String? = null,
-    content: ColumnScope.() -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -939,7 +939,7 @@ private fun SwitchRow(
 @Composable
 private fun AdvancedConfigCard(
     subtitle: String,
-    content: ColumnScope.() -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val rotation by animateFloatAsState(targetValue = if (expanded) 180f else 0f, label = "advancedArrow")
