@@ -126,62 +126,116 @@ fun resolveMedia(rawUrl: String, baseUrl: String): String =
 // 点击封面才创建播放器，避免列表中多个视频同时解码耗性能。
 // ============================================================================
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun InlineVideoPlayer(
     rawUrl: String,
     rawCover: String,
     durationSec: Long,
-    baseUrl: String
+    title: String = "",
+    baseUrl: String,
+    onLongClick: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
+    val dark = isSystemInDarkTheme()
     val videoUrl = remember(rawUrl) { resolveMedia(rawUrl, baseUrl) }
     val coverUrl = remember(rawCover) {
         if (rawCover.isBlank()) "" else resolveMedia(rawCover, baseUrl)
     }
     var activated by remember { mutableStateOf(false) }
     var fullscreen by remember { mutableStateOf(false) }
+    var showSheet by remember { mutableStateOf(false) }
+
+    val fg = MaterialTheme.colorScheme.onSurface
+    val primary = MaterialTheme.colorScheme.primary
+    val cardBg = if (dark) Color.White.copy(alpha = 0.045f) else Color.Black.copy(alpha = 0.03f)
+    val cardBorder = if (dark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
 
     if (!activated) {
-        Box(
+        // 未激活：卡片包裹封面 + 播放按钮 + 时长角标
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(200.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color.Black)
-                .clickable { activated = true }
-        ) {
-            if (coverUrl.isNotBlank()) {
-                AsyncImage(
-                    model = coverUrl,
-                    contentDescription = "视频封面",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                .widthIn(max = 288.dp)
+                .shadow(
+                    elevation = 10.dp,
+                    shape = AudioCardShape,
+                    ambientColor = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f),
+                    spotColor = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f)
                 )
-            }
+                .clip(AudioCardShape)
+                .background(cardBg)
+                .border(1.dp, cardBorder, AudioCardShape)
+                .combinedClickable(
+                    onClick = { showSheet = true },
+                    onLongClick = onLongClick
+                )
+        ) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.45f)),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .background(Color.Black)
             ) {
-                Icon(Icons.Filled.PlayArrow, "播放视频", tint = Color.White, modifier = Modifier.size(28.dp))
-            }
-            if (durationSec > 0) {
+                if (coverUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = coverUrl,
+                        contentDescription = "视频封面",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                // 中央播放按钮（点击直接播放，不弹窗）
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .align(Alignment.Center)
+                        .size(48.dp)
+                        .clip(CircleShape)
                         .background(Color.Black.copy(alpha = 0.45f))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                        .clickable { activated = true },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text("${durationSec}秒", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                    Icon(Icons.Filled.PlayArrow, "播放视频", tint = Color.White, modifier = Modifier.size(28.dp))
                 }
+                if (durationSec > 0) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(formatDuration(durationSec), style = MaterialTheme.typography.labelSmall, color = Color.White)
+                    }
+                }
+            }
+            // 底部信息行
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow, null,
+                    tint = fg.copy(alpha = 0.52f),
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    title.ifBlank { "视频" },
+                    fontSize = 12.sp,
+                    color = fg.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("›", fontSize = 12.sp, color = fg.copy(alpha = 0.50f))
             }
         }
     } else {
-        val context = LocalContext.current
+        // 已激活：内嵌播放器 + 全屏按钮
         val player = remember(videoUrl) {
             ExoPlayer.Builder(context).build().apply {
                 setMediaItem(MediaItem.fromUri(videoUrl))
@@ -217,6 +271,160 @@ fun InlineVideoPlayer(
             VideoFullscreenDialog(player) { fullscreen = false }
         }
     }
+
+    // 操作弹窗（不含播放项）
+    if (showSheet) {
+        val downloadName = if (title.isNotBlank()) "$title.mp4" else "video_${System.currentTimeMillis()}.mp4"
+        VideoActionSheet(
+            title = title.ifBlank { "视频" },
+            coverUrl = coverUrl,
+            videoUrl = videoUrl,
+            downloadFileName = downloadName,
+            onPlay = { activated = true },
+            onDismiss = { showSheet = false }
+        )
+    }
+}
+
+/**
+ * 视频操作弹窗：播放 / 下载 / 复制链接。
+ * 与音卡 AudioActionSheet 同设计语言。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VideoActionSheet(
+    title: String,
+    coverUrl: String,
+    videoUrl: String,
+    downloadFileName: String,
+    onPlay: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var downloadState by remember { mutableStateOf(DownloadState.Idle) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 34.dp)
+        ) {
+            // 头部：封面 + 标题
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black)
+                ) {
+                    if (coverUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = coverUrl,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.20f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    title,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                // 播放视频
+                SheetActionItem(
+                    icon = Icons.Filled.PlayArrow,
+                    label = "播放视频",
+                    desc = "在聊天中播放",
+                    onClick = {
+                        onPlay()
+                        onDismiss()
+                    }
+                )
+
+                // 下载视频
+                when (downloadState) {
+                    DownloadState.Downloading -> SheetActionItem(
+                        icon = Icons.Filled.Download,
+                        label = "下载中…",
+                        desc = "正在保存",
+                        enabled = false
+                    )
+                    DownloadState.Downloaded -> SheetActionItem(
+                        icon = Icons.Filled.CheckCircle,
+                        label = "已下载",
+                        desc = "已保存到 LinkZone/Videos",
+                        enabled = false
+                    )
+                    DownloadState.Failed -> SheetActionItem(
+                        icon = Icons.Filled.Refresh,
+                        label = "重试下载",
+                        desc = "上次下载失败",
+                        onClick = {
+                            downloadState = DownloadState.Downloading
+                            downloadToPublic(context, videoUrl, downloadFileName, "Videos") { ok ->
+                                downloadState = if (ok) DownloadState.Downloaded else DownloadState.Failed
+                            }
+                        }
+                    )
+                    else -> SheetActionItem(
+                        icon = Icons.Filled.Download,
+                        label = "下载视频",
+                        desc = "保存到 LinkZone/Videos",
+                        onClick = {
+                            downloadState = DownloadState.Downloading
+                            downloadToPublic(context, videoUrl, downloadFileName, "Videos") { ok ->
+                                downloadState = if (ok) DownloadState.Downloaded else DownloadState.Failed
+                            }
+                        }
+                    )
+                }
+
+                // 复制链接
+                if (videoUrl.isNotBlank()) {
+                    SheetActionItem(
+                        icon = Icons.Filled.ContentCopy,
+                        label = "复制链接",
+                        desc = "复制视频地址到剪贴板",
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("链接", videoUrl))
+                            Toast.makeText(context, "链接已复制", Toast.LENGTH_SHORT).show()
+                            onDismiss()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 秒数 → mm:ss / hh:mm:ss */
+private fun formatDuration(sec: Long): String {
+    val h = sec / 3600
+    val m = (sec % 3600) / 60
+    val s = sec % 60
+    return if (h > 0) String.format("%d:%02d:%02d", h, m, s)
+    else String.format("%02d:%02d", m, s)
 }
 
 @Composable

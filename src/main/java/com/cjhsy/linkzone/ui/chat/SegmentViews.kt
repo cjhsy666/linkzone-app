@@ -184,7 +184,9 @@ private fun SegmentView(
             rawUrl = seg.mediaUrl,
             rawCover = seg.get("cover"),
             durationSec = seg.getInt("duration"),
-            baseUrl = baseUrl
+            title = seg.get("title"),
+            baseUrl = baseUrl,
+            onLongClick = onMediaLongClick
         )
 
         "file" -> FileBlock(seg, isSelf, onClick = { open(seg.mediaUrl) })
