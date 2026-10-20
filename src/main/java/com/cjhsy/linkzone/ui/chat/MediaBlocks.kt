@@ -278,10 +278,11 @@ fun InlineVideoPlayer(
                     Icon(Icons.Filled.Fullscreen, "全屏播放", tint = Color.White, modifier = Modifier.size(20.dp))
                 }
             }
-            // 底部信息行
+            // 底部信息行（点击弹出操作弹窗）
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable { showSheet = true }
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
