@@ -363,13 +363,15 @@ private fun ImageBlock(
     seg: MessageSegment,
     baseUrl: String,
     badge: String?,
+    isSelf: Boolean = false,
     onLongClick: (() -> Unit)? = null
 ) {
     val url = resolveMedia(seg.mediaUrl, baseUrl)
     var preview by remember { mutableStateOf(false) }
+    // 不撑满父容器，按内容收束；外层 Column 的 horizontalAlignment 控制靠边
     Box(
         modifier = Modifier
-            .fillMaxWidth()
+            .widthIn(max = 280.dp)
             .heightIn(max = 280.dp)
             .clip(RoundedCornerShape(12.dp))
             .combinedClickable(
@@ -384,7 +386,7 @@ private fun ImageBlock(
                 .crossfade(true)
                 .build(),
             contentDescription = seg.get("name").ifBlank { "图片" },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.wrapContentWidth(),
             contentScale = ContentScale.Fit
         )
         if (badge != null) {
