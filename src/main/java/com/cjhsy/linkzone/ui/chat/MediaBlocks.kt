@@ -1,9 +1,18 @@
 package com.cjhsy.linkzone.ui.chat
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.Gravity
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
@@ -37,17 +46,24 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -83,7 +99,13 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.net.URI
 import kotlin.math.abs
 import kotlin.math.min
@@ -392,6 +414,267 @@ private fun musicSourceName(url: String): String {
     }
 }
 
+/** 下载状态 */
+private enum class DownloadState { Idle, Downloading, Downloaded, Failed }
+
+/**
+ * 音卡操作弹窗（不含播放）：打开来源 / 下载音频 / 复制链接。
+ * 对齐 Web 设计稿：头部封面+标题歌手，操作列表无播放项。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AudioActionSheet(
+    title: String,
+    artist: String,
+    coverUrl: String,
+    coverGradient: Pair<Color, Color>,
+    coverGlyph: String,
+    jumpUrl: String,
+    downloadUrl: String,
+    downloadFileName: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var downloadState by remember { mutableStateOf(DownloadState.Idle) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 20.dp)
+        ) {
+            // ---- 头部：封面 + 标题/歌手 ----
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Brush.linearGradient(listOf(coverGradient.first, coverGradient.second)))
+                ) {
+                    if (coverUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = coverUrl,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(coverGlyph, fontSize = 20.sp, color = Color.White.copy(alpha = 0.92f))
+                        }
+                    }
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (artist.isNotBlank()) {
+                        Text(
+                            artist,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 3.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+
+            // ---- 操作列表（无播放项）----
+            Column(Modifier.padding(top = 6.dp)) {
+                // 打开来源
+                if (jumpUrl.isNotBlank()) {
+                    SheetActionItem(
+                        icon = Icons.Filled.OpenInNew,
+                        label = "打开来源",
+                        desc = "跳转到来源播放",
+                        onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(jumpUrl))
+                                )
+                            }
+                            onDismiss()
+                        }
+                    )
+                }
+
+                // 下载音频（状态流转：下载中→已下载/失败重试）
+                if (downloadUrl.isNotBlank()) {
+                    when (downloadState) {
+                        DownloadState.Downloading -> SheetActionItem(
+                            icon = Icons.Filled.Download,
+                            label = "下载中…",
+                            desc = "正在保存",
+                            enabled = false
+                        )
+                        DownloadState.Downloaded -> SheetActionItem(
+                            icon = Icons.Filled.CheckCircle,
+                            label = "已下载",
+                            desc = "已保存到下载目录",
+                            enabled = false
+                        )
+                        DownloadState.Failed -> SheetActionItem(
+                            icon = Icons.Filled.Refresh,
+                            label = "重试下载",
+                            desc = "上次下载失败",
+                            onClick = {
+                                downloadState = DownloadState.Downloading
+                                downloadToPublic(context, downloadUrl, downloadFileName) { ok ->
+                                    downloadState = if (ok) DownloadState.Downloaded else DownloadState.Failed
+                                }
+                            }
+                        )
+                        else -> SheetActionItem(
+                            icon = Icons.Filled.Download,
+                            label = "下载音频",
+                            desc = "保存到下载目录",
+                            onClick = {
+                                downloadState = DownloadState.Downloading
+                                downloadToPublic(context, downloadUrl, downloadFileName) { ok ->
+                                    downloadState = if (ok) DownloadState.Downloaded else DownloadState.Failed
+                                }
+                            }
+                        )
+                    }
+                }
+
+                // 复制链接
+                val copyUrl = jumpUrl.ifBlank { downloadUrl }
+                if (copyUrl.isNotBlank()) {
+                    SheetActionItem(
+                        icon = Icons.Filled.ContentCopy,
+                        label = "复制链接",
+                        desc = "复制到剪贴板",
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("链接", copyUrl))
+                            Toast.makeText(context, "链接已复制", Toast.LENGTH_SHORT).show()
+                            onDismiss()
+                        }
+                    )
+                }
+
+                // 空状态
+                if (jumpUrl.isBlank() && downloadUrl.isBlank()) {
+                    SheetActionItem(
+                        icon = Icons.Filled.OpenInNew,
+                        label = "暂无可用操作",
+                        desc = "这张卡没有链接或音频",
+                        enabled = false
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Sheet 操作行：图标 + 主文案 + 副文案 */
+@Composable
+private fun SheetActionItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    desc: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit = {}
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (enabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                   else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f),
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            )
+            Text(
+                desc,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 1.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 下载到公共下载目录（MediaStore.Downloads），targetSdk 29+ 无需 WRITE_EXTERNAL_STORAGE。
+ * 完成后回调主线程。
+ */
+private fun downloadToPublic(
+    context: Context,
+    url: String,
+    fileName: String,
+    onComplete: (Boolean) -> Unit
+) {
+    CoroutineScope(Dispatchers.IO).launch {
+        val ok = runCatching {
+            val client = OkHttpClient()
+            val request = Request.Builder().url(url).build()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+                val body = resp.body ?: throw IllegalStateException("empty body")
+
+                val safeName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                }
+                val resolver = context.contentResolver
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("insert failed")
+
+                resolver.openOutputStream(uri)?.use { out ->
+                    body.byteStream().copyTo(out)
+                } ?: throw IllegalStateException("openOutputStream failed")
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.clear()
+                    values.put(MediaStore.Downloads.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                }
+                true
+            }
+        }.getOrDefault(false)
+
+        withContext(Dispatchers.Main) {
+            onComplete(ok)
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AudioCard(
@@ -410,6 +693,7 @@ fun AudioCard(
     val playing = playable && audio.isPlaying
     val loading = playable && audio.isPreparing
     val failed = playable && audio.hasError
+    var showSheet by remember { mutableStateOf(false) }
 
     val fg = MaterialTheme.colorScheme.onSurface
     val primary = MaterialTheme.colorScheme.primary
@@ -439,15 +723,7 @@ fun AudioCard(
         label = "audioWaveProgress"
     )
 
-    fun openJump() {
-        if (jumpUrl.isBlank()) return
-        runCatching {
-            context.startActivity(
-                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(resolveMedia(jumpUrl, baseUrl)))
-            )
-        }
-    }
-
+    // 点击卡片主体 → 打开操作弹窗（设计稿：弹窗只放卡片上没有的操作）
     Column(
         modifier = Modifier
             .widthIn(max = 288.dp)
@@ -469,7 +745,7 @@ fun AudioCard(
                 },
                 shape = AudioCardShape
             )
-            .combinedClickable(onClick = { openJump() }, onLongClick = onLongClick)
+            .combinedClickable(onClick = { showSheet = true }, onLongClick = onLongClick)
             .padding(14.dp)
     ) {
         // ---- 头部：封面（内嵌播放按钮）+ 标题/歌手 ----
@@ -668,7 +944,7 @@ fun AudioCard(
             }
         }
 
-        // ---- 来源行：细分隔线 + 音符 + 来源名 + 箭头，点击打开跳转 ----
+        // ---- 来源行：细分隔线 + 音符 + 来源名 + 箭头，点击打开操作弹窗 ----
         if (jumpUrl.isNotBlank()) {
             val sourceName = remember(jumpUrl) { musicSourceName(resolveMedia(jumpUrl, baseUrl)) }
             Column(Modifier.padding(top = 10.dp)) {
@@ -701,6 +977,24 @@ fun AudioCard(
                 }
             }
         }
+    }
+
+    // ---- 操作弹窗（不含播放项）----
+    if (showSheet) {
+        val resolvedJump = if (jumpUrl.isBlank()) "" else resolveMedia(jumpUrl, baseUrl)
+        val resolvedDownload = if (rawUrl.isBlank()) "" else resolveMedia(rawUrl, baseUrl)
+        val downloadName = if (title.isNotBlank()) "$title.mp3" else "audio_${System.currentTimeMillis()}.mp3"
+        AudioActionSheet(
+            title = title.ifBlank { "音频消息" },
+            artist = artist,
+            coverUrl = coverUrl,
+            coverGradient = Pair(Color(c1), Color(c2)),
+            coverGlyph = glyph,
+            jumpUrl = resolvedJump,
+            downloadUrl = resolvedDownload,
+            downloadFileName = downloadName,
+            onDismiss = { showSheet = false }
+        )
     }
 }
 
