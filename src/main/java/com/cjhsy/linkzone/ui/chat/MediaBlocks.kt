@@ -552,13 +552,13 @@ private fun AudioActionSheet(
                     }
                 }
 
-                // 复制链接
-                val copyUrl = jumpUrl.ifBlank { downloadUrl }
+                // 复制链接：优先复制音频直链（下载地址），无直链时复制跳转链接
+                val copyUrl = downloadUrl.ifBlank { jumpUrl }
                 if (copyUrl.isNotBlank()) {
                     SheetActionItem(
                         icon = Icons.Filled.ContentCopy,
                         label = "复制链接",
-                        desc = "复制到剪贴板",
+                        desc = "复制音频地址到剪贴板",
                         onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             cm.setPrimaryClip(ClipData.newPlainText("链接", copyUrl))
