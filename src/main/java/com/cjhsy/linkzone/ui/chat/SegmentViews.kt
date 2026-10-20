@@ -170,12 +170,14 @@ private fun SegmentView(
             baseUrl = baseUrl
         )
 
-        "audio" -> MediaPlayerRow(
+        "audio" -> AudioCard(
             rawUrl = seg.mediaUrl,
+            jumpUrl = "",
+            title = seg.get("title").ifBlank { audioFileName(seg.mediaUrl) },
+            artist = seg.get("artist"),
+            rawCover = seg.get("cover"),
             baseUrl = baseUrl,
-            isSelf = isSelf,
-            title = seg.get("title"),
-            artist = seg.get("artist")
+            onLongClick = onMediaLongClick
         )
 
         "video" -> InlineVideoPlayer(
@@ -210,14 +212,17 @@ private fun SegmentView(
 
         "node" -> NodeBlock(seg, onSurface)
 
-        "music" -> MediaPlayerRow(
-            // 优先用可直接播放的音频直链；仅有跳转链接时退回跳转页打开
-            rawUrl = seg.get("audio").ifBlank { seg.get("url") },
-            baseUrl = baseUrl,
-            isSelf = isSelf,
-            title = seg.get("title"),
+        "music" -> AudioCard(
+            // 有直链（data.audio）可播；仅有跳转链接时呈静态卡（去来源播放）
+            rawUrl = seg.get("audio"),
+            jumpUrl = seg.get("url"),
+            title = seg.get("title").ifBlank {
+                audioFileName(seg.get("audio").ifBlank { seg.get("url") })
+            },
             artist = seg.get("artist"),
-            rawCover = seg.get("cover")
+            rawCover = seg.get("cover"),
+            baseUrl = baseUrl,
+            onLongClick = onMediaLongClick
         )
 
         "card" -> GenericCardText(seg, onSurface)
@@ -869,6 +874,14 @@ fun formatFileSize(bytes: Long): String = when {
 private fun hostOf(url: String): String = runCatching {
     URI(url).host?.removePrefix("www.") ?: url
 }.getOrDefault(url)
+
+/** 从音频链接提取可读文件名（URL 解码 + 去扩展名可选），音卡缺标题时兜底 */
+private fun audioFileName(url: String): String {
+    if (url.isBlank()) return "音频消息"
+    val raw = url.substringBefore('?').substringAfterLast('/')
+    val decoded = runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+    return decoded.substringBeforeLast('.').ifBlank { "音频消息" }
+}
 
 /** 从 QQ XML 富文本中提取 item name（与后端 displayQQXML 对齐） */
 private fun extractXmlItems(data: String): String =

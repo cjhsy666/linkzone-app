@@ -1,5 +1,6 @@
 package com.cjhsy.linkzone.ui.chat
 
+import android.content.Intent
 import android.media.MediaPlayer
 import android.view.Gravity
 import android.widget.FrameLayout
@@ -7,13 +8,20 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +33,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,11 +44,10 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -53,14 +61,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -69,6 +84,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import java.net.URI
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * 媒体地址解析（图片/视频/语音等渲染入口共用）：
@@ -323,48 +342,219 @@ private fun VoiceSpeakerIcon(audio: AudioPlaybackHolder, flip: Boolean, tint: Co
 }
 
 // ============================================================================
-// 音频 / 音乐卡片：封面 + 标题 + 进度条拖动 + 播放/暂停
+// 音频 / 音乐卡片（音卡）：
+// 独立卡片视觉、不套气泡 —— 封面内嵌播放按钮（触屏常显）、种子波形进度条、
+// 底部来源行。可播放卡 = 头部 + 波形行 + 来源行；静态卡（无直链，只有跳转）
+// = 头部 + 「去 X 播放」来源行。播放只在封面按钮上，点卡片主体打开跳转链接。
 // ============================================================================
 
+private val AudioCardShape = RoundedCornerShape(16.dp)
+private val AudioCoverShape = RoundedCornerShape(12.dp)
+
+/** 封面渐变调色板（无封面图时的替代视觉），按标题哈希取色 */
+private val CoverPalettes = listOf(
+    0xFF8B5CF6 to 0xFFEC4899,
+    0xFF06B6D4 to 0xFF3B82F6,
+    0xFFF59E0B to 0xFFEF4444,
+    0xFF10B981 to 0xFF0EA5E9,
+    0xFF6366F1 to 0xFFA855F7,
+    0xFFF43F5E to 0xFFFB923C
+)
+
+private val CoverGlyphs = listOf("♪", "♫", "♬")
+
+/** 种子波形高度（0.14..1，正弦包络），与 Web 端设计稿同一 LCG 算法 */
+private fun waveHeights(seed: Int, count: Int = 48): List<Float> {
+    var s = abs(seed.takeIf { it != 0 } ?: 7).toLong().coerceIn(1L, 2147483646L)
+    val out = ArrayList<Float>(count)
+    for (i in 0 until count) {
+        s = s * 16807 % 2147483647L
+        val r = s / 2147483647.0
+        val env = 0.32 + 0.68 * sin(i.toDouble() / (count - 1) * Math.PI)
+        out += (env * (0.38 + r * 0.82)).toFloat().coerceIn(0.14f, 1f)
+    }
+    return out
+}
+
+/** 跳转链接推断来源名（deeplink/未知域名走兜底） */
+private fun musicSourceName(url: String): String {
+    val host = runCatching { URI(url).host?.lowercase() }.getOrNull().orEmpty()
+    return when {
+        "music.163.com" in host -> "网易云音乐"
+        host.endsWith("qq.com") || "qqmusic" in host -> "QQ 音乐"
+        "kugou.com" in host -> "酷狗音乐"
+        "kuwo.cn" in host -> "酷我音乐"
+        "bilibili.com" in host -> "哔哩哔哩"
+        "ximalaya.com" in host -> "喜马拉雅"
+        "douyin.com" in host -> "汽水音乐"
+        host.isNotBlank() -> host.removePrefix("www.")
+        else -> "外部应用"
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MediaPlayerRow(
+fun AudioCard(
     rawUrl: String,
+    jumpUrl: String,
+    title: String,
+    artist: String,
+    rawCover: String,
     baseUrl: String,
-    isSelf: Boolean,
-    title: String = "",
-    artist: String = "",
-    rawCover: String = ""
+    onLongClick: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
+    val dark = isSystemInDarkTheme()
+    val playable = rawUrl.isNotBlank()
     val audio = rememberAudioPlayback(rawUrl, baseUrl)
-    val fg = nestedFg(isSelf)
+    val playing = playable && audio.isPlaying
+    val loading = playable && audio.isPreparing
+    val failed = playable && audio.hasError
+
+    val fg = MaterialTheme.colorScheme.onSurface
+    val primary = MaterialTheme.colorScheme.primary
+    val tertiary = MaterialTheme.colorScheme.tertiary
+    val errorC = MaterialTheme.colorScheme.error
+    val cardBg = if (dark) Color.White.copy(alpha = 0.045f) else Color.Black.copy(alpha = 0.03f)
+    val cardBorderIdle = if (dark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
+
+    // 呼吸动画：仅播放中读取 breath.value，静止时不触发逐帧重组
+    val breath = rememberInfiniteTransition(label = "audioBreath").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(2200), RepeatMode.Reverse),
+        label = "breath"
+    )
+
+    // 封面视觉：有封面图用图；否则按标题哈希取渐变色 + 音符字符
     val coverUrl = if (rawCover.isBlank()) "" else resolveMedia(rawCover, baseUrl)
+    val seed = remember(title) { abs(title.ifBlank { "音频" }.hashCode()) }
+    val (c1, c2) = CoverPalettes[seed % CoverPalettes.size]
+    val glyph = CoverGlyphs[seed % CoverGlyphs.size]
+
+    // 波形进度：轮询值经线性补间插值成连续动画（300ms 轮询 + 300ms tween = 匀速）
+    val waveProgress by animateFloatAsState(
+        targetValue = audio.progress(),
+        animationSpec = tween(300, easing = LinearEasing),
+        label = "audioWaveProgress"
+    )
+
+    fun openJump() {
+        if (jumpUrl.isBlank()) return
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(resolveMedia(jumpUrl, baseUrl)))
+            )
+        }
+    }
 
     Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(nestedBg(isSelf))
-            .padding(12.dp)
+            .widthIn(max = 288.dp)
+            .shadow(
+                elevation = 10.dp,
+                shape = AudioCardShape,
+                ambientColor = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f),
+                spotColor = if (playing) primary.copy(alpha = 0.25f)
+                else Color.Black.copy(alpha = if (dark) 0.30f else 0.10f)
+            )
+            .clip(AudioCardShape)
+            .background(cardBg)
+            .border(
+                width = 1.dp,
+                color = when {
+                    failed -> errorC.copy(alpha = 0.30f)
+                    playing -> primary.copy(alpha = 0.26f + 0.12f * breath.value)
+                    else -> cardBorderIdle
+                },
+                shape = AudioCardShape
+            )
+            .combinedClickable(onClick = { openJump() }, onLongClick = onLongClick)
+            .padding(14.dp)
     ) {
+        // ---- 头部：封面（内嵌播放按钮）+ 标题/歌手 ----
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (coverUrl.isNotBlank()) {
-                AsyncImage(
-                    model = coverUrl,
-                    contentDescription = null,
+            Box(
+                modifier = Modifier
+                    .size(58.dp)
+                    .clip(AudioCoverShape)
+                    .background(Brush.linearGradient(listOf(Color(c1), Color(c2))))
+            ) {
+                if (coverUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = coverUrl,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            glyph,
+                            fontSize = 22.sp,
+                            color = Color.White.copy(alpha = 0.92f)
+                        )
+                    }
+                }
+                // 光影叠层：上部高光 + 下部压暗，替代设计稿封面的径向渐变
+                Box(
                     modifier = Modifier
-                        .size(46.dp)
-                        .clip(RoundedCornerShape(10.dp)),
-                    contentScale = ContentScale.Crop
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.White.copy(0.16f), Color.Transparent, Color.Black.copy(0.20f))
+                            )
+                        )
                 )
-            } else {
-                IconBox(Icons.Filled.MusicNote, isSelf)
+                if (playing) {
+                    // 播放中封面呼吸描边 + 光晕感
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .border(
+                                1.5.dp,
+                                primary.copy(alpha = 0.30f + 0.18f * breath.value),
+                                AudioCoverShape
+                            )
+                    )
+                }
+                // 封面内播放按钮（触屏设备常显；加载中转圈；失败可点重试）
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.58f))
+                        .clickable(enabled = playable && !loading) {
+                            if (audio.hasError) audio.retry() else audio.toggle()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    when {
+                        loading -> CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 1.6.dp,
+                            color = Color.White
+                        )
+                        playing -> Icon(
+                            Icons.Filled.Pause, "暂停",
+                            tint = Color.White, modifier = Modifier.size(18.dp)
+                        )
+                        else -> Icon(
+                            Icons.Filled.PlayArrow,
+                            if (failed) "重试播放" else "播放",
+                            tint = Color.White, modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     title.ifBlank { "音频消息" },
-                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
+                    lineHeight = 18.sp,
                     color = fg,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -372,52 +562,219 @@ fun MediaPlayerRow(
                 if (artist.isNotBlank()) {
                     Text(
                         artist,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = fg.copy(alpha = 0.7f),
-                        maxLines = 1
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        color = fg.copy(alpha = 0.64f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 3.dp)
                     )
                 }
             }
-            Box(
+        }
+
+        // ---- 波形行（可播放卡专属）：波形 + 时长 ----
+        if (playable) {
+            Row(
                 modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .background(fg.copy(alpha = 0.15f))
-                    .clickable { audio.toggle() },
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+                    .height(24.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    if (audio.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (audio.isPlaying) "暂停" else "播放",
-                    tint = fg,
-                    modifier = Modifier.size(22.dp)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                ) {
+                    AudioWave(
+                        heights = remember(seed) { waveHeights(seed) },
+                        progress = waveProgress,
+                        playing = playing,
+                        failed = failed,
+                        loading = loading,
+                        playedTop = primary,
+                        playedBottom = tertiary,
+                        idleColor = if (dark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.16f),
+                        failedColor = errorC.copy(alpha = 0.30f),
+                        enabled = !loading && !failed && audio.durationMs > 0,
+                        onSeek = { f ->
+                            val d = audio.durationMs
+                            if (d > 0) audio.seekTo((f * d).toInt().coerceIn(0, d))
+                        }
+                    )
+                    // 加载中遮罩：波形压暗 + 居中转圈
+                    if (loading) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(11.dp),
+                                strokeWidth = 1.5.dp,
+                                color = primary
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "加载中…",
+                                fontSize = 10.5.sp,
+                                color = fg.copy(alpha = 0.72f)
+                            )
+                        }
+                    }
+                    // 失败遮罩：提示 + 重试
+                    if (failed) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("⚠ 播放失败", fontSize = 10.5.sp, color = errorC)
+                            Spacer(Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .border(1.dp, errorC.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                                    .background(errorC.copy(alpha = 0.10f))
+                                    .clickable { audio.retry() }
+                                    .padding(horizontal = 7.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    "重试",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = errorC
+                                )
+                            }
+                        }
+                    }
+                }
+                // 播放中显示进度时间，其余显示总时长
+                Text(
+                    when {
+                        audio.durationMs <= 0 -> "--:--"
+                        playing -> formatTrackTime(audio.positionMs)
+                        else -> formatTrackTime(audio.durationMs)
+                    },
+                    style = TextStyle(
+                        fontSize = 10.5.sp,
+                        fontFeatureSettings = "tnum",
+                        fontWeight = FontWeight.Medium,
+                        color = fg.copy(alpha = 0.55f)
+                    )
                 )
             }
         }
-        if (audio.durationMs > 0) {
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    formatTrackTime(audio.positionMs),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = fg.copy(alpha = 0.65f)
-                )
-                Slider(
-                    value = audio.positionMs.toFloat(),
-                    onValueChange = { audio.seekTo(it.toInt()) },
-                    valueRange = 0f..audio.durationMs.toFloat(),
-                    colors = SliderDefaults.colors(
-                        thumbColor = fg,
-                        activeTrackColor = fg,
-                        inactiveTrackColor = fg.copy(alpha = 0.25f)
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    formatTrackTime(audio.durationMs),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = fg.copy(alpha = 0.65f)
-                )
+
+        // ---- 来源行：细分隔线 + 音符 + 来源名 + 箭头，点击打开跳转 ----
+        if (jumpUrl.isNotBlank()) {
+            val sourceName = remember(jumpUrl) { musicSourceName(resolveMedia(jumpUrl, baseUrl)) }
+            Column(Modifier.padding(top = 10.dp)) {
+                HorizontalDivider(thickness = 1.dp, color = fg.copy(alpha = 0.08f))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.MusicNote, null,
+                        tint = fg.copy(alpha = 0.52f),
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        if (playable) "来自 $sourceName" else "去 $sourceName 播放",
+                        fontSize = 10.5.sp,
+                        color = fg.copy(alpha = 0.52f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        if (playable) "›" else "↗",
+                        fontSize = 11.sp,
+                        color = fg.copy(alpha = 0.50f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 音卡波形：48 根圆角短柱，播放进度内渐变高亮，播放中轻微正弦波动。
+ * 点按 / 横向拖动均触发 [onSeek]（0f..1f）。
+ */
+@Composable
+private fun AudioWave(
+    heights: List<Float>,
+    progress: Float,
+    playing: Boolean,
+    failed: Boolean,
+    loading: Boolean,
+    playedTop: Color,
+    playedBottom: Color,
+    idleColor: Color,
+    failedColor: Color,
+    enabled: Boolean,
+    onSeek: (Float) -> Unit
+) {
+    // 波动相位：仅播放中在 draw 内读取，静止时波形不重绘
+    val wobble = rememberInfiniteTransition(label = "audioWave").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1900, easing = LinearEasing)),
+        label = "wobble"
+    )
+    val alpha = when {
+        loading -> 0.25f
+        failed -> 0.32f
+        else -> 1f
+    }
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer { this.alpha = alpha }
+            .then(
+                if (enabled) Modifier
+                    .pointerInput(Unit) {
+                        detectTapGestures { off -> onSeek(off.x / size.width) }
+                    }
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures { change, _ ->
+                            onSeek((change.position.x / size.width).coerceIn(0f, 1f))
+                            change.consume()
+                        }
+                    }
+                else Modifier
+            )
+    ) {
+        val n = heights.size
+        if (n == 0) return@Canvas
+        val gap = 2.dp.toPx()
+        val bw = (size.width - gap * (n - 1)) / n
+        val playedX = progress * size.width
+        val playedBrush = Brush.verticalGradient(listOf(playedTop, playedBottom))
+        val phase = if (playing) wobble.value * 2f * Math.PI.toFloat() else 0f
+        val minBar = 2.dp.toPx()
+        val maxRadius = 1.5.dp.toPx()
+        for (i in 0 until n) {
+            val x = i * (bw + gap)
+            var hh = heights[i]
+            if (playing) hh *= 0.82f + 0.18f * sin(phase + i * 0.38f)
+            val bh = maxOf(minBar, hh * size.height)
+            val y = (size.height - bh) / 2f
+            val radius = CornerRadius(min(bw / 2f, maxRadius))
+            val rect = Size(bw, bh)
+            when {
+                // 失败：整条波形置红
+                failed -> drawRoundRect(failedColor, Offset(x, y), rect, radius)
+                // 已播放段：主题渐变高亮
+                x + bw / 2f <= playedX -> drawRoundRect(playedBrush, Offset(x, y), rect, radius)
+                else -> drawRoundRect(idleColor, Offset(x, y), rect, radius)
             }
         }
     }
@@ -455,6 +812,8 @@ private class AudioPlaybackHolder(private val url: String) {
         private set
     var isPreparing by mutableStateOf(false)
         private set
+    var hasError by mutableStateOf(false)
+        private set
     var positionMs by mutableIntStateOf(0)
         private set
     var durationMs by mutableIntStateOf(0)
@@ -489,7 +848,18 @@ private class AudioPlaybackHolder(private val url: String) {
         isPlaying = false
     }
 
+    /** 播放失败后重试：释放旧实例重建播放器 */
+    fun retry() {
+        if (isPreparing) return
+        hasError = false
+        startNew()
+    }
+
     private fun startNew() {
+        // 重建前释放旧实例（重试场景旧 player 可能仍存在）
+        runCatching { player?.release() }
+        player = null
+        positionMs = 0
         runCatching {
             MediaPlayer().apply {
                 setDataSource(url)
@@ -508,10 +878,12 @@ private class AudioPlaybackHolder(private val url: String) {
                 setOnErrorListener { _, _, _ ->
                     this@AudioPlaybackHolder.isPlaying = false
                     this@AudioPlaybackHolder.isPreparing = false
+                    this@AudioPlaybackHolder.hasError = true
                     VoicePlaybackCenter.clear(this@AudioPlaybackHolder)
                     true
                 }
                 isPreparing = true
+                hasError = false
                 prepareAsync()
             }.also { player = it }
             isPlaying = true
@@ -519,6 +891,7 @@ private class AudioPlaybackHolder(private val url: String) {
         }.onFailure {
             isPlaying = false
             isPreparing = false
+            hasError = true
         }
     }
 

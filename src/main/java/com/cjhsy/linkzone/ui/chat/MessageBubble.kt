@@ -99,16 +99,21 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 纯视觉媒体段：任何一方都不套外层气泡（图片/闪照/动图/视频/语音） */
-private val BARE_MEDIA_TYPES = setOf("image", "flash", "animation", "video", "voice")
+/**
+ * 纯视觉媒体段：任何一方都不套外层气泡（图片/闪照/动图/视频/语音/音卡）。
+ * 音卡自带完整卡片容器（封面/波形/来源行），无需再套气泡。
+ */
+private val BARE_MEDIA_TYPES = setOf("image", "flash", "animation", "video", "voice", "music", "audio")
 
 /**
  * 文档流友好的段类型：AI 长回复以无气泡文档流直出；
- * 不在此集合的段（文件/音频/名片/位置/投票/按钮卡等 IM 卡片）自动套气泡。
+ * 不在此集合的段（文件/名片/位置/投票/按钮卡等 IM 卡片）自动套气泡；
+ * 音卡自带完整卡片容器（封面/波形/来源行），同样不套气泡。
  */
 private val DOCUMENT_FRIENDLY_TYPES = setOf(
     "text", "markdown", "image", "flash", "animation", "video", "voice", "link",
-    "reply", "mention", "mention_all", "sys.abort", "sys.listen_stop", "sys.emotion"
+    "reply", "mention", "mention_all", "sys.abort", "sys.listen_stop", "sys.emotion",
+    "music", "audio"
 )
 
 /**
