@@ -186,16 +186,18 @@ fun InlineVideoPlayer(
                     )
                 }
                 // 中央播放按钮（点击直接播放，不弹窗）
+                // 中央播放按钮：小尺寸 + 半透明描边，更精致
                 Box(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .size(48.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.45f))
+                        .background(Color.Black.copy(alpha = 0.35f))
+                        .border(1.5.dp, Color.White.copy(alpha = 0.6f), CircleShape)
                         .clickable { activated = true },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.PlayArrow, "播放视频", tint = Color.White, modifier = Modifier.size(28.dp))
+                    Icon(Icons.Filled.PlayArrow, "播放视频", tint = Color.White, modifier = Modifier.size(20.dp))
                 }
                 if (durationSec > 0) {
                     Box(
@@ -227,7 +229,7 @@ fun InlineVideoPlayer(
                     title.ifBlank { "视频" },
                     fontSize = 12.sp,
                     color = fg.copy(alpha = 0.72f),
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
@@ -296,7 +298,7 @@ fun InlineVideoPlayer(
                     title.ifBlank { "视频" },
                     fontSize = 12.sp,
                     color = fg.copy(alpha = 0.72f),
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
