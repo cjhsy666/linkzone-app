@@ -257,7 +257,7 @@ private val LANG_EXT = mapOf(
     "ruby" to "rb", "swift" to "swift", "dart" to "dart", "lua" to "lua",
 )
 
-/** 下载代码：API29+ 写入系统下载目录（免权限），低版本写应用私有目录 */
+/** 下载代码：API29+ 写入 LinkZone/Code 目录（免权限），低版本写应用私有目录 */
 private fun saveCodeToFile(context: Context, code: String, language: String?): String {
     val ext = language?.lowercase()?.let { LANG_EXT[it] } ?: "txt"
     val name = "code_${System.currentTimeMillis()}.$ext"
@@ -266,12 +266,13 @@ private fun saveCodeToFile(context: Context, code: String, language: String?): S
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/LinkZone/Code")
             }
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: error("MediaStore insert 失败")
             context.contentResolver.openOutputStream(uri)?.use { it.write(code.toByteArray()) }
                 ?: error("打开输出流失败")
-            "已保存到系统下载目录：$name"
+            "已保存到 LinkZone/Code：$name"
         } else {
             val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                 ?: error("存储不可用")

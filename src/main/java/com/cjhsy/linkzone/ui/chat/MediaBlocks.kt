@@ -533,7 +533,7 @@ private fun AudioActionSheet(
                             desc = "上次下载失败",
                             onClick = {
                                 downloadState = DownloadState.Downloading
-                                downloadToPublic(context, downloadUrl, downloadFileName) { ok ->
+                                downloadToPublic(context, downloadUrl, downloadFileName, "Music") { ok ->
                                     downloadState = if (ok) DownloadState.Downloaded else DownloadState.Failed
                                 }
                             }
@@ -541,10 +541,10 @@ private fun AudioActionSheet(
                         else -> SheetActionItem(
                             icon = Icons.Filled.Download,
                             label = "下载音频",
-                            desc = "保存到下载目录",
+                            desc = "保存到 LinkZone/Music",
                             onClick = {
                                 downloadState = DownloadState.Downloading
-                                downloadToPublic(context, downloadUrl, downloadFileName) { ok ->
+                                downloadToPublic(context, downloadUrl, downloadFileName, "Music") { ok ->
                                     downloadState = if (ok) DownloadState.Downloaded else DownloadState.Failed
                                 }
                             }
@@ -626,13 +626,14 @@ private fun SheetActionItem(
 }
 
 /**
- * 下载到公共下载目录（MediaStore.Downloads），targetSdk 29+ 无需 WRITE_EXTERNAL_STORAGE。
- * 完成后回调主线程。
+ * 下载到 LinkZone 分类目录（MediaStore.Downloads 下的 LinkZone/{category}/）。
+ * targetSdk 29+ 无需 WRITE_EXTERNAL_STORAGE。完成后回调主线程。
  */
 private fun downloadToPublic(
     context: Context,
     url: String,
     fileName: String,
+    category: String,
     onComplete: (Boolean) -> Unit
 ) {
     CoroutineScope(Dispatchers.IO).launch {
@@ -644,11 +645,12 @@ private fun downloadToPublic(
                 val body = resp.body ?: throw IllegalStateException("empty body")
 
                 val safeName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                val relativePath = "Download/LinkZone/$category"
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, safeName)
                     put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                        put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
                         put(MediaStore.Downloads.IS_PENDING, 1)
                     }
                 }
