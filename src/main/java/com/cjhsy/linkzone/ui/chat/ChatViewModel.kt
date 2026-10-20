@@ -398,7 +398,7 @@ class ChatViewModel(
         viewModelScope.launch {
             // 优先用其他页面已拉取的 profile 缓存，避免启动重复请求
             val profile = userRepository.profile.value ?: userRepository.loadProfile().getOrNull()
-            myId = profile?.linkzoneId ?: ""
+            myId = profile?.linkzoneId ?: userRepository.currentUserId()
             if (myId.isBlank()) {
                 _state.value = _state.value.copy(error = "未能获取用户信息")
                 return@launch
@@ -868,6 +868,7 @@ class ChatViewModel(
                     hasMore = resp.hasMore
                 )
             }.onFailure {
+                // 离线回退：保留已有消息（缓存已在前一步加载），只提示错误
                 _state.value = _state.value.copy(
                     loading = false,
                     error = it.toUserMessage(ErrorMessages.CHAT_LOAD_HISTORY)

@@ -56,6 +56,12 @@ class UserRepository(
     suspend fun deactivate(): Result<Unit> =
         runUnitEnvelope(tokenHolder) { userApi.deactivate() }
 
+    /** 当前用户 ID：优先内存缓存，其次 SecureStore 持久化（离线兜底） */
+    fun currentUserId(): String =
+        _profile.value?.linkzoneId?.takeIf { it.isNotBlank() }
+            ?: secureStore.getUserId()
+            ?: ""
+
     /** 退出登录或刷新失败时清空缓存 */
     fun clear() {
         _profile.value = null
