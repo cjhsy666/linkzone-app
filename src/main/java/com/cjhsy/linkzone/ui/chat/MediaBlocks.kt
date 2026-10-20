@@ -235,7 +235,7 @@ fun InlineVideoPlayer(
             }
         }
     } else {
-        // 已激活：内嵌播放器 + 全屏按钮
+        // 已激活：播放器包在卡片内，保持视觉一致性
         val player = remember(videoUrl) {
             ExoPlayer.Builder(context).build().apply {
                 setMediaItem(MediaItem.fromUri(videoUrl))
@@ -246,23 +246,60 @@ fun InlineVideoPlayer(
         DisposableEffect(videoUrl) {
             onDispose { player.release() }
         }
-        Box(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(220.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color.Black)
+                .widthIn(max = 288.dp)
+                .shadow(
+                    elevation = 10.dp,
+                    shape = AudioCardShape,
+                    ambientColor = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f),
+                    spotColor = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f)
+                )
+                .clip(AudioCardShape)
+                .background(cardBg)
+                .border(1.dp, cardBorder, AudioCardShape)
         ) {
-            AndroidPlayerView(player = player, modifier = Modifier.fillMaxSize())
-            IconButton(
-                onClick = { fullscreen = true },
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp)
-                    .size(36.dp)
-                    .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .background(Color.Black)
             ) {
-                Icon(Icons.Filled.Fullscreen, "全屏播放", tint = Color.White, modifier = Modifier.size(20.dp))
+                AndroidPlayerView(player = player, modifier = Modifier.fillMaxSize())
+                IconButton(
+                    onClick = { fullscreen = true },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(36.dp)
+                        .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                ) {
+                    Icon(Icons.Filled.Fullscreen, "全屏播放", tint = Color.White, modifier = Modifier.size(20.dp))
+                }
+            }
+            // 底部信息行
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow, null,
+                    tint = fg.copy(alpha = 0.52f),
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    title.ifBlank { "视频" },
+                    fontSize = 12.sp,
+                    color = fg.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("›", fontSize = 12.sp, color = fg.copy(alpha = 0.50f))
             }
         }
 
@@ -280,14 +317,13 @@ fun InlineVideoPlayer(
             coverUrl = coverUrl,
             videoUrl = videoUrl,
             downloadFileName = downloadName,
-            onPlay = { activated = true },
             onDismiss = { showSheet = false }
         )
     }
 }
 
 /**
- * 视频操作弹窗：播放 / 下载 / 复制链接。
+ * 视频操作弹窗：下载 / 复制链接。
  * 与音卡 AudioActionSheet 同设计语言。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -297,7 +333,6 @@ private fun VideoActionSheet(
     coverUrl: String,
     videoUrl: String,
     downloadFileName: String,
-    onPlay: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -350,17 +385,6 @@ private fun VideoActionSheet(
             Spacer(Modifier.height(18.dp))
 
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                // 播放视频
-                SheetActionItem(
-                    icon = Icons.Filled.PlayArrow,
-                    label = "播放视频",
-                    desc = "在聊天中播放",
-                    onClick = {
-                        onPlay()
-                        onDismiss()
-                    }
-                )
-
                 // 下载视频
                 when (downloadState) {
                     DownloadState.Downloading -> SheetActionItem(
