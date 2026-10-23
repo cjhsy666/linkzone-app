@@ -392,6 +392,24 @@ fun ChatScreen(
                 }
             }
 
+            // 编辑消息种子（DeepSeek 式复用底部输入框，仅本地会话）：
+            // resend=true 编辑重发（分叉新版本并重新生成）；resend=false 仅编辑（直接改内容）
+            val editSeed = state.editing?.let { t ->
+                EditSeed(
+                    messageId = t.message.id,
+                    resend = t.resend,
+                    isSelf = t.message.isSelf,
+                    text = t.message.visibleSegments()
+                        .filter { it.type == "text" || it.type == "markdown" }
+                        .map { it.get("text", "content") }
+                        .filter { it.isNotBlank() }
+                        .joinToString("\n")
+                        .ifBlank { t.message.content },
+                    images = t.message.visibleSegments()
+                        .filter { it.type == "image" || it.type == "flash" }
+                )
+            }
+
             ChatInputBar(
                 sending = state.sending,
                 enabled = state.ready,
@@ -438,25 +456,6 @@ fun ChatScreen(
                 } else null
             )
         }
-    }
-
-    // ---------- 编辑消息（DeepSeek 式复用底部输入框，仅本地会话） ----------
-    // resend=true：编辑重发（用户消息，原消息保留为历史版本并重新生成）
-    // resend=false：仅编辑（用户消息/AI 回答，直接改内容，不产生版本、不触发回复）
-    val editSeed = state.editing?.let { t ->
-        EditSeed(
-            messageId = t.message.id,
-            resend = t.resend,
-            isSelf = t.message.isSelf,
-            text = t.message.visibleSegments()
-                .filter { it.type == "text" || it.type == "markdown" }
-                .map { it.get("text", "content") }
-                .filter { it.isNotBlank() }
-                .joinToString("\n")
-                .ifBlank { t.message.content },
-            images = t.message.visibleSegments()
-                .filter { it.type == "image" || it.type == "flash" }
-        )
     }
 
     // ---------- 多模型重答选择器（本地 AI 消息） ----------
