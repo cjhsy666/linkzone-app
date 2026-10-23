@@ -140,7 +140,8 @@ private fun SegmentView(
 
     fun open(rawUrl: String) {
         if (rawUrl.isBlank()) return
-        val url = resolveMedia(rawUrl, baseUrl)
+        // 外部浏览器无法带请求头：服务器媒体 URL 以 ?token= 附带凭证（/public/uploads/ 已需鉴权）
+        val url = com.cjhsy.linkzone.core.network.MediaAuth.urlWithToken(resolveMedia(rawUrl, baseUrl))
         runCatching {
             context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
         }

@@ -97,6 +97,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.cjhsy.linkzone.core.network.MediaAuth
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import kotlinx.coroutines.CoroutineScope
@@ -239,7 +242,14 @@ fun InlineVideoPlayer(
     } else {
         // 已激活：播放器包在卡片内，保持视觉一致性
         val player = remember(videoUrl) {
-            ExoPlayer.Builder(context).build().apply {
+            // 服务器媒体需鉴权：为本机服务器的视频流附带 Bearer token
+            val headers = MediaAuth.headersFor(videoUrl)
+            val builder = ExoPlayer.Builder(context)
+            if (headers.isNotEmpty()) {
+                val httpDs = DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers)
+                builder.setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(httpDs))
+            }
+            builder.build().apply {
                 setMediaItem(MediaItem.fromUri(videoUrl))
                 prepare()
                 playWhenReady = true
@@ -874,7 +884,10 @@ private fun downloadToPublic(
     CoroutineScope(Dispatchers.IO).launch {
         val ok = runCatching {
             val client = OkHttpClient()
-            val request = Request.Builder().url(url).build()
+            // 服务器媒体需鉴权：附带 Bearer token（外部 URL 自动跳过）
+            val reqBuilder = Request.Builder().url(url)
+            MediaAuth.headersFor(url).forEach { (k, v) -> reqBuilder.header(k, v) }
+            val request = reqBuilder.build()
             client.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                 val body = resp.body ?: throw IllegalStateException("empty body")
@@ -1335,7 +1348,7 @@ private object VoicePlaybackCenter {
     }
 }
 
-private class AudioPlaybackHolder(private val url: String) {
+private class AudioPlaybackHolder(private val context: Context, private val url: String) {
 
     private var player: MediaPlayer? = null
 
@@ -1393,7 +1406,8 @@ private class AudioPlaybackHolder(private val url: String) {
         positionMs = 0
         runCatching {
             MediaPlayer().apply {
-                setDataSource(url)
+                // 服务器媒体（/public/uploads/ 等）已需登录鉴权，附带 Bearer token
+                setDataSource(context, Uri.parse(url), MediaAuth.headersFor(url))
                 setOnPreparedListener { prepared ->
                     durationMs = runCatching { prepared.duration }.getOrDefault(0).coerceAtLeast(0)
                     isPreparing = false
@@ -1450,7 +1464,8 @@ private class AudioPlaybackHolder(private val url: String) {
 @Composable
 private fun rememberAudioPlayback(rawUrl: String, baseUrl: String): AudioPlaybackHolder {
     val url = remember(rawUrl) { resolveMedia(rawUrl, baseUrl) }
-    val holder = remember(url) { AudioPlaybackHolder(url) }
+    val context = LocalContext.current.applicationContext
+    val holder = remember(url) { AudioPlaybackHolder(context, url) }
 
     DisposableEffect(url) {
         onDispose { holder.release() }

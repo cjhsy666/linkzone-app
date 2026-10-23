@@ -238,10 +238,14 @@ private fun applyExifTransform(bitmap: Bitmap, transform: ExifTransformType): Bi
  */
 private fun downloadAndEncode(path: String, withPrefix: Boolean): EncodedImage {
     val base = com.cjhsy.linkzone.di.BASE_URL.trimEnd('/')
-    val conn = (java.net.URL(base + path).openConnection() as java.net.HttpURLConnection).apply {
+    val fullUrl = base + path
+    val conn = (java.net.URL(fullUrl).openConnection() as java.net.HttpURLConnection).apply {
         connectTimeout = 15_000
         readTimeout = 30_000
         instanceFollowRedirects = true
+        // 服务器媒体已需登录鉴权，附带 Bearer token
+        com.cjhsy.linkzone.core.network.MediaAuth.headersFor(fullUrl)
+            .forEach { (k, v) -> setRequestProperty(k, v) }
     }
     try {
         if (conn.responseCode !in 200..299) {
