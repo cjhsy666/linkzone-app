@@ -151,7 +151,7 @@ data class ChatUiState(
     /** 当前本地会话存在临时覆盖配置（仅本会话生效，未回写智能体） */
     val agentOverridden: Boolean = false,
     /**
-     * 正在编辑的消息目标（非空时聊天页弹出编辑对话框）：
+     * 正在编辑的消息目标（非空时输入栏进入编辑模式，DeepSeek 式复用发送框）：
      * - resend=true：编辑重发（用户消息，原消息保留为历史版本并重新生成回复）
      * - resend=false：仅编辑（用户/AI 均可，直接改本条消息内容，不产生版本、不触发回复）
      */
@@ -2898,7 +2898,7 @@ class ChatViewModel(
         return fromSegs.ifBlank { if (m.segments.isNullOrEmpty()) m.content else "" }.trim()
     }
 
-    /** 长按消息 → 编辑重发：聊天页弹出编辑对话框（用户消息，确认后分叉新版本并重新生成） */
+    /** 长按消息 → 编辑重发：输入栏预填原文进入编辑态（用户消息，确认后分叉新版本并重新生成） */
     fun startEditMessage(m: MessageItem) {
         _state.value = _state.value.copy(editing = EditTarget(m, resend = true))
     }

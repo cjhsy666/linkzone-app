@@ -124,6 +124,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -400,6 +403,13 @@ fun ChatScreen(
                 onSendCombined = { text, attachments ->
                     viewModel.sendCombined(text, attachments)
                 },
+                editSeed = editSeed,
+                onConfirmEdit = { text, kept, added ->
+                    val t = state.editing ?: return@ChatInputBar
+                    if (t.resend) viewModel.confirmEditMessage(text, kept, added)
+                    else viewModel.confirmModifyMessage(text, kept, added)
+                },
+                onCancelEdit = viewModel::cancelEditMessage,
                 onUploadPending = { file, onDone ->
                     viewModel.uploadPending(file, onDone)
                 },
@@ -430,31 +440,22 @@ fun ChatScreen(
         }
     }
 
-    // ---------- 编辑对话框（仅本地会话） ----------
+    // ---------- 编辑消息（DeepSeek 式复用底部输入框，仅本地会话） ----------
     // resend=true：编辑重发（用户消息，原消息保留为历史版本并重新生成）
     // resend=false：仅编辑（用户消息/AI 回答，直接改内容，不产生版本、不触发回复）
-    state.editing?.let { target ->
-        EditMessageDialog(
-            resend = target.resend,
-            isSelfMessage = target.message.isSelf,
-            initial = target.message.visibleSegments()
+    val editSeed = state.editing?.let { t ->
+        EditSeed(
+            messageId = t.message.id,
+            resend = t.resend,
+            isSelf = t.message.isSelf,
+            text = t.message.visibleSegments()
                 .filter { it.type == "text" || it.type == "markdown" }
                 .map { it.get("text", "content") }
                 .filter { it.isNotBlank() }
                 .joinToString("\n")
-                .ifBlank { target.message.content },
-            initialImages = target.message.visibleSegments()
-                .filter { it.type == "image" || it.type == "flash" },
-            baseUrl = BASE_URL.trimEnd('/'),
-            onUpload = viewModel::uploadPending,
-            onConfirm = { text, kept, added ->
-                if (target.resend) {
-                    viewModel.confirmEditMessage(text, kept, added)
-                } else {
-                    viewModel.confirmModifyMessage(text, kept, added)
-                }
-            },
-            onDismiss = viewModel::cancelEditMessage
+                .ifBlank { t.message.content },
+            images = t.message.visibleSegments()
+                .filter { it.type == "image" || it.type == "flash" }
         )
     }
 
@@ -1051,7 +1052,8 @@ internal enum class RecordUi { IDLE, RECORDING, WILL_CANCEL }
 /** 待发送附件上传状态（选中即预上传） */
 internal enum class MediaUploadState { UPLOADING, UPLOADED, FAILED }
 
-/** 待发送附件：文件 + 类型（image/video/file）+ 预上传状态/服务端 URL，发送后清除 */
+/** 待发送附件：文件 + 类型（image/video/file）+ 预上传状态/服务端 URL，发送后清除；
+ * [originSeg] 非空表示编辑消息时预填的原有图片段（确认时作为保留段回传，不再上传） */
 internal data class PendingMedia(
     val file: java.io.File,
     val type: String?,
@@ -1060,7 +1062,17 @@ internal data class PendingMedia(
     val remoteUrl: String? = null,
     val remoteSegType: String = "",
     val remoteName: String = "",
-    val remoteSize: Long = 0L
+    val remoteSize: Long = 0L,
+    val originSeg: com.cjhsy.linkzone.data.model.MessageSegment? = null
+)
+
+/** 编辑消息种子：非空时底部输入栏进入编辑模式（DeepSeek 式复用发送框，不再弹对话框） */
+internal data class EditSeed(
+    val messageId: String,
+    val resend: Boolean,
+    val isSelf: Boolean,
+    val text: String,
+    val images: List<com.cjhsy.linkzone.data.model.MessageSegment>
 )
 
 /**
@@ -1219,6 +1231,11 @@ internal fun ChatInputBar(
     onCancelReply: () -> Unit,
     onSendCombined: (String, List<PendingMediaItem>) -> Unit,
     onSendLocation: (Double, Double) -> Unit,
+    /** 编辑消息种子：非空时进入编辑模式（预填原文/图片，发送即确认编辑） */
+    editSeed: EditSeed? = null,
+    /** 编辑确认：文本 + 保留的原有图片段 + 新增附件 */
+    onConfirmEdit: (String, List<com.cjhsy.linkzone.data.model.MessageSegment>, List<PendingMediaItem>) -> Unit = { _, _, _ -> },
+    onCancelEdit: () -> Unit = {},
     /** 附件预上传：选中入列后立即调用，完成回调更新条目状态 */
     onUploadPending: (java.io.File, (Result<com.cjhsy.linkzone.data.model.UploadResponse>) -> Unit) -> Unit,
     extensionChips: (@Composable () -> Unit)? = null
@@ -1227,9 +1244,43 @@ internal fun ChatInputBar(
     var input by remember { mutableStateOf("") }
     var panelOpen by remember { mutableStateOf(false) }
     var voiceMode by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     // 待发送附件列表（豆包式：选中不直接发，浮在输入区上方）
     var pendingAttachments by remember { mutableStateOf(listOf<PendingMedia>()) }
+
+    // 编辑模式进出（DeepSeek 式复用发送框）：进入时预填原文与原图并弹键盘聚焦，
+    // 退出（取消/确认后 VM 清空 editing）时还原输入区。普通发送不受影响
+    var wasEditing by remember { mutableStateOf(false) }
+    LaunchedEffect(editSeed?.messageId) {
+        val seed = editSeed
+        if (seed != null) {
+            wasEditing = true
+            input = seed.text
+            pendingAttachments = seed.images.map { seg ->
+                PendingMedia(
+                    file = java.io.File(""),
+                    type = seg.type,
+                    uploadState = MediaUploadState.UPLOADED,
+                    remoteUrl = seg.mediaUrl,
+                    remoteSegType = seg.type,
+                    remoteName = seg.get("name"),
+                    originSeg = seg
+                )
+            }
+            panelOpen = false
+            voiceMode = false
+            runCatching {
+                focusRequester.requestFocus()
+                keyboardController?.show()
+            }
+        } else if (wasEditing) {
+            wasEditing = false
+            input = ""
+            pendingAttachments = emptyList()
+        }
+    }
 
     /**
      * 附件选中即预上传（DeepSeek/豆包式）：先入列显示上传动画，
@@ -1316,6 +1367,22 @@ internal fun ChatInputBar(
             Toast.makeText(context, "附件上传失败，请移除后重试", Toast.LENGTH_SHORT).show()
             return
         }
+        // 编辑模式：原有图片段（originSeg）回传为保留项，其余附件为新增
+        if (editSeed != null) {
+            val kept = pendingAttachments.mapNotNull { it.originSeg }
+            val added = pendingAttachments.filter { it.originSeg == null }.map {
+                PendingMediaItem(
+                    file = it.file, type = it.type,
+                    remoteUrl = it.remoteUrl, remoteSegType = it.remoteSegType,
+                    remoteName = it.remoteName, remoteSize = it.remoteSize
+                )
+            }
+            onConfirmEdit(text, kept, added)
+            input = ""
+            pendingAttachments = emptyList()
+            panelOpen = false
+            return
+        }
         val items = pendingAttachments.map {
             PendingMediaItem(
                 file = it.file, type = it.type,
@@ -1343,6 +1410,15 @@ internal fun ChatInputBar(
             exit = shrinkVertically(tween(200)) + fadeOut(tween(200))
         ) {
             replyTo?.let { ReplyPreviewBar(it, onCancelReply) }
+        }
+
+        // 编辑消息横幅（DeepSeek 式：编辑态浮在输入区上方，X 取消）
+        AnimatedVisibility(
+            visible = editSeed != null,
+            enter = expandVertically(tween(200)) + fadeIn(tween(200)),
+            exit = shrinkVertically(tween(200)) + fadeOut(tween(200))
+        ) {
+            editSeed?.let { EditPreviewBar(it, onCancelEdit) }
         }
 
         // 待发送附件预览条（悬浮缩略卡 + X 移除）
@@ -1638,7 +1714,9 @@ internal fun ChatInputBar(
                         TextField(
                             value = input,
                             onValueChange = { input = it },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester),
                             enabled = enabled,
                             placeholder = {
                                 Text(
@@ -1804,14 +1882,22 @@ internal fun PendingMediaStrip(
     onRemove: (PendingMedia) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // 图片点击全屏预览（本地 file:// 直接可开）
+    // 图片点击全屏预览（本地 file:// 直接可开；编辑预填的远端图走 resolveMedia）
     var preview by remember { mutableStateOf<PendingMedia?>(null) }
     preview?.let { item ->
-        ZoomableImageDialog(
-            rawUrl = "file://" + item.file.absolutePath,
-            baseUrl = "",
-            onDismiss = { preview = null }
-        )
+        if (item.originSeg != null) {
+            ZoomableImageDialog(
+                rawUrl = item.remoteUrl.orEmpty(),
+                baseUrl = BASE_URL.trimEnd('/'),
+                onDismiss = { preview = null }
+            )
+        } else {
+            ZoomableImageDialog(
+                rawUrl = "file://" + item.file.absolutePath,
+                baseUrl = "",
+                onDismiss = { preview = null }
+            )
+        }
     }
 
     LazyRow(
@@ -1843,7 +1929,10 @@ internal fun PendingMediaStrip(
                     when (mediaKind) {
                         "image" -> {
                             AsyncImage(
-                                model = item.file,
+                                // 编辑预填项无本地文件，按远端地址渲染；其余用本地文件
+                                model = if (item.originSeg != null)
+                                    resolveMedia(item.remoteUrl.orEmpty(), BASE_URL.trimEnd('/'))
+                                else item.file,
                                 contentDescription = null,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
@@ -2023,6 +2112,53 @@ internal fun RecordingOverlay(state: RecordUi, elapsedMs: Long) {
     }
 }
 
+/** 编辑消息横幅（DeepSeek 式）：竖条 + 标题/原文摘要 + 关闭按钮，浮在输入区上方 */
+@Composable
+private fun EditPreviewBar(seed: EditSeed, onCancel: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(28.dp)
+                .background(MaterialTheme.colorScheme.primary)
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = when {
+                    seed.resend -> "编辑并重发"
+                    seed.isSelf -> "编辑消息"
+                    else -> "编辑回答"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = seed.text.ifBlank { "[图片]" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+        }
+        Icon(
+            imageVector = Icons.Filled.Close,
+            contentDescription = "取消编辑",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .size(20.dp)
+                .clickable(onClick = onCancel)
+        )
+    }
+}
+
 /** 回复引用预览条：竖线 + 回复对象 + 内容摘要 + 取消 */
 @Composable
 internal fun ReplyPreviewBar(
@@ -2097,266 +2233,6 @@ internal fun Modifier.messageEnter(): Modifier {
 }
 
 // ============ 编辑重发 / 多模型重答 / 会话内搜索 ============
-
-/**
- * 消息编辑对话框（仅本地会话），两种模式：
- * - resend=true 编辑重发（用户消息）：原消息保留为历史版本（‹ n/m › 可切回），确认后重新生成回复；
- *   可编辑文本与图片（逐张删除/点击预览/相册新增，选中即预上传）
- * - resend=false 仅编辑（用户消息/AI 回答）：直接覆盖本条消息内容，不产生版本、不触发回复；
- *   AI 回答仅文本，不提供图片管理
- */
-@Composable
-internal fun EditMessageDialog(
-    /** true=编辑重发（分叉新版本并重新生成）；false=仅编辑保存（不重发） */
-    resend: Boolean,
-    /** 被编辑的是否为用户消息（决定标题/说明；AI 回答不提供图片管理） */
-    isSelfMessage: Boolean,
-    initial: String,
-    initialImages: List<MessageSegment>,
-    baseUrl: String,
-    onUpload: (java.io.File, (Result<com.cjhsy.linkzone.data.model.UploadResponse>) -> Unit) -> Unit,
-    onConfirm: (String, List<MessageSegment>, List<PendingMediaItem>) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val context = LocalContext.current
-    var text by remember { mutableStateOf(initial) }
-    // 原有图片段（可逐张移除）
-    var kept by remember { mutableStateOf(initialImages) }
-    // 新增图片：选中即预上传，与输入栏附件共用同一套状态机
-    var added by remember { mutableStateOf(listOf<PendingMedia>()) }
-    var previewUrl by remember { mutableStateOf<String?>(null) }
-
-    val dialogTitle = when {
-        resend -> "编辑重发"
-        isSelfMessage -> "编辑消息"
-        else -> "编辑回答"
-    }
-    val dialogHint = when {
-        resend -> "确认后原消息保留为历史版本（消息菜单「历史版本」可切回），并以编辑内容重新生成回复。"
-        isSelfMessage -> "仅修改本条消息内容，不会重新生成回复。"
-        else -> "仅修改本地显示的回答内容，不会重新请求模型。"
-    }
-    // AI 回答仅文本；用户消息（编辑/编辑重发）可管理图片
-    val supportsImage = isSelfMessage
-
-    previewUrl?.let { url ->
-        ZoomableImageDialog(rawUrl = url, baseUrl = baseUrl, onDismiss = { previewUrl = null })
-    }
-
-    fun addImage(file: java.io.File) {
-        val item = PendingMedia(file = file, type = "image")
-        added = added + item
-        onUpload(file) { result ->
-            added = added.map { pm ->
-                if (pm.id != item.id) {
-                    pm
-                } else {
-                    result.fold(
-                        onSuccess = { up ->
-                            pm.copy(
-                                uploadState = MediaUploadState.UPLOADED,
-                                remoteUrl = up.url,
-                                remoteSegType = up.segType,
-                                remoteName = up.name,
-                                remoteSize = up.size
-                            )
-                        },
-                        onFailure = { pm.copy(uploadState = MediaUploadState.FAILED) }
-                    )
-                }
-            }
-        }
-    }
-
-    val galleryLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9)
-    ) { uris ->
-        uris.forEach { uri ->
-            runCatching { uri.copyToCache(context) }.getOrNull()?.let { addImage(it) }
-        }
-    }
-
-    val uploading = added.any { it.uploadState == MediaUploadState.UPLOADING }
-    val failed = added.any { it.uploadState == MediaUploadState.FAILED }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(dialogTitle) },
-        text = {
-            Column {
-                Text(
-                    text = dialogHint,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    // material3 1.1.2 无 minLines：用 maxLines 限制高度，随内容增高
-                    maxLines = 10,
-                    placeholder = { Text(if (supportsImage) "可只保留图片" else "输入修改后的内容") },
-                    textStyle = MaterialTheme.typography.bodyMedium
-                )
-                if (supportsImage && (kept.isNotEmpty() || added.isNotEmpty())) {
-                    Spacer(Modifier.height(10.dp))
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        itemsIndexed(kept, key = { i, _ -> "kept-$i" }) { _, seg ->
-                            val url = seg.get("url")
-                            val shown = resolveMedia(url, baseUrl)
-                            EditImageThumb(
-                                model = shown,
-                                uploadState = null,
-                                onPreview = { previewUrl = shown },
-                                onRemove = { kept = kept - seg }
-                            )
-                        }
-                        items(added, key = { it.id }) { pm ->
-                            EditImageThumb(
-                                model = pm.file,
-                                uploadState = pm.uploadState,
-                                onPreview = { previewUrl = "file://" + pm.file.absolutePath },
-                                onRemove = {
-                                    added = added - pm
-                                    runCatching { pm.file.delete() }
-                                }
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                if (supportsImage) {
-                    TextButton(
-                        onClick = {
-                            galleryLauncher.launch(
-                                androidx.activity.result.PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly
-                                )
-                            )
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.AddPhotoAlternate,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("添加图片")
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    if (uploading) {
-                        Toast.makeText(context, "图片上传中，请稍候", Toast.LENGTH_SHORT).show()
-                        return@TextButton
-                    }
-                    if (failed) {
-                        Toast.makeText(context, "有图片上传失败，请移除后重试", Toast.LENGTH_SHORT).show()
-                        return@TextButton
-                    }
-                    onConfirm(
-                        text,
-                        kept,
-                        added.map { pm ->
-                            PendingMediaItem(
-                                file = pm.file,
-                                type = "image",
-                                remoteUrl = pm.remoteUrl,
-                                remoteSegType = pm.remoteSegType,
-                                remoteName = pm.remoteName,
-                                remoteSize = pm.remoteSize
-                            )
-                        }
-                    )
-                },
-                enabled = text.isNotBlank() || kept.isNotEmpty() || added.isNotEmpty()
-            ) { Text(if (resend) "重新发送" else "保存") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        }
-    )
-}
-
-/** 编辑对话框里的图片缩略卡：68dp 圆角卡 + 右上角移除角标，上传中/失败叠加状态遮罩 */
-@Composable
-private fun EditImageThumb(
-    model: Any,
-    uploadState: MediaUploadState?,
-    onPreview: (() -> Unit)?,
-    onRemove: () -> Unit
-) {
-    Box(modifier = Modifier.size(68.dp)) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            AsyncImage(
-                model = model,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(if (onPreview != null) Modifier.clickable(onClick = onPreview) else Modifier)
-            )
-            when (uploadState) {
-                MediaUploadState.UPLOADING -> Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.35f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-                MediaUploadState.FAILED -> Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.45f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.ErrorOutline,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-                else -> Unit
-            }
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .offset(x = 4.dp, y = (-4).dp)
-                .size(20.dp)
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.6f))
-                .clickable(onClick = onRemove),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "移除图片",
-                tint = Color.White,
-                modifier = Modifier.size(13.dp)
-            )
-        }
-    }
-}
 
 /** 多模型重答：选择一个模型重新生成回复 */
 @Composable
