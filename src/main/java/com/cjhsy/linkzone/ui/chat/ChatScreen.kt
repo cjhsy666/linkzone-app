@@ -48,6 +48,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -779,6 +781,17 @@ private fun MessageList(
     LaunchedEffect(streamTailLen, streamBottomIndex) {
         if (state.generating && followStream && !userDragging && streamBottomIndex >= 0) {
             // 超大 scrollOffset 触发列表最大滚动位置钳制 = 末条底边贴齐视口底
+            listState.scrollToItem(streamBottomIndex, Int.MAX_VALUE)
+        }
+    }
+
+    // ---------- 键盘弹起贴底跟随 ----------
+    // 外层 imePadding 使列表视口随键盘缩短：原本贴底时逐帧钉底（复用流式跟随的
+    // followStream 判定，只在用户上翻看历史时才不跟随），最新消息不被键盘遮挡。
+    // imeBottom 在键盘动画期间逐帧变化，每次重组都滚到最大滚动位，内容随键盘平滑上移
+    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    LaunchedEffect(imeBottom) {
+        if (imeBottom > 0 && followStream && !userDragging && streamBottomIndex >= 0) {
             listState.scrollToItem(streamBottomIndex, Int.MAX_VALUE)
         }
     }
