@@ -1742,18 +1742,18 @@ internal fun ChatInputBar(
 
                 Spacer(Modifier.width(4.dp))
 
-                // 麦克风 / 键盘切换（与相机同规格：44dp + bottom 2dp）
+                // ⊕ 功能面板开关（与相机同规格：44dp + bottom 2dp；面板展开时变为 X）
                 IconButton(
-                    onClick = { voiceMode = !voiceMode },
+                    onClick = { panelOpen = !panelOpen },
                     enabled = enabled && !sending,
                     modifier = Modifier
                         .size(44.dp)
                         .padding(bottom = 2.dp)
                 ) {
                     Icon(
-                        imageVector = if (voiceMode) Icons.Filled.Keyboard
-                        else Icons.Filled.Mic,
-                        contentDescription = if (voiceMode) "键盘" else "语音",
+                        imageVector = if (panelOpen) Icons.Filled.Close
+                        else Icons.Filled.Add,
+                        contentDescription = if (panelOpen) "收起面板" else "功能",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(22.dp)
                     )
@@ -1761,7 +1761,8 @@ internal fun ChatInputBar(
 
                 Spacer(Modifier.width(2.dp))
 
-                // ⊕ / 发送按钮（有内容时变为发送；本地智能体生成中变为停止按钮）
+                // 最右按钮（微信式）：无内容→麦克风切语音；有内容→发送↑；生成中→■停止；
+                // 语音模式下变为键盘图标切回文字输入
                 val canSend = (input.isNotBlank() || pendingAttachments.isNotEmpty()) && !sending && enabled && !generating
                 val sendBg by animateColorAsState(
                     targetValue = if (canSend || generating) MaterialTheme.colorScheme.primary
@@ -1781,22 +1782,22 @@ internal fun ChatInputBar(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(sendBg)
-                        .clickable(enabled = canSend || generating || (!canSend && !voiceMode)) {
+                        .clickable(enabled = !sending) {
                             when {
                                 generating -> onStopGenerate()
                                 canSend -> doSend()
-                                else -> panelOpen = !panelOpen
+                                else -> voiceMode = !voiceMode
                             }
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    // ⊕/↑/■ 状态切换：缩放 + 淡入淡出过渡，避免生硬跳变
+                    // 麦克风/↑/■ 状态切换：缩放 + 淡入淡出过渡，避免生硬跳变
                     val sendState = when {
                         generating -> "stop"
                         sending -> "sending"
                         canSend -> "send"
-                        panelOpen -> "close"
-                        else -> "add"
+                        voiceMode -> "keyboard"
+                        else -> "mic"
                     }
                     AnimatedContent(
                         targetState = sendState,
@@ -1820,10 +1821,16 @@ internal fun ChatInputBar(
                                 color = Color.White
                             )
                             else -> Icon(
-                                imageVector = if (st == "send") Icons.Filled.ArrowUpward
-                                else if (st == "close") Icons.Filled.Close
-                                else Icons.Filled.Add,
-                                contentDescription = if (st == "send") "发送" else "功能",
+                                imageVector = when (st) {
+                                    "send" -> Icons.Filled.ArrowUpward
+                                    "keyboard" -> Icons.Filled.Keyboard
+                                    else -> Icons.Filled.Mic
+                                },
+                                contentDescription = when (st) {
+                                    "send" -> "发送"
+                                    "keyboard" -> "键盘"
+                                    else -> "语音"
+                                },
                                 tint = sendTint,
                                 modifier = Modifier.size(20.dp)
                             )
