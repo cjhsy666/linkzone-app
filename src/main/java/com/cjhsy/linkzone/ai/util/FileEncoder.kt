@@ -39,6 +39,9 @@ fun registerLocalImage(remoteUrl: String, localPath: String) {
     }
 }
 
+/** 查询「服务端相对 URL → 本地文件」映射（文档解析等场景按远端地址找回本机副本） */
+fun resolveLocalFile(remoteUrl: String): String? = localImageFiles[remoteUrl]
+
 internal enum class ExifTransformType {
     NONE,
     FLIP_HORIZONTAL,

@@ -86,6 +86,7 @@ import kotlinx.coroutines.launch
 import android.content.Context
 import com.cjhsy.linkzone.ai.util.encodeBase64
 import com.cjhsy.linkzone.ai.util.registerLocalImage
+import com.cjhsy.linkzone.ai.util.resolveLocalFile
 import java.io.File
 import java.util.UUID
 
@@ -1037,7 +1038,8 @@ class ChatViewModel(
                         registerLocalImage(att.remoteUrl, att.file.absolutePath)
                         uploadedSegs.add(buildMediaSeg(
                             segType, att.remoteUrl,
-                            att.remoteName.ifBlank { att.file.name }, att.remoteSize, 0L
+                            att.remoteName.ifBlank { att.file.name }, att.remoteSize, 0L,
+                            localPath = att.file.absolutePath
                         ))
                         continue
                     }
@@ -1052,7 +1054,7 @@ class ChatViewModel(
                     val upload = result.getOrThrow()
                     val segType = att.type ?: upload.segType.ifBlank { guessSegType(att.file) }
                     registerLocalImage(upload.url, att.file.absolutePath)
-                    uploadedSegs.add(buildMediaSeg(segType, upload.url, upload.name, upload.size, 0L))
+                    uploadedSegs.add(buildMediaSeg(segType, upload.url, upload.name, upload.size, 0L, localPath = att.file.absolutePath))
                 }
                 // 上传完成：替换消息段为服务端 URL 并落库，AI 上下文即可拿到 URL
                 val finalSegs = activeBranchConstraints() + uploadedSegs
@@ -1219,7 +1221,7 @@ class ChatViewModel(
                 }
                 val upload = result.getOrThrow()
                 val segType = forcedType ?: upload.segType.ifBlank { localType }
-                val remoteSeg = buildMediaSeg(segType, upload.url, upload.name, upload.size, durationSec)
+                val remoteSeg = buildMediaSeg(segType, upload.url, upload.name, upload.size, durationSec, localPath = file.absolutePath)
                 val remoteSegs = if (replySeg != null) listOf(replySeg, remoteSeg) else listOf(remoteSeg)
                 val finalSegs = activeBranchConstraints() + remoteSegs
                 _state.value = _state.value.copy(
@@ -1332,20 +1334,21 @@ class ChatViewModel(
         }
     }
 
-    /** 构造媒体消息段（本地预览与远端发送共用同一套字段） */
+    /** 构造媒体消息段（本地预览与远端发送共用同一套字段）；localPath 仅 file 段使用：上传替换为服务端 URL 后文档解析仍按本机副本取内容 */
     private fun buildMediaSeg(
         segType: String,
         url: String,
         name: String,
         size: Long,
-        durationSec: Long
+        durationSec: Long,
+        localPath: String = ""
     ): MessageSegment = when (segType) {
         "image" -> Segments.image(url, name, size = size)
         "flash" -> Segments.flash(url, name)
         "video" -> Segments.video(url, durationSec)
         "voice" -> Segments.voice(url, durationSec)
         "audio" -> Segments.audio(url, title = name)
-        else -> Segments.file(url, name, size)
+        else -> Segments.file(url, name, size, localPath)
     }
 
     /** 更新上传中媒体消息的状态（找不到对应消息时忽略，可能已切换会话） */
@@ -2519,19 +2522,23 @@ class ChatViewModel(
                 "file" -> {
                     val url = seg.mediaUrl
                     val name = seg.get("name", "title").ifBlank { "attachment" }
-                    if (url.startsWith("file://")) {
-                        val docFile = File(url.removePrefix("file://"))
-                        if (docFile.exists()) {
-                            val text = DocumentParser.parse(docFile, name)
-                            android.util.Log.d("LZC-image", "file parsed name=$name chars=${text.length}")
-                            docs.append(DocumentParser.wrapAsPrompt(name, text)).append('\n')
-                        } else {
-                            // fail-loud：文件丢失时让模型明确说出"没读到内容"，而不是只剩文件名占位
-                            android.util.Log.w("LZC-image", "file seg DROPPED (missing): id=$id url=$url")
-                            docs.append(DocumentParser.wrapAsPrompt(name, "[ERROR, 文件不存在或已被清理：$name]")).append('\n')
+                    // 上传后 url 已替换为服务端地址，解析以随段落库的 local_path（本机附件副本）为准；
+                    // 兼容旧数据：file:// 地址或进程内「远端URL→本地文件」映射
+                    val localPath = seg.get("local_path").ifBlank {
+                        when {
+                            url.startsWith("file://") -> url.removePrefix("file://")
+                            else -> resolveLocalFile(url).orEmpty()
                         }
+                    }
+                    val docFile = localPath.takeIf { it.isNotBlank() }?.let { File(it) }
+                    if (docFile != null && docFile.exists()) {
+                        val text = DocumentParser.parse(docFile, name)
+                        android.util.Log.d("LZC-image", "file parsed name=$name chars=${text.length}")
+                        docs.append(DocumentParser.wrapAsPrompt(name, text)).append('\n')
                     } else {
-                        android.util.Log.w("LZC-image", "file seg DROPPED (bad url): id=$id url=$url data=${seg.data}")
+                        // fail-loud：文件丢失时让模型明确说出"没读到内容"，而不是只剩文件名占位
+                        android.util.Log.w("LZC-image", "file seg DROPPED (missing): id=$id url=$url local=$localPath")
+                        docs.append(DocumentParser.wrapAsPrompt(name, "[ERROR, 文件不存在或已被清理：$name]")).append('\n')
                     }
                 }
             }

@@ -372,8 +372,8 @@ object Segments {
     fun animation(url: String, duration: Long = 0L, width: Int = 0, height: Int = 0) =
         seg("animation", "url" to url, "duration" to duration, "width" to width, "height" to height)
 
-    fun file(url: String, name: String, size: Long = 0L) =
-        seg("file", "url" to url, "name" to name, "size" to size)
+    fun file(url: String, name: String, size: Long = 0L, localPath: String = "") =
+        seg("file", "url" to url, "name" to name, "size" to size, "local_path" to localPath)
 
     fun reply(messageId: String, senderId: String = "", senderName: String = "", preview: String = "") =
         seg("reply", "message_id" to messageId, "user_id" to senderId,

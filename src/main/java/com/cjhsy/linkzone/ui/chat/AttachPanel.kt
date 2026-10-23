@@ -108,8 +108,11 @@ fun AttachPanel(
         // 各云盘），长按即可多选，与 RikkaHub 上传文件一致的体验
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
+        // 文档存持久目录（非 cacheDir）：local_path 随消息段落库，多轮对话需反复解析原文，
+        // 缓目录随时可能被系统清理导致解析失败
+        val docDir = File(context.filesDir, "attachments").apply { mkdirs() }
         uris.forEach { uri ->
-            val cached = runCatching { uri.copyToCache(context) }.getOrNull()
+            val cached = runCatching { uri.copyToCache(context, docDir) }.getOrNull()
             if (cached != null) onSendMedia(cached, "file")
         }
     }
@@ -273,10 +276,11 @@ private fun AttachGridItem(
 }
 
 /**
- * 把 content:// 选择结果复制到应用缓存目录，返回可上传的真实文件。
+ * 把 content:// 选择结果复制到应用存储，返回可上传的真实文件。
+ * 默认进缓存目录（图片/视频等用完即弃）；文档类调用方应传持久目录 [dir]。
  * 文件名优先取 OpenableColumns.DISPLAY_NAME，取不到时按 mime 补扩展名。
  */
-internal fun Uri.copyToCache(context: Context): File {
+internal fun Uri.copyToCache(context: Context, dir: File = context.cacheDir): File {
     val mime = context.contentResolver.getType(this)
 
     // 优先保留系统返回的原始文件名（文档解析依赖扩展名分发：pdf/docx/pptx/xlsx/epub…）
@@ -322,16 +326,16 @@ internal fun Uri.copyToCache(context: Context): File {
             "${prefix}_${System.currentTimeMillis()}$mimeExt"
         }
     }
-    val outFile = File(context.cacheDir, finalName)
+    val outFile = File(dir, finalName)
     // 同名文件（同一文档重复选择）加序号避免覆盖
     var unique = outFile
     var n = 1
     while (unique.exists()) {
         val dot = finalName.lastIndexOf('.')
         unique = if (dot > 0) {
-            File(context.cacheDir, finalName.substring(0, dot) + "_$n" + finalName.substring(dot))
+            File(dir, finalName.substring(0, dot) + "_$n" + finalName.substring(dot))
         } else {
-            File(context.cacheDir, "${finalName}_$n")
+            File(dir, "${finalName}_$n")
         }
         n++
     }
