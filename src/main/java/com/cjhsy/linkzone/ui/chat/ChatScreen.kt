@@ -36,6 +36,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -119,6 +120,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -1710,32 +1712,38 @@ internal fun ChatInputBar(
                         }
                     } else {
                         // ---------- 文字输入 ----------
-                        TextField(
+                        // BasicTextField + 自定义装饰盒：与语音条同高（min 48dp、垂直居中），
+                        // M3 TextField 内置 56dp 最小高度会导致文/语切换时胶囊高度跳动
+                        BasicTextField(
                             value = input,
                             onValueChange = { input = it },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .focusRequester(focusRequester),
                             enabled = enabled,
-                            placeholder = {
-                                Text(
-                                    text = if (pendingAttachments.isNotEmpty()) "输入问题或直接发送"
-                                    else "发消息…",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                )
-                            },
                             maxLines = 4,
-                            textStyle = MaterialTheme.typography.bodyMedium,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                disabledContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                disabledIndicatorColor = Color.Transparent,
-                                cursorColor = MaterialTheme.colorScheme.primary
-                            )
+                            textStyle = MaterialTheme.typography.bodyMedium
+                                .copy(color = MaterialTheme.colorScheme.onSurface),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            decorationBox = { inner ->
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .padding(horizontal = 4.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    if (input.isEmpty()) {
+                                        Text(
+                                            text = if (pendingAttachments.isNotEmpty()) "输入问题或直接发送"
+                                            else "发消息…",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                        )
+                                    }
+                                    inner()
+                                }
+                            }
                         )
                     }
                 }
