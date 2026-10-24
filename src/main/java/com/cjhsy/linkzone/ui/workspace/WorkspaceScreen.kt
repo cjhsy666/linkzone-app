@@ -1691,6 +1691,18 @@ private fun TerminalPane(
                         imeAction = ImeAction.Send,
                     ),
                     keyboardActions = KeyboardActions(onSend = {
+                        // 组合态未上屏就按了发送：先把挂起内容补齐，再发 CR，
+                        // 否则像 "top" 可能只到 "to"（最后的字符随组合态被丢）
+                        val pendingBase = composingBase
+                        if (pendingBase != null) {
+                            composingBase = null
+                            val curr = field.text
+                            val common = commonPrefixLength(pendingBase, curr)
+                            if (common < pendingBase.length) {
+                                repeat(pendingBase.length - common) { viewModel.sendRaw("\u007f") }
+                            }
+                            if (curr.length > common) viewModel.sendRaw(curr.substring(common))
+                        }
                         emit("\r", clearMirror = true)
                     })
                 )
