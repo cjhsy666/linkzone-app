@@ -111,7 +111,11 @@ object RootfsPatcher {
     }
 
     private fun ensureDir(root: File, relative: String) {
-        File(root, relative).mkdirs()
+        val dir = File(root, relative)
+        dir.mkdirs()
+        dir.setReadable(true, false)
+        dir.setWritable(true, false)
+        dir.setExecutable(true, false)
     }
 
     /** /tmp 需要全局可写（0777），PRoot 下以 root 身份运行也无副作用 */

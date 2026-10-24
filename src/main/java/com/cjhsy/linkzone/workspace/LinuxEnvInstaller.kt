@@ -94,7 +94,9 @@ object LinuxEnvInstaller {
         rootfsUrl: String = defaultRootfsUrl(),
         onProgress: (InstallProgress) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
-        require(prootBinary(context) != null) { "当前设备架构没有内置 proot，无法安装" }
+        require(prootBinary(context) != null && prootLoader(context) != null) {
+            "当前设备架构没有内置 proot（仅支持 arm64-v8a / x86_64），无法安装"
+        }
         require(rootfsUrl.startsWith("http")) { "rootfs 地址无效" }
 
         val tempDir = File(context.cacheDir, "rootfs-install").apply {
@@ -279,6 +281,8 @@ object LinuxEnvInstaller {
             val magic = parseString(header, 257, 6)
             if (name.isBlank() && sizeStr.isBlank()) break
             val size = sizeStr.trim().toLongOrNull(8) ?: 0L
+            // tar 头部 mode 字段决定可执行位：解出来的 /bin/busybox 没有 x 位就完全跑不起来
+            val mode = parseString(header, 100, 8).trim().toLongOrNull(8) ?: 0L
             val dataBlocks = (size + BLOCK - 1) / BLOCK
             if (magic.isBlank() && typeFlag.toInt() == 0 && size == 0L && name.isBlank()) break
 
@@ -289,11 +293,15 @@ object LinuxEnvInstaller {
                     val buf = ByteArray(size.toInt().coerceAtLeast(0))
                     readFully(input, buf)
                     pendingLongName = buf.toString(Charsets.UTF_8).trimEnd('\u0000', '\n')
+                    // 数据区按 512 对齐，长文件名数据同样有填充
+                    skipFully(input, dataBlocks * BLOCK - size)
                     continue
                 }
                 'x', 'g' -> skipFully(input, dataBlocks * BLOCK)
                 '5' -> {
-                    destRoot.resolve(relPath(pendingLongName ?: name)).mkdirs()
+                    val dir = destRoot.resolve(relPath(pendingLongName ?: name))
+                    dir.mkdirs()
+                    applyMode(dir, mode, isDir = true)
                     pendingLongName = null
                     skipFully(input, dataBlocks * BLOCK)
                     count++; onProgress(count, "$name/")
@@ -336,13 +344,27 @@ object LinuxEnvInstaller {
                                 remaining -= read
                             }
                         }
-                    } else {
-                        skipFully(input, dataBlocks * BLOCK)
                     }
+                    // 数据区按 512 字节对齐，不足部分要跳过，否则下一块 header 会错位
+                    skipFully(input, dataBlocks * BLOCK - size)
+                    applyMode(f, mode, isDir = false)
                     pendingLongName = null
                     count++; onProgress(count, name)
                 }
             }
+        }
+    }
+
+    /**
+     * 按 tar 头部 mode 还原权限。
+     * PRoot 内以 fake-root 运行，只要保证：可读、可写、可执行位与归档一致。
+     * Java 的 File.setExecutable 在 Android 上等价于 chmod，能正确落到 0700/0755。
+     */
+    private fun applyMode(file: File, mode: Long, isDir: Boolean) {
+        file.setReadable(true, false)
+        file.setWritable(true, false)
+        if (isDir || (mode and 0b001_001_001L) != 0L) {
+            file.setExecutable(true, false)
         }
     }
 
