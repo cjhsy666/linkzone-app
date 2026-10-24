@@ -40,13 +40,16 @@ class PtySession(
     fun start(): Boolean {
         if (running.get()) return true
         cwd.mkdirs()
-        val res = NativePty.nativeStart(
-            argv = argv.toTypedArray(),
-            cwd = cwd.absolutePath,
-            env = env.toTypedArray(),
-            rows = emulator.rows,
-            cols = emulator.cols,
-        ) ?: return false
+        // 原生层异常（如符号缺失）降级为启动失败提示，不闪退
+        val res = runCatching {
+            NativePty.nativeStart(
+                argv = argv.toTypedArray(),
+                cwd = cwd.absolutePath,
+                env = env.toTypedArray(),
+                rows = emulator.rows,
+                cols = emulator.cols,
+            )
+        }.getOrNull() ?: return false
         fd = res[0]
         pid = res[1]
         val descriptor = ParcelFileDescriptor.adoptFd(fd)

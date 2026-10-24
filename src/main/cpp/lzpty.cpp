@@ -15,6 +15,9 @@
 #define TAG "LzPty"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// JNI 导出函数必须是 C 链接，否则 C++ name mangling 后 Java 侧找不到符号
+extern "C" {
+
 static char **toCStringArray(JNIEnv *env, jobjectArray arr, int *countOut) {
     int count = arr ? (int) env->GetArrayLength(arr) : 0;
     char **out = (char **) calloc((size_t) count + 1, sizeof(char *));
@@ -121,3 +124,5 @@ Java_com_cjhsy_linkzone_workspace_term_NativePty_nativeSignal(
         JNIEnv *env, jclass clazz, jint pid, jint sig) {
     if (pid > 0) kill(-(pid_t) pid, sig);
 }
+
+} // extern "C"
