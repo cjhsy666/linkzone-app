@@ -28,8 +28,8 @@ import java.util.zip.ZipInputStream
  */
 object LinuxEnvInstaller {
 
-    /** 当前系统架构对应的 Alpine 官方 minirootfs 地址 */
-    fun defaultRootfsUrl(): String {
+    /** 当前系统架构对应的 Alpine minirootfs 地址（按可达性排序，逐个尝试） */
+    fun defaultRootfsUrls(): List<String> {
         val arch = when {
             Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } -> "aarch64"
             Build.SUPPORTED_ABIS.any { it == "x86_64" } -> "x86_64"
@@ -37,9 +37,18 @@ object LinuxEnvInstaller {
             Build.SUPPORTED_ABIS.any { it == "x86" } -> "x86"
             else -> "aarch64"
         }
-        return "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/$arch/" +
-            "alpine-minirootfs-3.24.0-$arch.tar.gz"
+        // 国内网络访问官方 CDN 经常被截断/劫持，国内镜像放前面
+        return listOf(
+            "https://mirrors.aliyun.com/alpine/v3.24/releases/$arch/" +
+                "alpine-minirootfs-3.24.0-$arch.tar.gz",
+            "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/releases/$arch/" +
+                "alpine-minirootfs-3.24.0-$arch.tar.gz",
+            "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/$arch/" +
+                "alpine-minirootfs-3.24.0-$arch.tar.gz",
+        )
     }
+
+    fun defaultRootfsUrl(): String = defaultRootfsUrls().first()
 
     /** 环境就绪状态 */
     data class EnvStatus(
@@ -110,10 +119,29 @@ object LinuxEnvInstaller {
             mkdirs()
         }
         try {
-            onProgress(InstallProgress(3, "正在下载 rootfs…"))
             val archive = File(tempDir, "rootfs.archive")
-            download(rootfsUrl, archive) { percent ->
-                onProgress(InstallProgress(3 + percent * 57 / 100, "正在下载 rootfs… $percent%"))
+            // 依次尝试候选镜像：官方 CDN 在国内常被截断或劫持成错误页，
+            // 单个地址失败不应直接宣告安装失败
+            val candidates = if (rootfsUrl.isNotBlank()) listOf(rootfsUrl)
+                .plus(defaultRootfsUrls().filter { it != rootfsUrl }) else defaultRootfsUrls()
+            var lastError: Exception? = null
+            var downloaded = false
+            for (url in candidates) {
+                try {
+                    onProgress(InstallProgress(3, "正在下载 rootfs…"))
+                    download(url, archive) { percent ->
+                        onProgress(InstallProgress(3 + percent * 57 / 100, "正在下载 rootfs… $percent%"))
+                    }
+                    validateArchive(archive)
+                    downloaded = true
+                    break
+                } catch (e: Exception) {
+                    lastError = e
+                    archive.delete()
+                }
+            }
+            if (!downloaded) {
+                throw IllegalStateException("rootfs 下载失败：${lastError?.message ?: "所有镜像均不可用"}")
             }
 
             onProgress(InstallProgress(62, "正在解压 rootfs…"))
@@ -129,7 +157,7 @@ object LinuxEnvInstaller {
                 }
             }
 
-            require(isUsableRootfs(staging)) { "压缩包不含 rootfs 结构（缺少 bin/ 或 usr/）" }
+            require(isUsableRootfs(staging)) { "压缩包不含可用的 rootfs（缺少 bin/sh）" }
 
             onProgress(InstallProgress(92, "正在修补 rootfs…"))
             RootfsPatcher.patch(staging)
@@ -173,10 +201,29 @@ object LinuxEnvInstaller {
                 }
             }
             require(dest.length() > 0) { "下载内容为空" }
+            // Content-Length 已知时必须逐字节对上：连接中途断开不会被 read() 报错，
+            // 只会安静地返回 -1，不校验就会拿半个压缩包去解压
+            if (total > 0) require(dest.length() == total) {
+                "下载不完整（${dest.length()}/$total 字节）"
+            }
             if (total > 0) onProgress(100)
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** 解压前先做格式体检：被劫持成 HTML 错误页时能给出明确提示而不是解出一堆垃圾 */
+    private fun validateArchive(file: File) {
+        val magic = ByteArray(4)
+        FileInputStream(file).use { it.read(magic) }
+        val isGzip = magic[0] == 0x1f.toByte() && magic[1] == 0x8b.toByte()
+        val isZip = magic[0] == 0x50.toByte() && magic[1] == 0x4b.toByte()
+        if (isGzip || isZip) return
+        // tar 无固定起始魔数，但合法归档的 ustar 标识在偏移 257
+        val head = ByteArray(263)
+        val n = FileInputStream(file).use { it.read(head) }
+        val isTar = n >= 263 && String(head, 257, 5, Charsets.US_ASCII) == "ustar"
+        require(isTar) { "下载内容不是有效的 rootfs 压缩包（可能被网络劫持），请重试" }
     }
 
     /**
