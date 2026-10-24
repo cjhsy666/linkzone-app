@@ -37,6 +37,17 @@ class PtySession(
     private var lastPublish = 0L
     private val running = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // 节流尾帧补发：被 60ms 窗口丢掉的帧在窗口结束后补一帧最新状态
+    @Volatile private var dirty = false
+    @Volatile private var flushScheduled = false
+    private val flusher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "lz-pty-flush").apply { isDaemon = true }
+    }
+
+    companion object {
+        private const val PUBLISH_INTERVAL_MS = 60L
+    }
+
     /** 已向上翻的历史行数；0 = 实时屏幕 */
     private var scrollOffset = 0
     private var lastHistorySize = 0
@@ -153,6 +164,7 @@ class PtySession(
 
     fun close() {
         running.set(false)
+        flusher.shutdown()
         runCatching { output?.close() }
         runCatching { pfd?.close() }
         output = null
@@ -163,7 +175,24 @@ class PtySession(
 
     private fun publish(force: Boolean) {
         val now = System.currentTimeMillis()
-        if (!force && now - lastPublish < 60) return
+        val elapsed = now - lastPublish
+        if (!force && elapsed < PUBLISH_INTERVAL_MS) {
+            // 节流窗口内被丢掉的帧必须补发：回车后的回显与提示符重绘常分两批到达，
+            // 丢掉后者会让光标停在空行上，直到下次输出才"跳回来"
+            dirty = true
+            if (!flushScheduled) {
+                flushScheduled = true
+                flusher.schedule({
+                    flushScheduled = false
+                    if (dirty) {
+                        dirty = false
+                        publish(true)
+                    }
+                }, PUBLISH_INTERVAL_MS - elapsed, java.util.concurrent.TimeUnit.MILLISECONDS)
+            }
+            return
+        }
+        dirty = false
         lastPublish = now
         val historySize = emulator.scrollbackSize
         if (scrollOffset > 0) {
