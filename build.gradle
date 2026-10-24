@@ -12,6 +12,7 @@ android {
     // compileSdk 37：新版 androidx（Compose 1.9/lifecycle 2.11/core-ktx 1.19 等）要求；targetSdk 保持 34 → 运行时行为不变
     compileSdk 37
     buildToolsVersion "37.0.0"
+    ndkVersion "27.0.12077973"
 
     defaultConfig {
         applicationId "com.cjhsy.linkzone"
@@ -19,6 +20,17 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+        // 交互终端依赖原生 pty；proot 二进制也只有这两套 ABI，其他架构自动降级为宿主 shell
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
     }
     signingConfigs {
         appSign {
