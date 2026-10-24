@@ -68,7 +68,7 @@ class PtySession(
                 while (true) {
                     val n = input.read(buffer)
                     if (n <= 0) break
-                    for (i in 0 until n) pending.write(buffer[i])
+                    for (i in 0 until n) pending.write(buffer[i].toInt())
                     val chunk = pending.toByteArray()
                     // 只在字符边界处解码，避免多字节字符被读缓冲切断产生乱码
                     val tail = trailingIncomplete(chunk)
