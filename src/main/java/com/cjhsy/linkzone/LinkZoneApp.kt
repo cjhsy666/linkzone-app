@@ -15,9 +15,29 @@ class LinkZoneApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        installCrashLogger()
         startKoin {
             androidContext(this@LinkZoneApp)
             modules(appModule)
+        }
+    }
+
+    /** 崩溃落盘：下次启动由 MainActivity 弹窗展示，便于无 adb 环境定位闪退 */
+    private fun installCrashLogger() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val text = buildString {
+                    append("thread: ").append(thread.name).append('\n')
+                    append("time: ").append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())).append('\n')
+                    append("device: ").append(android.os.Build.MODEL).append(" / Android ").append(android.os.Build.VERSION.RELEASE).append(" (API ").append(android.os.Build.VERSION.SDK_INT).append(")\n")
+                    append("abi: ").append(android.os.Build.SUPPORTED_ABIS.joinToString()).append('\n')
+                    append('\n')
+                    append(android.util.Log.getStackTraceString(throwable))
+                }
+                java.io.File(filesDir, "last_crash.txt").writeText(text)
+            }
+            previous?.uncaughtException(thread, throwable)
         }
     }
 
