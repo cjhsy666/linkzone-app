@@ -77,27 +77,9 @@ class TerminalEmulator(cols: Int, rows: Int) {
         return TermScreen(cols, rows, lines, cursorX, cursorY, cursorVisible)
     }
 
-    /** 可回滚的历史行数 */
-    val scrollbackSize: Int get() = history.size
-
     /** 历史滚动行（供后续做回滚用） */
     fun scrollback(max: Int = 200): List<List<TermCell>> =
         history.takeLast(max).map { it.toList() }
-
-    /**
-     * 某个滚动位置的可视窗口。offset 表示「从底部往上翻了 N 行」，0 即实时屏幕。
-     * 翻页状态下不显示光标（与真实终端一致）。
-     */
-    fun viewport(offset: Int): TermScreen {
-        if (offset <= 0 || altScreen) return snapshot()
-        val back = offset.coerceAtMost(history.size)
-        val lines = ArrayList<List<TermCell>>(back + rows)
-        history.takeLast(back).forEach { lines.add(it.toList()) }
-        for (y in 0 until rows) lines.add(grid[y].toList())
-        val end = lines.size - back
-        val start = (end - rows).coerceAtLeast(0)
-        return TermScreen(cols, rows, lines.subList(start, end), cursorX, cursorY, false)
-    }
 
     // ---------------- 尺寸 ----------------
 
