@@ -149,7 +149,7 @@ object LinuxEnvInstaller {
             staging.deleteRecursively()
             staging.mkdirs()
             var lastTick = 0L
-            extract(archive, staging) { count, name ->
+            val stats = extract(archive, staging) { count, name ->
                 val now = System.currentTimeMillis()
                 if (now - lastTick > 500) {
                     lastTick = now
@@ -157,7 +157,16 @@ object LinuxEnvInstaller {
                 }
             }
 
-            require(isUsableRootfs(staging)) { "压缩包不含可用的 rootfs（缺少 bin/sh）" }
+            if (!isUsableRootfs(staging)) {
+                // 失败时给出可定位的现场信息，方便用户截图反馈
+                val binDir = staging.resolve("bin")
+                val binList = binDir.list()?.take(8)?.joinToString(",") ?: "（无 bin 目录）"
+                error(
+                    "压缩包不含可用的 rootfs（缺少 bin/sh）。" +
+                        "已解出 ${stats.entries} 项，符号链接失败 ${stats.symlinkFailures} 次，" +
+                        "bin 目录内容：$binList"
+                )
+            }
 
             onProgress(InstallProgress(92, "正在修补 rootfs…"))
             RootfsPatcher.patch(staging)
@@ -285,14 +294,16 @@ object LinuxEnvInstaller {
         }
     }
 
-    private fun extract(file: File, dest: File, onProgress: (Int, String) -> Unit = { _, _ -> }) {
+    private fun extract(file: File, dest: File, onProgress: (Int, String) -> Unit = { _, _ -> },
+                        stats: ExtractStats = ExtractStats()): ExtractStats {
         when (detectFormat(file)) {
             ArchiveFormat.ZIP -> FileInputStream(file).use { extractZip(it, dest, onProgress) }
             ArchiveFormat.TAR_GZ -> FileInputStream(file).use { fis ->
-                GZIPInputStream(fis, 64 * 1024).use { extractTar(it, dest, onProgress) }
+                GZIPInputStream(fis, 64 * 1024).use { extractTar(it, dest, onProgress, stats) }
             }
-            ArchiveFormat.TAR -> FileInputStream(file).use { extractTar(it, dest, onProgress) }
+            ArchiveFormat.TAR -> FileInputStream(file).use { extractTar(it, dest, onProgress, stats) }
         }
+        return stats
     }
 
     private fun extractZip(input: InputStream, destRoot: File, onProgress: (Int, String) -> Unit) {
@@ -321,7 +332,14 @@ object LinuxEnvInstaller {
 
     private const val BLOCK = 512
 
-    private fun extractTar(input: InputStream, destRoot: File, onProgress: (Int, String) -> Unit) {
+    /** 解包统计：用于安装失败时给出可定位的诊断信息 */
+    class ExtractStats {
+        var entries = 0
+        var symlinkFailures = 0
+    }
+
+    private fun extractTar(input: InputStream, destRoot: File, onProgress: (Int, String) -> Unit,
+                           stats: ExtractStats = ExtractStats()) {
         var count = 0
         var pendingLongName: String? = null
         val header = ByteArray(BLOCK)
@@ -365,11 +383,13 @@ object LinuxEnvInstaller {
                     val linkFile = destRoot.resolve(path)
                     linkFile.parentFile?.mkdirs()
                     linkFile.delete()
-                    runCatching {
-                        java.nio.file.Files.createSymbolicLink(
-                            linkFile.toPath(),
-                            java.nio.file.Path.of(relativeSymlinkTarget(path, linkName))
-                        )
+                    // 用 Android 原生 Os.symlink：Files.createSymbolicLink 在部分国产 ROM
+                    // 上会抛 UnsupportedOperationException，而且之前 runCatching 静默吞掉，
+                    // 导致 bin/sh 这类关键链接悄悄缺失、rootfs 被判为不可用
+                    try {
+                        android.system.Os.symlink(relativeSymlinkTarget(path, linkName), linkFile.absolutePath)
+                    } catch (e: Exception) {
+                        stats.symlinkFailures++
                     }
                     pendingLongName = null
                     count++; onProgress(count, name)
@@ -406,6 +426,7 @@ object LinuxEnvInstaller {
                 }
             }
         }
+        stats.entries = count
     }
 
     /**
