@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -654,6 +655,12 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         _termFontSp.value = (_termFontSp.value + delta).coerceIn(9, 20)
     }
 
+    override fun onCleared() {
+        // 页面销毁时兜底回收 pty 子进程，避免 shell/proot 泄漏
+        stopTerminal()
+        super.onCleared()
+    }
+
     companion object {
         const val MAX_PREVIEW_CHARS = 256 * 1024
     }
@@ -674,6 +681,9 @@ fun WorkspaceScreen(
     val viewModel: WorkspaceViewModel = org.koin.androidx.compose.koinViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+
+    // 系统返回：先退出工作区（顺带停掉 PTY 会话），而不是直接把整页弹掉
+    BackHandler(enabled = state.opened != null) { viewModel.closeWorkspace() }
 
     // Toast 提示
     state.message?.let {
@@ -1647,7 +1657,14 @@ private fun TerminalPane(
                             .fillMaxSize()
                             .pointerInput(Unit) {
                                 detectTapGestures(
-                                    onTap = { runCatching { focusRequester.requestFocus() } },
+                                    onTap = {
+                                        if (exit != null) {
+                                            resetMirror()
+                                            viewModel.startTerminal(restart = true)
+                                        } else {
+                                            runCatching { focusRequester.requestFocus() }
+                                        }
+                                    },
                                     onLongPress = { showMenu = true }
                                 )
                             }
@@ -1663,6 +1680,8 @@ private fun TerminalPane(
                         .alpha(0f)
                         .focusRequester(focusRequester)
                         .onFocusChanged { inputFocused = it.isFocused },
+                    // singleLine：保证 IME 的回车走 onSend（发送 CR），而不是插入换行
+                    singleLine = true,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Text,
                         capitalization = KeyboardCapitalization.None,
