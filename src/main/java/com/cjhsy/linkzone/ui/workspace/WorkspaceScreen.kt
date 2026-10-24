@@ -10,11 +10,13 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,8 +31,12 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -51,6 +57,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +67,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +78,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -109,6 +120,16 @@ data class FileEntry(
     val relPath: String,
 )
 
+/** 一条终端记录：命令 + 输出 + 退出状态（用于结构化渲染，不再拼成一个大字符串） */
+data class TerminalEntry(
+    val command: String,
+    val stdout: String,
+    val stderr: String,
+    val exitCode: Int,
+    val timedOut: Boolean,
+    val elapsedMs: Long,
+)
+
 data class WorkspaceUiState(
     val workspaces: List<WorkspaceMeta> = emptyList(),
     val stats: Map<String, WorkspaceStats> = emptyMap(),
@@ -120,7 +141,7 @@ data class WorkspaceUiState(
     /** 0=文件 1=终端 */
     val tab: Int = 0,
     val running: Boolean = false,
-    val output: String = "",
+    val terminal: List<TerminalEntry> = emptyList(),
     val message: String? = null,
     val error: String? = null,
 )
@@ -258,7 +279,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
     }
 
     fun closeWorkspace() {
-        _state.value = _state.value.copy(opened = null, cwd = "", entries = emptyList(), output = "")
+        _state.value = _state.value.copy(opened = null, cwd = "", entries = emptyList(), terminal = emptyList())
     }
 
     fun switchTab(tab: Int) {
@@ -539,37 +560,45 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
     fun runCommand(command: String) {
         if (command.isBlank() || _state.value.running) return
         val ws = rootOf() ?: return
+        val cmd = command.trim()
         _state.value = _state.value.copy(running = true)
         viewModelScope.launch(Dispatchers.IO) {
+            val startedAt = System.nanoTime()
             val result = runCatching {
-                runner().execute(WorkspaceShellContext(root = ws.root, command = command.trim()))
+                runner().execute(WorkspaceShellContext(root = ws.root, command = cmd))
             }.getOrElse {
                 WorkspaceCommandResult(-1, "", it.toUserMessage("执行异常"), false)
             }
-            val header = "$ ${command.trim()}\n"
-            val footer = buildString {
-                if (result.stderr.isNotBlank()) append(result.stderr.trimEnd() + "\n")
-                append(
-                    when {
-                        result.timedOut -> "[超时（30s 上限），已强制终止]"
-                        result.exitCode != 0 -> "[退出码 ${result.exitCode}]"
-                        else -> "[完成]"
-                    }
+            val elapsed = (System.nanoTime() - startedAt) / 1_000_000
+            appendEntry(
+                TerminalEntry(
+                    command = cmd,
+                    stdout = result.stdout.trimEnd(),
+                    stderr = result.stderr.trimEnd(),
+                    exitCode = result.exitCode,
+                    timedOut = result.timedOut,
+                    elapsedMs = elapsed,
                 )
-            }
-            appendOutput(header + result.stdout.trimEnd().ifBlank { "" }.let { if (it.isBlank()) "" else "$it\n" } + footer + "\n\n")
+            )
             _state.value = _state.value.copy(running = false)
         }
     }
 
     fun clearTerminal() {
-        _state.value = _state.value.copy(output = "")
+        _state.value = _state.value.copy(terminal = emptyList())
     }
 
-    private fun appendOutput(chunk: String) {
-        var text = _state.value.output + chunk
-        if (text.length > MAX_TERMINAL_CHARS) text = "… [更早日志已截断]\n" + text.takeLast(MAX_TERMINAL_CHARS)
-        _state.value = _state.value.copy(output = text)
+    /** 追加一条记录；超出上限时从最旧的记录开始丢弃，而不是粗暴截字符串 */
+    private fun appendEntry(entry: TerminalEntry) {
+        val list = _state.value.terminal + entry
+        var trimmed = list
+        var chars = list.sumOf { it.command.length + it.stdout.length + it.stderr.length }
+        while (chars > MAX_TERMINAL_CHARS && trimmed.size > 1) {
+            val dropped = trimmed.first()
+            trimmed = trimmed.drop(1)
+            chars -= dropped.command.length + dropped.stdout.length + dropped.stderr.length
+        }
+        _state.value = _state.value.copy(terminal = trimmed)
     }
 
     companion object {
@@ -1443,11 +1472,11 @@ private fun TerminalPane(
     viewModel: WorkspaceViewModel
 ) {
     var command by remember { mutableStateOf("") }
-    val scrollState = rememberScrollState()
+    val listState = rememberLazyListState()
 
-    // 输出变化时滚到底部
-    androidx.compose.runtime.LaunchedEffect(state.output) {
-        if (state.output.isNotBlank()) scrollState.animateScrollTo(scrollState.maxValue)
+    // 新记录或运行状态变化时贴到底部
+    LaunchedEffect(state.terminal.size, state.running) {
+        if (state.terminal.isNotEmpty()) listState.animateScrollToItem(state.terminal.lastIndex)
     }
 
     Column(
@@ -1455,51 +1484,60 @@ private fun TerminalPane(
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        // 输出区
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .clip(RoundedCornerShape(12.dp)),
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                .clip(RoundedCornerShape(14.dp)),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
         ) {
-            if (state.output.isBlank()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        "在下方输入命令并运行\n工作目录固定为工作区根目录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                }
+            if (state.terminal.isEmpty() && !state.running) {
+                TerminalEmptyState(viewModel.shellMode)
             } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState)
-                        .padding(10.dp)
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 4.dp)
                 ) {
-                    Text(
-                        state.output,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            lineHeight = 15.sp
+                    itemsIndexed(state.terminal) { index, entry ->
+                        TerminalEntryBlock(
+                            entry = entry,
+                            onReuseCommand = { command = entry.command }
                         )
-                    )
+                        if (index != state.terminal.lastIndex) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 14.dp),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                    if (state.running) {
+                        item { TerminalRunningRow() }
+                    }
                 }
             }
         }
 
-        // 输出区右上角清空
+        // 环境标识 + 清空
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalArrangement = Arrangement.End
+                .padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = viewModel::clearTerminal, enabled = state.output.isNotBlank()) {
+            Text(
+                text = viewModel.shellMode,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = viewModel::clearTerminal,
+                enabled = state.terminal.isNotEmpty() && !state.running
+            ) {
                 Text("清空输出", style = MaterialTheme.typography.labelMedium)
             }
         }
@@ -1508,20 +1546,21 @@ private fun TerminalPane(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
+                .horizontalScroll(rememberScrollState())
+                .padding(end = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            listOf("ls -la", "pwd", "uname -a", "cat workspace.json", "df -h").forEach { cmd ->
+            listOf("ls -la", "pwd", "uname -a", "df -h", "cat workspace.json").forEach { cmd ->
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.clickable { command = cmd }
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.clickable(enabled = !state.running) { command = cmd }
                 ) {
                     Text(
                         cmd,
                         style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
                     )
                 }
             }
@@ -1539,15 +1578,21 @@ private fun TerminalPane(
             OutlinedTextField(
                 value = command,
                 onValueChange = { command = it },
-                placeholder = { Text("输入 shell 命令", style = MaterialTheme.typography.bodySmall) },
+                placeholder = { Text("输入 shell 命令", style = MaterialTheme.typography.bodyMedium) },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(12.dp),
                 singleLine = true,
-                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                enabled = !state.running
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    if (!state.running && command.isNotBlank()) {
+                        viewModel.runCommand(command)
+                        command = ""
+                    }
+                })
             )
             Spacer(Modifier.width(8.dp))
-            androidx.compose.material3.FilledIconButton(
+            FilledIconButton(
                 onClick = {
                     viewModel.runCommand(command)
                     command = ""
@@ -1568,6 +1613,169 @@ private fun TerminalPane(
             }
         }
     }
+}
+
+/** 一条命令记录：提示符 + 命令、stdout、stderr、状态徽标 */
+@Composable
+private fun TerminalEntryBlock(entry: TerminalEntry, onReuseCommand: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onReuseCommand),
+            verticalAlignment = Alignment.Top
+        ) {
+            Text(
+                text = "$",
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = entry.command,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        if (entry.stdout.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            SelectionContainer {
+                Text(
+                    text = entry.stdout,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.5.sp,
+                        lineHeight = 19.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f)
+                )
+            }
+        }
+
+        if (entry.stderr.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            SelectionContainer {
+                Text(
+                    text = entry.stderr,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.5.sp,
+                        lineHeight = 19.sp
+                    ),
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TerminalStatusBadge(entry)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = formatElapsed(entry.elapsedMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TerminalStatusBadge(entry: TerminalEntry) {
+    val (label, container, content) = when {
+        entry.timedOut -> Triple(
+            "超时",
+            MaterialTheme.colorScheme.tertiaryContainer,
+            MaterialTheme.colorScheme.onTertiaryContainer
+        )
+        entry.exitCode != 0 -> Triple(
+            if (entry.exitCode < 0) "失败" else "退出码 ${entry.exitCode}",
+            MaterialTheme.colorScheme.errorContainer,
+            MaterialTheme.colorScheme.onErrorContainer
+        )
+        else -> Triple(
+            "完成",
+            MaterialTheme.colorScheme.secondaryContainer,
+            MaterialTheme.colorScheme.onSecondaryContainer
+        )
+    }
+    Surface(shape = RoundedCornerShape(50), color = container) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = content,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+private fun TerminalRunningRow() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(13.dp),
+            strokeWidth = 1.5.dp
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "运行中…",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun TerminalEmptyState(shellMode: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = Icons.Filled.Terminal,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = shellMode,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "命令在工作区根目录执行，点击历史命令可再次填入",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+/** 耗时格式化：<1s 显示毫秒，<1min 显示秒，其余显示分秒 */
+private fun formatElapsed(ms: Long): String = when {
+    ms < 1000 -> "${ms}ms"
+    ms < 60_000 -> String.format(java.util.Locale.US, "%.1fs", ms / 1000.0)
+    else -> "${ms / 60_000}m${(ms % 60_000) / 1000}s"
 }
 
 // ---------------- 通用小组件 ----------------
