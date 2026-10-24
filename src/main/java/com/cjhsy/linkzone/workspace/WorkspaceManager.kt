@@ -29,14 +29,13 @@ data class WorkspaceMeta(
 class WorkspaceManager(context: Context) {
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+    private val appContext: Context = context.applicationContext
     private val baseDir: File = File(context.filesDir, "workspaces").apply { mkdirs() }
     private val filesDir: File = context.filesDir
 
-    /** 当前 shell 模式：检测到 proot+rootfs 为 PRoot，否则为宿主 toybox sh */
+    /** 当前 shell 模式：proot + rootfs 就绪为 PRoot，否则为宿主 toybox sh */
     val shellMode: String
-        get() = if (File(filesDir, "proot/bin/proot").exists() &&
-            File(filesDir, "linux/rootfs").isDirectory
-        ) "PRoot Linux" else "Android Shell"
+        get() = if (LinuxEnvInstaller.status(appContext).usingProot) "PRoot Linux" else "Android Shell"
 
     fun list(): List<WorkspaceMeta> = baseDir.listFiles { f -> f.isDirectory }
         ?.mapNotNull { dir -> readMeta(dir) }

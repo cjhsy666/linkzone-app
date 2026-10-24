@@ -1617,7 +1617,7 @@ class ChatViewModel(
                         createWorkspaceTools(
                             workspace = ws,
                             runner = com.cjhsy.linkzone.workspace.WorkspaceShellRunner
-                                .select(appContext.filesDir)
+                                .select(appContext)
                         )
                     )
                 }

@@ -2,28 +2,45 @@ package com.cjhsy.linkzone.workspace
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.zip.GZIPInputStream
+import java.util.zip.ZipInputStream
 
 /**
- * 工作区 Linux 运行环境安装器：
+ * 工作区 Linux 运行环境安装器。
  *
- * 宿主 shell（toybox）能力有限，完整 Linux 环境（apt/python/node…）依赖
- * PRoot + 发行版 rootfs。安装方式对用户透明：
- *  1. 导入 proot 静态二进制（任意来源下载的 aarch64 static proot）→ filesDir/proot/bin/proot
- *  2. 导入发行版 rootfs 压缩包（Alpine minirootfs ≈3MB / Ubuntu base 等 .tar.gz）
- *     → 解压到 filesDir/linux/rootfs
- * 两者就位后 [WorkspaceShellRunner.select] 自动切换为 PRoot 模式。
+ * 宿主 shell（toybox）能力有限，完整 Linux 环境（apk/apt/python/node…）依赖
+ * PRoot + 发行版 rootfs。两者来源不同：
  *
- * tar 解包为纯 Kotlin 实现（无外部依赖）：支持普通文件/目录/符号链接/硬链接/
- * GNU longname（L），PAX 扩展头（x/g）跳过。
+ *  - **proot**：随 APK 打包在 jniLibs（`libproot_exec.so`），运行时从
+ *    `nativeLibraryDir` 直接执行。Android 10+ 禁止 exec 应用私有目录下的可写文件，
+ *    只有 apk 的 native 库目录可执行，因此不能用「下载到 filesDir 再 chmod」的老做法。
+ *  - **rootfs**：一键下载官方 Alpine minirootfs（≈4MB），解压 + 修补（见 RootfsPatcher）。
+ *    也保留手动导入 .tar.gz/.tar/.zip 的入口，供自定义发行版使用。
  */
 object LinuxEnvInstaller {
+
+    /** 当前系统架构对应的 Alpine 官方 minirootfs 地址 */
+    fun defaultRootfsUrl(): String {
+        val arch = when {
+            Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } -> "aarch64"
+            Build.SUPPORTED_ABIS.any { it == "x86_64" } -> "x86_64"
+            Build.SUPPORTED_ABIS.any { it == "armeabi-v7a" || it == "armeabi" } -> "armhf"
+            Build.SUPPORTED_ABIS.any { it == "x86" } -> "x86"
+            else -> "aarch64"
+        }
+        return "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/$arch/" +
+            "alpine-minirootfs-3.24.0-$arch.tar.gz"
+    }
 
     /** 环境就绪状态 */
     data class EnvStatus(
@@ -35,70 +52,213 @@ object LinuxEnvInstaller {
         val usingProot: Boolean get() = prootReady && rootfsReady
     }
 
-    fun status(filesDir: File): EnvStatus {
-        val proot = File(filesDir, "proot/bin/proot")
-        val rootfs = File(filesDir, "linux/rootfs")
+    /** 安装进度：percent 0-100，message 为当前步骤文案 */
+    data class InstallProgress(val percent: Int, val message: String)
+
+    /** proot 可执行文件：优先 APK 自带的 native 库，其次兼容旧版手动导入位置 */
+    fun prootBinary(context: Context): File? {
+        val bundled = File(context.applicationInfo.nativeLibraryDir, "libproot_exec.so")
+        if (bundled.isFile && bundled.canRead()) return bundled
+        val manual = File(context.filesDir, "proot/bin/proot")
+        if (manual.isFile && manual.canRead()) return manual
+        return null
+    }
+
+    /** rootfs 目录 */
+    fun rootfsDir(context: Context): File = File(context.filesDir, "linux/rootfs")
+
+    fun status(context: Context): EnvStatus {
+        val proot = prootBinary(context)
+        val rootfs = rootfsDir(context)
         return EnvStatus(
-            prootReady = proot.exists() && proot.canRead(),
-            rootfsReady = rootfs.isDirectory && (rootfs.resolve("bin").isDirectory ||
-                rootfs.resolve("usr").isDirectory),
-            prootPath = proot.absolutePath,
+            prootReady = proot != null,
+            rootfsReady = isUsableRootfs(rootfs),
+            prootPath = proot?.absolutePath.orEmpty(),
             rootfsPath = rootfs.absolutePath,
         )
     }
 
+    private fun isUsableRootfs(rootfs: File): Boolean =
+        rootfs.isDirectory && (rootfs.resolve("bin").isDirectory || rootfs.resolve("usr").isDirectory)
+
+    // ---------------- 一键安装 ----------------
+
     /**
-     * 导入 proot 二进制：从 SAF uri 复制到目标路径并加可执行位。
-     * @return 目标文件路径
+     * 一键安装：下载官方 rootfs → 解压到临时目录 → 修补 → 原子替换。
+     * proot 已随 APK 打包，无需下载。
+     *
+     * @return rootfs 根目录绝对路径
      */
-    suspend fun importProot(context: Context, uri: Uri): String = withContext(Dispatchers.IO) {
-        val dest = File(context.filesDir, "proot/bin/proot")
-        dest.parentFile?.mkdirs()
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(dest).use { output -> input.copyTo(output) }
-        } ?: error("无法读取所选文件")
-        // 可执行位（应用私有目录内可直接 chmod）
-        dest.setExecutable(true, false)
-        dest.setReadable(true, false)
-        dest.absolutePath
+    suspend fun installFromUrl(
+        context: Context,
+        rootfsUrl: String = defaultRootfsUrl(),
+        onProgress: (InstallProgress) -> Unit = {},
+    ): String = withContext(Dispatchers.IO) {
+        require(prootBinary(context) != null) { "当前设备架构没有内置 proot，无法安装" }
+        require(rootfsUrl.startsWith("http")) { "rootfs 地址无效" }
+
+        val tempDir = File(context.cacheDir, "rootfs-install").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        try {
+            onProgress(InstallProgress(3, "正在下载 rootfs…"))
+            val archive = File(tempDir, "rootfs.archive")
+            download(rootfsUrl, archive) { percent ->
+                onProgress(InstallProgress(3 + percent * 57 / 100, "正在下载 rootfs… $percent%"))
+            }
+
+            onProgress(InstallProgress(62, "正在解压 rootfs…"))
+            val staging = stagingDir(context)
+            staging.deleteRecursively()
+            staging.mkdirs()
+            var lastTick = 0L
+            extract(archive, staging) { count, name ->
+                val now = System.currentTimeMillis()
+                if (now - lastTick > 500) {
+                    lastTick = now
+                    onProgress(InstallProgress(62, "正在解压 rootfs… 已处理 $count 项（$name）"))
+                }
+            }
+
+            require(isUsableRootfs(staging)) { "压缩包不含 rootfs 结构（缺少 bin/ 或 usr/）" }
+
+            onProgress(InstallProgress(92, "正在修补 rootfs…"))
+            RootfsPatcher.patch(staging)
+
+            onProgress(InstallProgress(98, "正在启用环境…"))
+            activate(staging, rootfsDir(context))
+            onProgress(InstallProgress(100, "安装完成"))
+            rootfsDir(context).absolutePath
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    /** 下载到本地文件，回调 0-100（Content-Length 未知时按已知区间给 0/50） */
+    private fun download(url: String, dest: File, onProgress: (Int) -> Unit) {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 20_000
+            readTimeout = 60_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "LinkZone-Android")
+        }
+        try {
+            if (conn.responseCode !in 200..299) error("下载失败：HTTP ${conn.responseCode}")
+            val total = conn.contentLengthLong
+            var written = 0L
+            var lastPercent = -1
+            conn.inputStream.use { input ->
+                FileOutputStream(dest).use { output ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        output.write(buf, 0, n)
+                        written += n
+                        val percent = if (total > 0) ((written * 100) / total).toInt() else 0
+                        if (percent != lastPercent) {
+                            lastPercent = percent
+                            onProgress(percent)
+                        }
+                    }
+                }
+            }
+            require(dest.length() > 0) { "下载内容为空" }
+            if (total > 0) onProgress(100)
+        } finally {
+            conn.disconnect()
+        }
     }
 
     /**
-     * 导入并解压 rootfs 压缩包到 filesDir/linux/rootfs。
-     * 支持 .tar.gz / .tgz（gzip）；纯 .tar 也能解（无 gzip 层自动降级）。
-     * 解压前清空旧 rootfs，避免新旧文件混杂。
+     * 手动导入 rootfs 压缩包（.tar.gz / .tgz / .tar / .zip），同样解压后修补再启用。
      *
      * @param onProgress (已解压条目数, 当前条目名)
-     * @return rootfs 根目录绝对路径
      */
     suspend fun importRootfs(
         context: Context,
         uri: Uri,
         onProgress: (Int, String) -> Unit = { _, _ -> },
     ): String = withContext(Dispatchers.IO) {
-        // 下载/复制到缓存（SAF 流只能读一次，解压需反复 seek）
-        val staging = File(context.cacheDir, "rootfs_import_${System.currentTimeMillis()}")
+        val staging = stagingDir(context)
+        staging.deleteRecursively()
+        staging.mkdirs()
+        val cached = File(context.cacheDir, "rootfs_import_${System.currentTimeMillis()}")
         try {
             context.contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(staging).use { output -> input.copyTo(output) }
+                FileOutputStream(cached).use { output -> input.copyTo(output) }
             } ?: error("无法读取所选文件")
-            require(staging.length() > 0) { "所选文件为空" }
+            require(cached.length() > 0) { "所选文件为空" }
 
-            val rootfsDir = File(context.filesDir, "linux/rootfs")
-            if (rootfsDir.exists()) rootfsDir.deleteRecursively()
-            rootfsDir.mkdirs()
-
-            val tarStream = runCatching { GZIPInputStream(FileInputStream(staging), 64 * 1024) }
-                .getOrDefault(FileInputStream(staging))
-            tarStream.use { stream ->
-                extractTar(stream, rootfsDir, onProgress)
-            }
-            require(rootfsDir.resolve("bin").isDirectory || rootfsDir.resolve("usr").isDirectory) {
+            extract(cached, staging, onProgress)
+            require(isUsableRootfs(staging)) {
                 "压缩包不含 rootfs 结构（缺少 bin/ 或 usr/），请确认导入的是发行版 rootfs"
             }
-            rootfsDir.absolutePath
+            RootfsPatcher.patch(staging)
+            activate(staging, rootfsDir(context))
+            rootfsDir(context).absolutePath
         } finally {
-            staging.delete()
+            cached.delete()
+        }
+    }
+
+    private fun stagingDir(context: Context): File =
+        File(context.filesDir, "linux/.staging")
+
+    /** 临时目录 → 正式目录：同一分区 rename，避免旧 rootfs 被删到一半时崩在中间 */
+    private fun activate(staging: File, target: File) {
+        target.parentFile?.mkdirs()
+        if (target.exists()) target.deleteRecursively()
+        if (!staging.renameTo(target)) {
+            staging.copyRecursively(target, overwrite = true)
+            staging.deleteRecursively()
+        }
+    }
+
+    // ---------------- 归档解包 ----------------
+
+    private enum class ArchiveFormat { TAR_GZ, TAR, ZIP }
+
+    private fun detectFormat(file: File): ArchiveFormat {
+        val magic = ByteArray(4)
+        FileInputStream(file).use { it.read(magic) }
+        return when {
+            magic[0] == 0x1f.toByte() && magic[1] == 0x8b.toByte() -> ArchiveFormat.TAR_GZ
+            magic[0] == 0x50.toByte() && magic[1] == 0x4b.toByte() -> ArchiveFormat.ZIP
+            else -> ArchiveFormat.TAR
+        }
+    }
+
+    private fun extract(file: File, dest: File, onProgress: (Int, String) -> Unit = { _, _ -> }) {
+        when (detectFormat(file)) {
+            ArchiveFormat.ZIP -> FileInputStream(file).use { extractZip(it, dest, onProgress) }
+            ArchiveFormat.TAR_GZ -> FileInputStream(file).use { fis ->
+                GZIPInputStream(fis, 64 * 1024).use { extractTar(it, dest, onProgress) }
+            }
+            ArchiveFormat.TAR -> FileInputStream(file).use { extractTar(it, dest, onProgress) }
+        }
+    }
+
+    private fun extractZip(input: InputStream, destRoot: File, onProgress: (Int, String) -> Unit) {
+        ZipInputStream(input).use { zip ->
+            var count = 0
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                val rel = relPath(entry.name)
+                if (rel.isNotBlank()) {
+                    val out = destRoot.resolve(rel)
+                    if (entry.isDirectory) {
+                        out.mkdirs()
+                    } else {
+                        out.parentFile?.mkdirs()
+                        FileOutputStream(out).use { zip.copyTo(it) }
+                    }
+                    count++
+                    onProgress(count, entry.name)
+                }
+                zip.closeEntry()
+            }
         }
     }
 
@@ -106,7 +266,7 @@ object LinuxEnvInstaller {
 
     private const val BLOCK = 512
 
-    private fun extractTar(input: java.io.InputStream, destRoot: File, onProgress: (Int, String) -> Unit) {
+    private fun extractTar(input: InputStream, destRoot: File, onProgress: (Int, String) -> Unit) {
         var count = 0
         var pendingLongName: String? = null
         val header = ByteArray(BLOCK)
@@ -117,54 +277,42 @@ object LinuxEnvInstaller {
             val sizeStr = parseString(header, 124, 12)
             val typeFlag = header[156].toInt().toChar()
             val magic = parseString(header, 257, 6)
-            // 两块全零 = 结束
             if (name.isBlank() && sizeStr.isBlank()) break
             val size = sizeStr.trim().toLongOrNull(8) ?: 0L
-            val dataBlocks = (size + BLOCK - 1) / BLOCK  // Long：避免大文件溢出
-            // 兼容部分打包器缺 magic 的情况：size 解析失败即认为流损坏
+            val dataBlocks = (size + BLOCK - 1) / BLOCK
             if (magic.isBlank() && typeFlag.toInt() == 0 && size == 0L && name.isBlank()) break
 
             val linkName = parseString(header, 157, 100)
-            val mode = parseString(header, 100, 8).trim().toLongOrNull(8) ?: 0b110100100L // 默认 0644
 
             when (typeFlag) {
-                // GNU longname：后续条目名使用该内容
                 'L' -> {
                     val buf = ByteArray(size.toInt().coerceAtLeast(0))
                     readFully(input, buf)
                     pendingLongName = buf.toString(Charsets.UTF_8).trimEnd('\u0000', '\n')
                     continue
                 }
-                // PAX 扩展头（x/g）：跳过内容（不覆盖已解析字段）
                 'x', 'g' -> skipFully(input, dataBlocks * BLOCK)
-                // 目录
                 '5' -> {
-                    val dir = destRoot.resolve(relPath(pendingLongName ?: name))
-                    dir.mkdirs()
+                    destRoot.resolve(relPath(pendingLongName ?: name)).mkdirs()
                     pendingLongName = null
                     skipFully(input, dataBlocks * BLOCK)
                     count++; onProgress(count, "$name/")
                 }
-                // 符号链接（rootfs 必需：/bin/sh -> busybox 等）
                 '2' -> {
                     skipFully(input, dataBlocks * BLOCK)
-                    val target = relPath(pendingLongName ?: name)
-                    val link = relPath(linkName)
-                    val linkFile = destRoot.resolve(target)
+                    val path = relPath(pendingLongName ?: name)
+                    val linkFile = destRoot.resolve(path)
                     linkFile.parentFile?.mkdirs()
                     linkFile.delete()
                     runCatching {
                         java.nio.file.Files.createSymbolicLink(
                             linkFile.toPath(),
-                            java.nio.file.Path.of(link)
+                            java.nio.file.Path.of(relativeSymlinkTarget(path, linkName))
                         )
-                    }.onFailure {
-                        // 个别 ROM 限制 symlink：退化为复制目标（尽力而为）
                     }
                     pendingLongName = null
                     count++; onProgress(count, name)
                 }
-                // 硬链接：复制目标文件内容（若目标已解出）
                 '1' -> {
                     skipFully(input, dataBlocks * BLOCK)
                     val target = destRoot.resolve(relPath(pendingLongName ?: name))
@@ -174,7 +322,6 @@ object LinuxEnvInstaller {
                     pendingLongName = null
                     count++; onProgress(count, name)
                 }
-                // 普通文件（'0' 或 '\0'）
                 else -> {
                     val f = destRoot.resolve(relPath(pendingLongName ?: name))
                     f.parentFile?.mkdirs()
@@ -189,12 +336,21 @@ object LinuxEnvInstaller {
                                 remaining -= read
                             }
                         }
-                    } else skipFully(input, dataBlocks * BLOCK)
+                    } else {
+                        skipFully(input, dataBlocks * BLOCK)
+                    }
                     pendingLongName = null
                     count++; onProgress(count, name)
                 }
             }
         }
+    }
+
+    /** 绝对链接改写为相对链接：`usr/bin/yes -> /bin/busybox` ⇒ `../../bin/busybox` */
+    private fun relativeSymlinkTarget(linkPath: String, rawTarget: String): String {
+        if (!rawTarget.startsWith("/")) return rawTarget
+        val depth = linkPath.split('/').size - 1
+        return "../".repeat(depth) + rawTarget.trimStart('/')
     }
 
     /** 相对路径安全化：剥掉 ./ 与 / 前缀，拒绝 .. 逃逸（zip-slip 同源防护） */
@@ -211,22 +367,21 @@ object LinuxEnvInstaller {
         return String(block, offset, end - offset, Charsets.UTF_8)
     }
 
-    private fun readFully(input: java.io.InputStream, buf: ByteArray): Boolean {
+    private fun readFully(input: InputStream, buf: ByteArray): Boolean {
         var off = 0
         while (off < buf.size) {
             val read = input.read(buf, off, buf.size - off)
-            if (read <= 0) return off > 0 // 恰好对齐结束
+            if (read <= 0) return off > 0
             off += read
         }
         return true
     }
 
-    private fun skipFully(input: java.io.InputStream, total: Long) {
+    private fun skipFully(input: InputStream, total: Long) {
         var remaining = total
         while (remaining > 0) {
             val skipped = input.skip(remaining)
             if (skipped <= 0) {
-                // skip 返回 0 时读一个字节推进
                 if (input.read() == -1) return
                 remaining -= 1
             } else {

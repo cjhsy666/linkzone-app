@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -132,7 +133,9 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     private val appContext = context.applicationContext
     private val manager = WorkspaceManager(appContext)
-    private val runner: WorkspaceShellRunner by lazy { WorkspaceShellRunner.select(appContext.filesDir) }
+
+    /** 每次按当前环境重新选择 runner（安装完成后立即生效，无需重建 VM） */
+    private fun runner(): WorkspaceShellRunner = WorkspaceShellRunner.select(appContext)
 
     private val _state = MutableStateFlow(WorkspaceUiState())
     val state: StateFlow<WorkspaceUiState> = _state.asStateFlow()
@@ -159,20 +162,23 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     /** 当前环境状态（proot/rootfs 是否就绪） */
     fun envStatus(): com.cjhsy.linkzone.workspace.LinuxEnvInstaller.EnvStatus =
-        com.cjhsy.linkzone.workspace.LinuxEnvInstaller.status(appContext.filesDir)
+        com.cjhsy.linkzone.workspace.LinuxEnvInstaller.status(appContext)
 
-    /** 导入 proot 静态二进制（SAF） */
-    fun importProotBinary(uri: android.net.Uri) {
+    /** 一键安装：下载官方 Alpine rootfs → 解压 → 修补 → 启用 */
+    fun installLinuxEnv() {
+        if (_envInstalling.value != null) return
         viewModelScope.launch(Dispatchers.IO) {
-            _envInstalling.value = "正在导入 proot …"
+            _envInstalling.value = "准备安装…"
             runCatching {
-                com.cjhsy.linkzone.workspace.LinuxEnvInstaller.importProot(appContext, uri)
+                com.cjhsy.linkzone.workspace.LinuxEnvInstaller.installFromUrl(appContext) { p ->
+                    _envInstalling.value = p.message
+                }
             }.onSuccess {
                 _envInstalling.value = null
-                notify("proot 导入成功")
+                notify("Linux 环境安装完成（Alpine），终端已切换为完整环境")
             }.onFailure { e ->
                 _envInstalling.value = null
-                notify(null, "proot 导入失败：${e.toUserMessage("未知错误")}")
+                notify(null, "安装失败：${e.toUserMessage("网络或存储异常，可尝试手动导入 rootfs")}")
             }
         }
     }
@@ -536,7 +542,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         _state.value = _state.value.copy(running = true)
         viewModelScope.launch(Dispatchers.IO) {
             val result = runCatching {
-                runner.execute(WorkspaceShellContext(root = ws.root, command = command.trim()))
+                runner().execute(WorkspaceShellContext(root = ws.root, command = command.trim()))
             }.getOrElse {
                 WorkspaceCommandResult(-1, "", it.toUserMessage("执行异常"), false)
             }
@@ -606,8 +612,8 @@ fun WorkspaceScreen(
             shellMode = viewModel.shellMode,
             env = env,
             envInstalling = envInstalling,
-            onImportProot = { uri -> viewModel.importProotBinary(uri) },
             onImportRootfs = { uri -> viewModel.importRootfsTar(uri) },
+            onInstall = viewModel::installLinuxEnv,
             onBack = onBack,
             onOpen = viewModel::openWorkspace,
             onCreate = viewModel::createWorkspace,
@@ -630,8 +636,8 @@ private fun WorkspaceListPane(
     shellMode: String,
     env: com.cjhsy.linkzone.workspace.LinuxEnvInstaller.EnvStatus,
     envInstalling: String?,
-    onImportProot: (android.net.Uri) -> Unit,
     onImportRootfs: (android.net.Uri) -> Unit,
+    onInstall: () -> Unit,
     onBack: () -> Unit,
     onOpen: (String) -> Unit,
     onCreate: (String) -> Unit,
@@ -642,10 +648,7 @@ private fun WorkspaceListPane(
     var renaming by remember { mutableStateOf<WorkspaceMeta?>(null) }
     var deleting by remember { mutableStateOf<WorkspaceMeta?>(null) }
 
-    // 环境安装文件选择器（SAF）：proot 二进制 / rootfs 压缩包
-    val prootLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(onImportProot)
-    }
+    // 手动导入 rootfs 压缩包（SAF）
     val rootfsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onImportRootfs)
     }
@@ -714,32 +717,39 @@ private fun WorkspaceListPane(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = if (env.usingProot)
-                        "已就绪：apt/python/node 等 rootfs 内工具均可在终端使用"
+                        "已就绪：apk/python/node 等 rootfs 内工具均可在终端使用"
                     else
-                        "精简模式仅含 ls/cat/sed 等基础命令。导入 proot 与发行版 rootfs（推荐 Alpine minirootfs ≈3MB）即可获得完整 Linux 环境",
+                        "精简模式仅含 ls/cat/sed 等基础命令。一键安装 Alpine（≈4MB）即可获得完整 Linux 环境",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (!env.usingProot) {
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(
-                            onClick = { prootLauncher.launch(arrayOf("*/*")) },
-                            enabled = envInstalling == null
-                        ) {
-                            Text(
-                                if (env.prootReady) "✓ proot 已装 · 重选" else "① 导入 proot",
-                                style = MaterialTheme.typography.labelMedium
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = onInstall,
+                        enabled = envInstalling == null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (envInstalling != null) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
                             )
+                            Spacer(Modifier.width(8.dp))
                         }
+                        Text(if (env.rootfsReady) "重新安装 Linux 环境" else "一键安装 Linux 环境")
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
                         TextButton(
                             onClick = { rootfsLauncher.launch(arrayOf("*/*")) },
                             enabled = envInstalling == null
                         ) {
-                            Text(
-                                if (env.rootfsReady) "✓ rootfs 已装 · 重选" else "② 导入 rootfs 压缩包",
-                                style = MaterialTheme.typography.labelMedium
-                            )
+                            Text("手动导入 rootfs", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }

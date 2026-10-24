@@ -57,6 +57,11 @@ android {
         resources {
             excludes += ['/META-INF/{AL2.0,LGPL2.1}']
         }
+        // proot 以 .so 形式随 APK 分发：必须解压到 nativeLibraryDir 才能 exec
+        // （Android 10+ 禁止执行应用私有目录下的可写文件）
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     // 本地设备环境复用已安装的 build-tools 37.0.0 的 aapt2；

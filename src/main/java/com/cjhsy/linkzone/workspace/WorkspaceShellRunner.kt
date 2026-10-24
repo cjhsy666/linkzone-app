@@ -14,19 +14,17 @@ interface WorkspaceShellRunner {
     fun execute(context: WorkspaceShellContext): WorkspaceCommandResult
 
     companion object {
-        /** 选择当前可用 runner：检测到 proot 二进制与 rootfs 时用 PRoot，否则回退宿主 shell */
-        fun select(filesDir: File): WorkspaceShellRunner {
-            val proot = File(filesDir, "proot/bin/proot")
-            val rootfs = File(filesDir, "linux/rootfs")
-            val skillsDir = File(filesDir, "skills").apply { mkdirs() }
-            return if (proot.canExecute() && rootfs.isDirectory) {
-                ProotShellRunner(proot, rootfs, skillsDir)
+        /** 选择当前可用 runner：检测到 proot 与 rootfs 时用 PRoot，否则回退宿主 shell */
+        fun select(context: android.content.Context): WorkspaceShellRunner {
+            val proot = LinuxEnvInstaller.prootBinary(context)
+            val rootfs = LinuxEnvInstaller.rootfsDir(context)
+            val skillsDir = File(context.filesDir, "skills").apply { mkdirs() }
+            return if (proot != null && rootfs.isDirectory) {
+                ProotShellRunner(proot, rootfs, skillsDir, File(context.filesDir, "tmp").apply { mkdirs() })
             } else {
                 HostShellRunner(skillsDir)
             }
         }
-
-        private fun File.canExecute(): Boolean = exists() && canRead()
     }
 }
 
@@ -75,17 +73,18 @@ class HostShellRunner(
 }
 
 /**
- * PRoot shell runner —— 当 filesDir/proot/bin/proot 与 filesDir/linux/rootfs
- * 均就位时启用（用户自行放入 proot 二进制与解压好的 rootfs）。
+ * PRoot shell runner —— 当内置 proot（jniLibs/libproot_exec.so）与
+ * filesDir/linux/rootfs 均就位时启用。
  *
  * 通过 proot 把 rootfs 挂载为根、把工作区绑定到 /workspace、技能目录绑定到 /skills，
- * 从而在无 root 设备上获得完整 Linux 用户态（apt/python/node 等取决于 rootfs），
- * skill 附带脚本可直接 `python /skills/<name>/scripts/x.py` 执行。
+ * 再把宿主的 /dev /proc /sys 挂进 guest（否则 /dev/null、/dev/urandom 与进程信息全缺），
+ * 从而在无 root 设备上获得完整 Linux 用户态（apk/python/node 等取决于 rootfs）。
  */
 class ProotShellRunner(
     private val prootBinary: File,
     private val rootfs: File,
     private val skillsDir: File,
+    private val tempDir: File,
 ) : WorkspaceShellRunner {
     override val skillsPath: String = SKILLS_MOUNT
 
@@ -96,27 +95,47 @@ class ProotShellRunner(
         val args = buildList {
             add(prootBinary.absolutePath)
             add("--link2symlink")
-            add("-S")
+            add("--kill-on-exit")
+            add("-0")
+            add("-r")
             add(rootfs.absolutePath)
             add("-b")
             add("${context.root.absolutePath}:/workspace")
             add("-b")
             add("${skillsDir.absolutePath}:$SKILLS_MOUNT")
+            // 内核文件系统：guest rootfs 里这些目录是空的，必须借宿主
+            listOf("/dev", "/proc", "/sys").forEach {
+                add("-b")
+                add(it)
+            }
             add("-w")
             add("/workspace/${context.cwd.trimStart('/')}")
+            add("/usr/bin/env")
+            add("-i")
+            add("HOME=/root")
+            add("PATH=$GUEST_PATH")
+            add("TERM=xterm-256color")
+            add("LANG=C.UTF-8")
+            add("LC_ALL=C.UTF-8")
             add("/bin/sh")
+            add("-l")
             add("-c")
             add(context.command)
         }
         val process = ProcessBuilder(args)
             .directory(workingDir)
             .redirectErrorStream(false)
+            .apply {
+                environment()["PROOT_TMP_DIR"] = tempDir.absolutePath
+                environment()["TMPDIR"] = tempDir.absolutePath
+            }
             .start()
         return process.readResult(context.timeoutMillis, context.stdin)
     }
 
     companion object {
         const val SKILLS_MOUNT = "/skills"
+        const val GUEST_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     }
 }
 
