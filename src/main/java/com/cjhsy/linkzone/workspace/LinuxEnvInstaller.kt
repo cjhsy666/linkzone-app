@@ -78,8 +78,14 @@ object LinuxEnvInstaller {
         )
     }
 
+    /**
+     * 可用性判定以「guest 里能 exec 的 shell」为准：只检查 bin/usr 目录存在，
+     * 半截安装（目录建了但符号链接/二进制缺失）也会被当成就绪，终端里只会看到
+     * 一行 proot fatal error。`bin/sh` 是相对符号链接，exists() 会顺着 rootfs 内部解析，
+     * 因此链接断了也能被识别出来。
+     */
     private fun isUsableRootfs(rootfs: File): Boolean =
-        rootfs.isDirectory && (rootfs.resolve("bin").isDirectory || rootfs.resolve("usr").isDirectory)
+        rootfs.isDirectory && rootfs.resolve("bin/sh").exists()
 
     // ---------------- 一键安装 ----------------
 

@@ -21,7 +21,13 @@ object TerminalLauncher {
         val skillsDir = File(context.filesDir, "skills").apply { mkdirs() }
         val tempDir = File(context.filesDir, "tmp").apply { mkdirs() }
 
-        return if (proot != null && loader != null && rootfs.isDirectory) {
+        // 直接以 guest 的 /bin/sh 作为入口，不依赖 /usr/bin/env：
+        // 后者只是个指向 busybox 的符号链接，缺了就会让整个终端死在
+        // 「proot error: '/usr/bin/env' not found」上。环境变量走进程环境传入，
+        // login shell 再读 /etc/profile 覆盖成 guest 的 PATH 与提示符。
+        val envReady = rootfs.resolve("bin/sh").exists()
+
+        return if (proot != null && loader != null && envReady) {
             rootfs.resolve("workspace").mkdirs()
             rootfs.resolve("skills").mkdirs()
             PtySession(
@@ -42,15 +48,6 @@ object TerminalLauncher {
                     }
                     add("-w")
                     add("/workspace")
-                    add("/usr/bin/env")
-                    add("-i")
-                    add("HOME=/root")
-                    add("PATH=$GUEST_PATH")
-                    add("TERM=xterm-256color")
-                    add("LANG=C.UTF-8")
-                    add("LC_ALL=C.UTF-8")
-                    // busybox ash 支持 \w（当前目录名），避免完整路径把提示符顶到换行
-                    add("PS1=\\w \\$ ")
                     add("/bin/sh")
                     add("-l")
                 },
@@ -61,6 +58,13 @@ object TerminalLauncher {
                     "TMPDIR=${tempDir.absolutePath}",
                     "PROOT_NO_SECCOMP=1",
                     "LD_LIBRARY_PATH=${proot.parentFile?.absolutePath.orEmpty()}",
+                    // guest 侧环境：PRoot 会把进程环境透传进 rootfs，
+                    // 随后 /etc/profile 会再按发行版覆盖 PATH/PS1
+                    "PATH=$GUEST_PATH",
+                    "HOME=/root",
+                    "TERM=xterm-256color",
+                    "LANG=C.UTF-8",
+                    "LC_ALL=C.UTF-8",
                 ),
             )
         } else {
