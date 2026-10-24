@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -23,6 +24,22 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -569,6 +586,10 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
     val termScreen: StateFlow<TermScreen?> = _termScreen.asStateFlow()
     private val _termExit = MutableStateFlow<Int?>(null)
     val termExit: StateFlow<Int?> = _termExit.asStateFlow()
+    private val _termScroll = MutableStateFlow(0)
+    val termScroll: StateFlow<Int> = _termScroll.asStateFlow()
+    private val _termFontSp = MutableStateFlow(12)
+    val termFontSp: StateFlow<Int> = _termFontSp.asStateFlow()
 
     /** 打开当前工作区的交互会话；已存在则复用，restart=true 时重启 */
     fun startTerminal(restart: Boolean = false) {
@@ -578,6 +599,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         val s = TerminalLauncher.create(appContext, ws.root)
         _termExit.value = null
         _termScreen.value = null
+        _termScroll.value = 0
         if (!s.start()) {
             notify(null, "终端启动失败：无法创建 PTY")
             return
@@ -586,6 +608,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         screenJob = viewModelScope.launch {
             launch { s.screen.collect { _termScreen.value = it } }
             launch { s.exitCode.collect { _termExit.value = it } }
+            launch { s.scroll.collect { _termScroll.value = it } }
         }
     }
 
@@ -618,6 +641,26 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         session?.clear()
     }
 
+    /** 手指上下滑动翻历史（正数向上翻） */
+    fun scrollTerminal(lines: Int) {
+        session?.scrollBy(lines)
+    }
+
+    fun scrollTerminalToBottom() {
+        if (_termScroll.value == 0) return
+        session?.scrollToBottom()
+    }
+
+    fun zoomTerminal(delta: Int) {
+        _termFontSp.value = (_termFontSp.value + delta).coerceIn(9, 20)
+    }
+
+    override fun onCleared() {
+        // 页面销毁时兜底回收 pty 子进程，避免 shell/proot 泄漏
+        stopTerminal()
+        super.onCleared()
+    }
+
     companion object {
         const val MAX_PREVIEW_CHARS = 256 * 1024
     }
@@ -638,6 +681,9 @@ fun WorkspaceScreen(
     val viewModel: WorkspaceViewModel = org.koin.androidx.compose.koinViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+
+    // 系统返回：先退出工作区（顺带停掉 PTY 会话），而不是直接把整页弹掉
+    BackHandler(enabled = state.opened != null) { viewModel.closeWorkspace() }
 
     // Toast 提示
     state.message?.let {
@@ -1489,9 +1535,97 @@ private fun TerminalPane(
 ) {
     val screen by viewModel.termScreen.collectAsState()
     val exit by viewModel.termExit.collectAsState()
-    var input by remember { mutableStateOf("") }
+    val scrolled by viewModel.termScroll.collectAsState()
+    val fontSp by viewModel.termFontSp.collectAsState()
+    val context = LocalContext.current
 
-    LaunchedEffect(Unit) { viewModel.startTerminal() }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val clipboard = LocalClipboardManager.current
+
+    // 不可见输入框的镜像文本：只用于逐键 diff，终端自身负责回显
+    var field by remember { mutableStateOf(TextFieldValue("")) }
+    var composingBase by remember { mutableStateOf<String?>(null) }
+    var ctrlLatch by remember { mutableStateOf(false) }
+    var altLatch by remember { mutableStateOf(false) }
+    var inputFocused by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+
+    fun resetMirror() {
+        field = TextFieldValue("")
+        composingBase = null
+    }
+
+    /** 按键出口：应用 Ctrl/Alt 锁存后写入 pty */
+    fun emit(text: String, clearMirror: Boolean = false) {
+        if (text.isEmpty()) return
+        var payload = text
+        if (ctrlLatch) {
+            ctrlLatch = false
+            if (text.length == 1) {
+                val c = text[0].uppercaseChar()
+                payload = when {
+                    c in 'A'..'Z' -> (c - 'A' + 1).toChar().toString()
+                    c == ' ' || c == '@' -> "\u0000"
+                    c == '[' -> "\u001b"
+                    c == '\\' -> "\u001c"
+                    c == ']' -> "\u001d"
+                    c == '^' || c == '_' -> "\u001f"
+                    else -> text
+                }
+            }
+        } else if (altLatch) {
+            altLatch = false
+            payload = "\u001b$text"
+        }
+        viewModel.scrollTerminalToBottom()
+        viewModel.sendRaw(payload)
+        if (clearMirror) resetMirror()
+    }
+
+    /**
+     * 键盘输入：逐键 diff 直送。
+     * 输入法组合态（拼音未上屏）不发送，上屏后整段发送，中文也能正常输入。
+     */
+    fun handleChange(next: TextFieldValue) {
+        if (next.composition != null) {
+            if (composingBase == null) composingBase = field.text
+            field = next
+            return
+        }
+        val base = composingBase ?: field.text
+        composingBase = null
+        val curr = next.text
+        val common = commonPrefixLength(base, curr)
+        if (common < base.length) {
+            repeat(base.length - common) { viewModel.sendRaw("\u007f") }
+        }
+        val added = curr.substring(common)
+        if (added.isNotEmpty()) emit(added)
+        field = if (curr.length > 256) TextFieldValue("") else TextFieldValue(curr)
+    }
+
+    fun copyScreen() {
+        val snapshot = screen ?: return
+        val text = screenText(snapshot)
+        if (text.isEmpty()) return
+        clipboard.setText(AnnotatedString(text))
+        Toast.makeText(context, "已复制 ${text.length} 个字符", Toast.LENGTH_SHORT).show()
+    }
+
+    fun paste() {
+        val text = clipboard.getText()?.text.orEmpty()
+        if (text.isBlank()) return
+        val payload = text.replace("\r\n", "\r").replace('\n', '\r').take(16384)
+        viewModel.scrollTerminalToBottom()
+        viewModel.sendRaw(payload)
+        resetMirror()
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.startTerminal()
+        runCatching { focusRequester.requestFocus() }
+    }
 
     Column(
         modifier = Modifier
@@ -1507,21 +1641,102 @@ private fun TerminalPane(
             color = Color(0xFF12141A),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         ) {
-            val snapshot = screen
-            if (snapshot == null) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            Box(Modifier.fillMaxSize()) {
+                val snapshot = screen
+                if (snapshot == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
+                } else {
+                    TerminalScreenView(
+                        screen = snapshot,
+                        fontSize = fontSp.sp,
+                        onResize = viewModel::resizeTerminal,
+                        onScroll = viewModel::scrollTerminal,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = {
+                                        if (exit != null) {
+                                            resetMirror()
+                                            viewModel.startTerminal(restart = true)
+                                        } else {
+                                            runCatching { focusRequester.requestFocus() }
+                                        }
+                                    },
+                                    onLongPress = { showMenu = true }
+                                )
+                            }
+                    )
                 }
-            } else {
-                TerminalScreenView(
-                    screen = snapshot,
-                    onResize = viewModel::resizeTerminal,
-                    modifier = Modifier.fillMaxSize()
+
+                // 1dp 透明输入框：只为拿到 IME 的逐键事件，界面完全交给终端网格
+                BasicTextField(
+                    value = field,
+                    onValueChange = { handleChange(it) },
+                    modifier = Modifier
+                        .size(1.dp)
+                        .alpha(0f)
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { inputFocused = it.isFocused },
+                    // singleLine：保证 IME 的回车走 onSend（发送 CR），而不是插入换行
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Text,
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Send,
+                    ),
+                    keyboardActions = KeyboardActions(onSend = {
+                        emit("\r", clearMirror = true)
+                    })
                 )
+
+                if (scrolled > 0) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xE02A2D36),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(10.dp)
+                            .clickable { viewModel.scrollTerminalToBottom() }
+                    ) {
+                        Text(
+                            "回到底部（$scrolled 行）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFE4E6EB),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                }
             }
         }
 
-        // 状态行：环境模式 / 进程状态 / 操作
+        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            DropdownMenuItem(
+                text = { Text("复制屏幕") },
+                onClick = { showMenu = false; copyScreen() }
+            )
+            DropdownMenuItem(
+                text = { Text("粘贴") },
+                onClick = { showMenu = false; paste() }
+            )
+            DropdownMenuItem(
+                text = { Text("清屏") },
+                onClick = { showMenu = false; viewModel.clearTerminal() }
+            )
+            DropdownMenuItem(
+                text = { Text("重启会话") },
+                onClick = {
+                    showMenu = false
+                    resetMirror()
+                    viewModel.startTerminal(restart = true)
+                }
+            )
+        }
+
+        // 状态行：运行指示 / 环境 / 字号 / 键盘 / 重启
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1538,87 +1753,86 @@ private fun TerminalPane(
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                text = if (exit == null) viewModel.shellMode else "已退出（${exit}）",
+                text = if (exit == null) viewModel.shellMode else "已退出（${exit}）· 点击重启",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable {
+                        if (exit != null) {
+                            resetMirror()
+                            viewModel.startTerminal(restart = true)
+                        }
+                    }
             )
-            TextButton(onClick = viewModel::clearTerminal) {
-                Text("清屏", style = MaterialTheme.typography.labelMedium)
+            SmallTextAction("A-") { viewModel.zoomTerminal(-1) }
+            SmallTextAction("A+") { viewModel.zoomTerminal(1) }
+            IconButton(
+                onClick = {
+                    if (inputFocused) focusManager.clearFocus()
+                    else runCatching { focusRequester.requestFocus() }
+                },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Keyboard,
+                    contentDescription = "显示/隐藏键盘",
+                    modifier = Modifier.size(17.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            TextButton(onClick = { viewModel.startTerminal(restart = true) }) {
-                Text("重启", style = MaterialTheme.typography.labelMedium)
+            IconButton(
+                onClick = {
+                    resetMirror()
+                    viewModel.startTerminal(restart = true)
+                },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = "重启会话",
+                    modifier = Modifier.size(17.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
-        // 特殊键：手机键盘打不出的控制序列
+        // 特殊键条：手机键盘打不出的控制序列
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            listOf(
-                "Esc" to "\u001b",
-                "Tab" to "\t",
-                "Ctrl C" to "\u0003",
-                "Ctrl D" to "\u0004",
-                "Ctrl L" to "\u000c",
-                "↑" to "\u001b[A",
-                "↓" to "\u001b[B",
-                "←" to "\u001b[D",
-                "→" to "\u001b[C",
-            ).forEach { (label, seq) ->
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                    modifier = Modifier.clickable { viewModel.sendRaw(seq) }
-                ) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
-                }
+            KeyChip("Ctrl", active = ctrlLatch) {
+                ctrlLatch = !ctrlLatch
+                if (ctrlLatch) altLatch = false
             }
+            KeyChip("Alt", active = altLatch) {
+                altLatch = !altLatch
+                if (altLatch) ctrlLatch = false
+            }
+            KeyChip("Esc") { emit("\u001b", clearMirror = true) }
+            KeyChip("Tab") { emit("\t", clearMirror = true) }
+            KeyChip("⌫") { emit("\u007f", clearMirror = true) }
+            KeyChip("←") { emit("\u001b[D", clearMirror = true) }
+            KeyChip("↑") { emit("\u001b[A", clearMirror = true) }
+            KeyChip("↓") { emit("\u001b[B", clearMirror = true) }
+            KeyChip("→") { emit("\u001b[C", clearMirror = true) }
+            KeyChip("Home") { emit("\u001b[H", clearMirror = true) }
+            KeyChip("End") { emit("\u001b[F", clearMirror = true) }
+            KeyChip("PgUp") { emit("\u001b[5~", clearMirror = true) }
+            KeyChip("PgDn") { emit("\u001b[6~", clearMirror = true) }
+            KeyChip("^C") { emit("\u0003", clearMirror = true) }
+            KeyChip("^D") { emit("\u0004", clearMirror = true) }
+            KeyChip("^L") { emit("\u000c", clearMirror = true) }
+            KeyChip("^Z") { emit("\u001a", clearMirror = true) }
+            KeyChip("CLR") { viewModel.clearTerminal() }
         }
 
         Spacer(Modifier.height(8.dp))
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
-                placeholder = { Text("输入命令，回车执行", style = MaterialTheme.typography.bodyMedium) },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp),
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = {
-                    viewModel.sendLine(input)
-                    input = ""
-                })
-            )
-            Spacer(Modifier.width(8.dp))
-            FilledIconButton(
-                onClick = {
-                    viewModel.sendLine(input)
-                    input = ""
-                },
-                enabled = input.isNotBlank(),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
-            }
-        }
     }
 }
 
@@ -1629,14 +1843,15 @@ private fun TerminalPane(
 @Composable
 private fun TerminalScreenView(
     screen: TermScreen,
+    fontSize: androidx.compose.ui.unit.TextUnit,
     onResize: (Int, Int) -> Unit,
+    onScroll: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier.background(Color(0xFF12141A)).padding(horizontal = 6.dp, vertical = 4.dp)) {
         val density = LocalDensity.current
         val widthPx = with(density) { maxWidth.toPx() }
         val heightPx = with(density) { maxHeight.toPx() }
-        val fontSize = 11.sp
         val fontSizePx = with(density) { fontSize.toPx() }
         val charPx = fontSizePx * 0.62f
         val linePx = fontSizePx * 1.28f
@@ -1645,11 +1860,31 @@ private fun TerminalScreenView(
 
         LaunchedEffect(cols, rows) { onResize(cols, rows) }
 
+        // 手指拖动翻历史：向下拖看更早的内容
+        var dragAccum by remember { mutableFloatStateOf(0f) }
+
         val lineHeight = with(density) { linePx.toSp() }
         val renderRows = minOf(rows, screen.rows)
         val renderCols = minOf(cols, screen.cols)
 
-        Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(linePx) {
+                    detectVerticalDragGestures(
+                        onDragStart = { dragAccum = 0f },
+                        onVerticalDrag = { change, dy ->
+                            change.consume()
+                            dragAccum += dy
+                            val step = (dragAccum / linePx).toInt()
+                            if (step != 0) {
+                                dragAccum -= step * linePx
+                                onScroll(step)
+                            }
+                        }
+                    )
+                }
+        ) {
             for (y in 0 until renderRows) {
                 val cells = screen.lines.getOrNull(y) ?: continue
                 Text(
@@ -1672,6 +1907,38 @@ private fun TerminalScreenView(
             }
         }
     }
+}
+
+/** 按键胶囊：Ctrl/Alt 激活时高亮 */
+@Composable
+private fun KeyChip(label: String, active: Boolean = false, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = if (active) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+            color = if (active) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+        )
+    }
+}
+
+@Composable
+private fun SmallTextAction(label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp)
+    )
 }
 
 /** 终端 16 色 + 256 色索引 → Compose 颜色 */
@@ -1742,6 +2009,23 @@ private fun buildTermRow(
         }
         x++
     }
+}
+
+/** 屏幕可见内容转纯文本（复制用），去掉行尾空白 */
+private fun screenText(screen: TermScreen): String =
+    screen.lines
+        .joinToString("\n") { row ->
+            row.joinToString("") { cell ->
+                (if (cell.ch == '\t') ' ' else cell.ch).toString()
+            }.trimEnd()
+        }
+        .trimEnd()
+
+private fun commonPrefixLength(a: String, b: String): Int {
+    val max = minOf(a.length, b.length)
+    var i = 0
+    while (i < max && a[i] == b[i]) i++
+    return i
 }
 
 

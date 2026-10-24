@@ -37,6 +37,12 @@ class PtySession(
     private var lastPublish = 0L
     private val running = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** 已向上翻的历史行数；0 = 实时屏幕 */
+    private var scrollOffset = 0
+    private var lastHistorySize = 0
+    private val _scroll = MutableStateFlow(0)
+    val scroll: StateFlow<Int> = _scroll.asStateFlow()
+
     fun start(): Boolean {
         if (running.get()) return true
         cwd.mkdirs()
@@ -123,6 +129,25 @@ class PtySession(
 
     fun clear() {
         emulator.reset()
+        scrollOffset = 0
+        lastHistorySize = 0
+        _scroll.value = 0
+        publish(true)
+    }
+
+    /** 向上翻 N 行历史（负数向下） */
+    fun scrollBy(lines: Int) {
+        val max = emulator.scrollbackSize
+        val next = (scrollOffset + lines).coerceIn(0, max)
+        if (next == scrollOffset) return
+        scrollOffset = next
+        lastHistorySize = emulator.scrollbackSize
+        publish(true)
+    }
+
+    fun scrollToBottom() {
+        if (scrollOffset == 0) return
+        scrollOffset = 0
         publish(true)
     }
 
@@ -140,7 +165,15 @@ class PtySession(
         val now = System.currentTimeMillis()
         if (!force && now - lastPublish < 60) return
         lastPublish = now
-        _screen.value = emulator.snapshot()
+        val historySize = emulator.scrollbackSize
+        if (scrollOffset > 0) {
+            // 翻页期间新输出会把内容顶走：按新增历史行数补偿，保证看到的画面不跳动
+            scrollOffset = (scrollOffset + (historySize - lastHistorySize))
+                .coerceIn(0, historySize)
+        }
+        lastHistorySize = historySize
+        _screen.value = emulator.viewport(scrollOffset)
+        _scroll.value = scrollOffset
     }
 
     /** 末尾有多少字节属于「被截断的多字节字符」 */
