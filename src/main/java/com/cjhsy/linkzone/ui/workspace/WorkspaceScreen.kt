@@ -1556,6 +1556,18 @@ private fun TerminalPane(
         composingBase = null
     }
 
+    // 回车统一出口 + 去抖：onSend 回调与 IME 插入 \n 可能在同一次按键里都触发，
+    // 150ms 内的第二次 CR 视为重复事件丢弃
+    var lastCrAt = 0L
+    fun emitCr() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastCrAt < 150) return
+        lastCrAt = now
+        viewModel.scrollTerminalToBottom()
+        viewModel.sendRaw("\r")
+        resetMirror()
+    }
+
     /** 按键出口：应用 Ctrl/Alt 锁存后写入 pty */
     fun emit(text: String, clearMirror: Boolean = false) {
         if (text.isEmpty()) return
@@ -1601,7 +1613,15 @@ private fun TerminalPane(
             repeat(base.length - common) { viewModel.sendRaw("\u007f") }
         }
         val added = curr.substring(common)
-        if (added.isNotEmpty()) emit(added)
+        if (added.isNotEmpty()) {
+            // 部分输入法的回车会往文本里塞 \n（同时还回调 onSend）：换行单独走 emitCr 去抖，
+            // 否则一次回车被 pty 收到两次 CR，表现为执行后多空一行
+            val parts = added.split('\n', '\r')
+            parts.forEachIndexed { i, part ->
+                if (i > 0) emitCr()
+                if (part.isNotEmpty()) emit(part)
+            }
+        }
         // 必须保留 IME 给的光标位置：TextFieldValue(text) 会把光标重置到开头，
         // 下一个字符会插到最前面并触发"删除重发"，输入 top 会变成 pot
         field = if (curr.length > 256) TextFieldValue("") else next
@@ -1703,7 +1723,7 @@ private fun TerminalPane(
                             }
                             if (curr.length > common) viewModel.sendRaw(curr.substring(common))
                         }
-                        emit("\r", clearMirror = true)
+                        emitCr()
                     })
                 )
 
