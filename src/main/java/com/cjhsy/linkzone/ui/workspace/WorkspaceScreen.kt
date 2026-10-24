@@ -1602,7 +1602,9 @@ private fun TerminalPane(
         }
         val added = curr.substring(common)
         if (added.isNotEmpty()) emit(added)
-        field = if (curr.length > 256) TextFieldValue("") else TextFieldValue(curr)
+        // 必须保留 IME 给的光标位置：TextFieldValue(text) 会把光标重置到开头，
+        // 下一个字符会插到最前面并触发"删除重发"，输入 top 会变成 pot
+        field = if (curr.length > 256) TextFieldValue("") else next
     }
 
     fun copyScreen() {
