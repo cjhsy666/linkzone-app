@@ -49,6 +49,8 @@ object TerminalLauncher {
                     add("TERM=xterm-256color")
                     add("LANG=C.UTF-8")
                     add("LC_ALL=C.UTF-8")
+                    // busybox ash 支持 \w（当前目录名），避免完整路径把提示符顶到换行
+                    add("PS1=\\w \\$ ")
                     add("/bin/sh")
                     add("-l")
                 },
@@ -72,6 +74,8 @@ object TerminalLauncher {
                     "TERM=xterm-256color",
                     "LANG=C.UTF-8",
                     "TMPDIR=${tempDir.absolutePath}",
+                    // mksh 会对 PS1 做命令替换：只显示当前目录名，完整路径太长会顶到换行
+                    "PS1=\$(basename \"\$PWD\") \$ ",
                 ),
             )
         }
