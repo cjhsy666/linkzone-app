@@ -149,13 +149,13 @@ object LinuxEnvInstaller {
             staging.deleteRecursively()
             staging.mkdirs()
             var lastTick = 0L
-            val stats = extract(archive, staging) { count, name ->
+            val stats = extract(archive, staging, onProgress = { count, name ->
                 val now = System.currentTimeMillis()
                 if (now - lastTick > 500) {
                     lastTick = now
                     onProgress(InstallProgress(62, "正在解压 rootfs… 已处理 $count 项（$name）"))
                 }
-            }
+            })
 
             if (!isUsableRootfs(staging)) {
                 // 失败时给出可定位的现场信息，方便用户截图反馈
