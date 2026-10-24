@@ -3,7 +3,6 @@ package com.cjhsy.linkzone.workspace
 import android.content.Context
 import android.net.Uri
 import android.os.Build
-import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -55,14 +54,15 @@ object LinuxEnvInstaller {
     /** 安装进度：percent 0-100，message 为当前步骤文案 */
     data class InstallProgress(val percent: Int, val message: String)
 
-    /** proot 可执行文件：优先 APK 自带的 native 库，其次兼容旧版手动导入位置 */
-    fun prootBinary(context: Context): File? {
-        val bundled = File(context.applicationInfo.nativeLibraryDir, "libproot_exec.so")
-        if (bundled.isFile && bundled.canRead()) return bundled
-        val manual = File(context.filesDir, "proot/bin/proot")
-        if (manual.isFile && manual.canRead()) return manual
-        return null
-    }
+    /** proot 可执行文件：Termux 版 proot，随 APK 打包在 native 库目录 */
+    fun prootBinary(context: Context): File? =
+        File(context.applicationInfo.nativeLibraryDir, "libproot_exec.so")
+            .takeIf { it.isFile && it.canRead() }
+
+    /** proot 外置 loader：Android 10+ 私有目录不可 exec，只能放在 native 库目录 */
+    fun prootLoader(context: Context): File? =
+        File(context.applicationInfo.nativeLibraryDir, "libproot_loader.so")
+            .takeIf { it.isFile && it.canRead() }
 
     /** rootfs 目录 */
     fun rootfsDir(context: Context): File = File(context.filesDir, "linux/rootfs")
@@ -71,7 +71,7 @@ object LinuxEnvInstaller {
         val proot = prootBinary(context)
         val rootfs = rootfsDir(context)
         return EnvStatus(
-            prootReady = proot != null,
+            prootReady = proot != null && prootLoader(context) != null,
             rootfsReady = isUsableRootfs(rootfs),
             prootPath = proot?.absolutePath.orEmpty(),
             rootfsPath = rootfs.absolutePath,
@@ -389,10 +389,4 @@ object LinuxEnvInstaller {
             }
         }
     }
-
-    /** 从 SAF uri 读取显示名（提示用户是否选对文件用） */
-    fun queryDisplayName(context: Context, uri: Uri): String? = runCatching {
-        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-    }.getOrNull()
 }

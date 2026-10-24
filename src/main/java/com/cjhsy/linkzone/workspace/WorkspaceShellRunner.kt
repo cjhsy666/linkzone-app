@@ -14,13 +14,20 @@ interface WorkspaceShellRunner {
     fun execute(context: WorkspaceShellContext): WorkspaceCommandResult
 
     companion object {
-        /** 选择当前可用 runner：检测到 proot 与 rootfs 时用 PRoot，否则回退宿主 shell */
+        /** 选择当前可用 runner：内置 proot + loader 与 rootfs 均就位时用 PRoot，否则回退宿主 shell */
         fun select(context: android.content.Context): WorkspaceShellRunner {
             val proot = LinuxEnvInstaller.prootBinary(context)
+            val loader = LinuxEnvInstaller.prootLoader(context)
             val rootfs = LinuxEnvInstaller.rootfsDir(context)
             val skillsDir = File(context.filesDir, "skills").apply { mkdirs() }
-            return if (proot != null && rootfs.isDirectory) {
-                ProotShellRunner(proot, rootfs, skillsDir, File(context.filesDir, "tmp").apply { mkdirs() })
+            return if (proot != null && loader != null && rootfs.isDirectory) {
+                ProotShellRunner(
+                    prootBinary = proot,
+                    loader = loader,
+                    rootfs = rootfs,
+                    skillsDir = skillsDir,
+                    tempDir = File(context.filesDir, "tmp").apply { mkdirs() },
+                )
             } else {
                 HostShellRunner(skillsDir)
             }
@@ -82,6 +89,7 @@ class HostShellRunner(
  */
 class ProotShellRunner(
     private val prootBinary: File,
+    private val loader: File,
     private val rootfs: File,
     private val skillsDir: File,
     private val tempDir: File,
@@ -92,6 +100,9 @@ class ProotShellRunner(
         val workingDir = context.root.resolve(context.cwd.ifBlank { "." })
             .canonicalFile
             .apply { mkdirs() }
+        // proot -b 的 guest 目标必须存在，否则挂载直接失败
+        File(rootfs, "workspace").mkdirs()
+        File(rootfs, "skills").mkdirs()
         val args = buildList {
             add(prootBinary.absolutePath)
             add("--link2symlink")
@@ -128,6 +139,13 @@ class ProotShellRunner(
             .apply {
                 environment()["PROOT_TMP_DIR"] = tempDir.absolutePath
                 environment()["TMPDIR"] = tempDir.absolutePath
+                // Termux 版 proot 把「启动 guest 程序」的 loader 外置成独立二进制：
+                // upstream proot 会把内置 loader 写到 TMPDIR 再 exec，而 Android 10+ 禁止
+                // execve 应用私有目录下的文件（W^X），外置 loader 放在 APK native 库目录才能执行。
+                environment()["PROOT_LOADER"] = loader.absolutePath
+                environment()["LD_LIBRARY_PATH"] = prootBinary.parentFile?.absolutePath.orEmpty()
+                // 部分 Android 内核不允许 ptrace 进程使用 seccomp 加速，关掉可避免启动即崩
+                environment()["PROOT_NO_SECCOMP"] = "1"
             }
             .start()
         return process.readResult(context.timeoutMillis, context.stdin)
