@@ -59,6 +59,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- 定时提醒工具：AlarmManager 到点触发系统通知 -->
+        <receiver
+            android:name=".data.ai.ReminderReceiver"
+            android:exported="false" />
+
         <!-- 拍照：向系统相机交付临时文件 URI -->
         <provider
             android:name="androidx.core.content.FileProvider"

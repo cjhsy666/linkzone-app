@@ -56,4 +56,19 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("sms_call_log")
     object SmsCallLog : LocalToolOption()
+
+    /** 定时提醒 reminder_create / reminder_list / reminder_cancel（到点系统通知） */
+    @Serializable
+    @SerialName("reminder")
+    object Reminder : LocalToolOption()
+
+    /** 通用 HTTP 请求 http_request */
+    @Serializable
+    @SerialName("http_request")
+    object HttpRequest : LocalToolOption()
+
+    /** 服务端联动 linkzone_push / linkzone_schedule（需配置框架 admin token） */
+    @Serializable
+    @SerialName("linkzone")
+    object LinkZone : LocalToolOption()
 }
