@@ -1717,6 +1717,9 @@ class ChatViewModel(
         var latestText = continueFromMsg?.content ?: ""
         var latestThinking = ""
         var lastEmitAt = 0L
+        // 上次真正刷进 UI 的文本快照：内容没变就不重组（见 stream collect 里的判断）
+        var lastEmittedText: String? = null
+        var lastEmittedThinking: String? = null
         // 工具产出的图片（image_generate 等）：收尾时追加进回复气泡并落库
         val generatedImageUrls = mutableListOf<String>()
 
@@ -1745,20 +1748,28 @@ class ChatViewModel(
                     )
                     .collect { chunk ->
                         uiMessages = handler.handle(uiMessages, chunk)
-                        if (uiMessages.last().role == MessageRole.ASSISTANT) {
-                            val tail = uiMessages.last().toText()
-                            // 续写模式：handler 每轮从 baseContext 重新开始，新输出只含增量尾部，
-                            // 气泡显示 = 已有正文 + 新增量；避免被重置丢内容
-                            latestText = if (continueMode) (continueFromMsg?.content ?: "") + tail else tail
-                            // 思考过程（reasoning part）随流式累积，气泡内折叠展示
-                            latestThinking = uiMessages.last().parts
-                                .filterIsInstance<UIMessagePart.Reasoning>()
-                                .joinToString("") { it.reasoning }
-                        }
                         val now = System.currentTimeMillis()
+                        // 关键：全文拼接（toText）与思考过程聚合都是 O(全文长度) 的工作，
+                        // 每来一个 chunk 就做一次会让长回复变成 O(n²)，主线程被 gc/拼接拖慢
+                        // 从而掉帧（表现为"流式一顿一顿"）。这里只在真正要刷 UI 的那一帧才做。
                         if (chunk is StreamChunk.Finish || now - lastEmitAt >= THROTTLE_MS) {
                             lastEmitAt = now
-                            updateLocalBotBubble(botMsgId, latestText, latestThinking)
+                            if (uiMessages.last().role == MessageRole.ASSISTANT) {
+                                val tail = uiMessages.last().toText()
+                                // 续写模式：handler 每轮从 baseContext 重新开始，新输出只含增量尾部，
+                                // 气泡显示 = 已有正文 + 新增量；避免被重置丢内容
+                                latestText = if (continueMode) (continueFromMsg?.content ?: "") + tail else tail
+                                // 思考过程（reasoning part）随流式累积，气泡内折叠展示
+                                latestThinking = uiMessages.last().parts
+                                    .filterIsInstance<UIMessagePart.Reasoning>()
+                                    .joinToString("") { it.reasoning }
+                            }
+                            // 无内容变化的 chunk（usage / 元数据 / 空 delta）不触发重组
+                            if (latestText != lastEmittedText || latestThinking != lastEmittedThinking) {
+                                lastEmittedText = latestText
+                                lastEmittedThinking = latestThinking
+                                updateLocalBotBubble(botMsgId, latestText, latestThinking)
+                            }
                         }
                     }
 
@@ -3509,7 +3520,7 @@ class ChatViewModel(
         /** 本地智能体回复占位气泡 id 前缀（本地会话中该 id 即最终消息 id） */
         private const val BOT_LOCAL_MSG_PREFIX = "bot-local-msg-"
         /** 流式生成 UI 刷新节流（毫秒） */
-        private const val THROTTLE_MS = 80L
+        private const val THROTTLE_MS = 40L
         private const val NAME_MAX_LEN = 12
         /** 手动重命名标题上限（抽屉长按「重命名」） */
         private const val RENAME_MAX_LEN = 50
