@@ -113,7 +113,10 @@ private val BARE_MEDIA_TYPES = setOf("image", "flash", "animation", "video", "vo
 private val DOCUMENT_FRIENDLY_TYPES = setOf(
     "text", "markdown", "image", "flash", "animation", "video", "voice", "link",
     "reply", "mention", "mention_all", "sys.abort", "sys.listen_stop", "sys.emotion",
-    "music", "audio"
+    "music", "audio",
+    // 本地智能体的工具调用卡：与正文同属回答内容，必须留在文档流里。
+    // 一旦漏掉这里，带工具调用的回复会整体回落进气泡，和普通回复样式割裂
+    "tool"
 )
 
 /**
