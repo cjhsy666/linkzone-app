@@ -43,6 +43,11 @@ data class LlmAgent(
     val useGlobalMemory: Boolean = false,
     /** 启用联网搜索（使用设置中选中的搜索服务注册 search_web 工具） */
     val enableWebSearch: Boolean = false,
+    /**
+     * 会话查询工具（recent_chats / conversation_search）：让模型检索历史会话。
+     * 默认开启——此前一直是无条件注入，改成开关后要保持老用户行为不变。
+     */
+    val enableConversationTools: Boolean = true,
     /** 关联的 MCP 服务器 id 列表（llm_mcp_server 表，启用且已连接的服务器工具会被注入） */
     val mcpServers: Set<String> = emptySet(),
     /** 本地工具开关（时间/剪贴板/日历/手机控制等本地执行的工具） */

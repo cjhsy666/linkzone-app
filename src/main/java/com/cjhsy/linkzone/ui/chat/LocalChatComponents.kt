@@ -882,6 +882,14 @@ internal fun LocalExtensionSheet(
                 }
                 item {
                     LocalSheetSwitchRow(
+                        title = "会话检索",
+                        subtitle = "注入 recent_chats / conversation_search 工具",
+                        checked = agent.enableConversationTools,
+                        onToggle = { onUpdate { it.copy(enableConversationTools = !it.enableConversationTools) } }
+                    )
+                }
+                item {
+                    LocalSheetSwitchRow(
                         title = "启用记忆",
                         subtitle = "注入已有记忆并允许模型增删改",
                         checked = agent.enableMemory,

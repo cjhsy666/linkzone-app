@@ -777,6 +777,12 @@ private fun AgentEditor(
                     onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableWebSearch = v) } }
                 )
                 SwitchRow(
+                    title = "会话检索",
+                    desc = "recent_chats / conversation_search，让模型查历史聊天",
+                    checked = agent.enableConversationTools,
+                    onCheckedChange = { v -> viewModel.updateEditing { it.copy(enableConversationTools = v) } }
+                )
+                SwitchRow(
                     title = "启用记忆",
                     desc = "注入已有记忆，模型经 memory_tool 增删改",
                     checked = agent.enableMemory,

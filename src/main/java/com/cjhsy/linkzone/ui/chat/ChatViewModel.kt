@@ -1602,14 +1602,16 @@ class ChatViewModel(
             // 本地工具：时间感知/剪贴板/追问/日历/TTS，按智能体开关启用
             addAll(createLocalTools(appContext, agent.localTools, askUserBridge))
             // 会话查询工具：让模型按需检索历史会话（仅本地会话可见）
-            addAll(createConversationTools(
-                loadConversations = {
-                    localStore.getConversations().map {
-                        ConvSummary(it.id, it.name, it.last_msg, it.lastTime)
-                    }
-                },
-                loadAllMessages = { convId -> localStore.loadAllMessages(convId) }
-            ))
+            if (agent.enableConversationTools) {
+                addAll(createConversationTools(
+                    loadConversations = {
+                        localStore.getConversations().map {
+                            ConvSummary(it.id, it.name, it.last_msg, it.lastTime)
+                        }
+                    },
+                    loadAllMessages = { convId -> localStore.loadAllMessages(convId) }
+                ))
+            }
             // 图片生成：模型按用户要求主动出图，结果直接渲染进回复气泡
             if (agent.enableImageGeneration) {
                 resolveImageModel(agent)?.let { (imgSetting, imgModel) ->
