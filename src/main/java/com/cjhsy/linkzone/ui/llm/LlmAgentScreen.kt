@@ -299,11 +299,17 @@ class LlmAgentViewModel(
         }
     }
 
-    /** 可选模型展示名 */
-    fun modelLabel(modelId: String?): String {
-        if (modelId == null) return "跟随全局默认"
-        state.value.providers.forEach { p ->
-            p.models.firstOrNull { it.modelId == modelId }?.let {
+    /** 可选模型展示名：入参是「providerId/modelId」复合引用，旧数据可能只有 modelId */
+    fun modelLabel(ref: String?): String {
+        if (ref == null) return "跟随全局默认"
+        val providers = state.value.providers
+        com.cjhsy.linkzone.ai.provider.ModelRef.decode(ref)?.let { (pid, mid) ->
+            val p = providers.firstOrNull { it.id == pid } ?: return "模型已被删除"
+            val m = p.models.firstOrNull { it.modelId == mid } ?: return "模型已被删除"
+            return "${p.name} / ${m.displayName.ifBlank { m.modelId }}"
+        }
+        providers.forEach { p ->
+            p.models.firstOrNull { it.modelId == ref }?.let {
                 return "${p.name} / ${it.displayName.ifBlank { it.modelId }}"
             }
         }
@@ -1591,7 +1597,11 @@ private fun ModelPicker(
                 visibleModels.forEach { model ->
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text(model.displayName.ifBlank { model.modelId }) },
-                        onClick = { onSelect(model.modelId); expanded.value = false }
+                        onClick = {
+                            // 存复合引用，避免同名模型串到别的服务商
+                            onSelect(com.cjhsy.linkzone.ai.provider.ModelRef.encode(provider.id, model.modelId))
+                            expanded.value = false
+                        }
                     )
                 }
             }

@@ -56,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cjhsy.linkzone.ai.core.ReasoningLevel
+import com.cjhsy.linkzone.ai.provider.ModelRef
 import com.cjhsy.linkzone.data.ai.LocalToolOption
 import com.cjhsy.linkzone.data.ai.mcp.McpServerConfig
 import com.cjhsy.linkzone.data.ai.mcp.McpStatus
@@ -111,15 +112,23 @@ internal fun LocalModelSheet(
                 it.providerName.lowercase().contains(keyword)
         }
     }
-    // 最近使用：按 prefs 顺序映射到现有模型，最多 6 个
+    // 最近使用：按 prefs 顺序映射到现有模型，最多 6 个。
+    // 条目是「providerId/modelId」复合引用；旧数据只有 modelId，按首个同 id 命中
     val recent = remember(recentModelIds, models, keyword) {
         if (keyword.isNotBlank()) emptyList()
-        else recentModelIds.mapNotNull { id -> models.firstOrNull { it.modelId == id } }.take(6)
+        else recentModelIds.mapNotNull { ref ->
+            models.firstOrNull { it.ref == ref }
+                ?: ModelRef.decode(ref)
+                    ?.let { (pid, id) -> models.firstOrNull { it.providerId == pid && it.modelId == id } }
+                ?: models.firstOrNull { it.modelId == ref }
+        }.distinctBy { it.ref }.take(6)
     }
     // 服务商折叠状态：null = 全部展开（搜索时强制展开）；非空 = 仅展开集合内的服务商
     val searching = keyword.isNotBlank()
     var expandedProviders by remember { mutableStateOf<Set<String>?>(null) }
-    val currentProvider = models.firstOrNull { it.modelId == currentModelId }?.providerName
+    // 分组与折叠都以 providerId 为准（服务商可改名、也可能重名）
+    val currentProvider = (models.firstOrNull { it.ref == currentModelId }
+        ?: models.firstOrNull { it.modelId == currentModelId })?.providerId
     LaunchedEffect(currentProvider) {
         // 首次打开：默认只展开当前模型所在的服务商
         if (expandedProviders == null && currentProvider != null) {
@@ -182,30 +191,43 @@ internal fun LocalModelSheet(
                 ) {
                     if (recent.isNotEmpty()) {
                         item(key = "recent_header") { GroupHeader("最近使用") }
-                        items(recent, key = { "recent_${it.modelId}" }) { model ->
-                            ModelRow(model, model.modelId == currentModelId, onPick)
+                        items(recent, key = { "recent_${it.ref}" }) { model ->
+                            ModelRow(
+                                model = model,
+                                selected = model.ref == currentModelId ||
+                                    (!currentModelId.contains('/') && model.modelId == currentModelId),
+                                onPick = onPick,
+                                showProvider = true,
+                            )
                         }
                     }
                     // 服务商分组（模型仍完整保留在所属服务商下，与最近使用重复展示）
-                    filtered.groupBy { it.providerName }.toList().forEach { (provider, list) ->
+                    filtered.groupBy { it.providerId }.toList().forEach { (providerId, list) ->
                         if (list.isEmpty()) return@forEach
+                        val providerName = list.first().providerName
                         val expandedSet = expandedProviders
-                        val expanded = searching || expandedSet == null || provider in expandedSet
-                        item(key = "prov_$provider") {
+                        val expanded = searching || expandedSet == null || providerId in expandedSet
+                        item(key = "prov_$providerId") {
                             CollapsibleGroupHeader(
-                                title = provider,
+                                title = providerName,
                                 count = list.size,
                                 expanded = expanded,
                                 onToggle = {
                                     val current = expandedProviders ?: emptySet()
-                                    expandedProviders = if (expanded) current - provider
-                                    else current + provider
+                                    expandedProviders = if (expanded) current - providerId
+                                    else current + providerId
                                 }
                             )
                         }
                         if (expanded) {
-                            items(list, key = { "m_${provider}_${it.modelId}" }) { model ->
-                                ModelRow(model, model.modelId == currentModelId, onPick)
+                            items(list, key = { "m_${it.ref}" }) { model ->
+                                ModelRow(
+                                    model = model,
+                                    selected = model.ref == currentModelId ||
+                                        (!currentModelId.contains('/') && model.modelId == currentModelId),
+                                    onPick = onPick,
+                                    showProvider = false,
+                                )
                             }
                         }
                     }
@@ -281,11 +303,17 @@ private fun GroupHeader(title: String) {
 }
 
 @Composable
-private fun ModelRow(model: ChatModelOption, selected: Boolean, onPick: (String) -> Unit) {
+private fun ModelRow(
+    model: ChatModelOption,
+    selected: Boolean,
+    onPick: (String) -> Unit,
+    /** 「最近使用」分组下才在副标题里补服务商名，服务商分组内由组头表达归属 */
+    showProvider: Boolean = false,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onPick(model.modelId) }
+            .clickable { onPick(model.ref) }
             .padding(horizontal = 20.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -297,9 +325,10 @@ private fun ModelRow(model: ChatModelOption, selected: Boolean, onPick: (String)
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (model.modelId != model.label) {
+            if (model.modelId != model.label || showProvider) {
                 Text(
-                    text = "${model.modelId} · ${model.providerName}",
+                    text = if (showProvider) "${model.modelId} · ${model.providerName}"
+                    else model.modelId,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -618,7 +647,9 @@ internal fun LocalExtensionSheet(
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    agent.chatModelId?.substringAfterLast('/')?.ifBlank { null } ?: "默认模型",
+                                    agent.chatModelId
+                                        ?.let { ModelRef.decode(it)?.second ?: it }
+                                        ?.ifBlank { null } ?: "默认模型",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium
                                 )

@@ -228,8 +228,9 @@ fun MessageItemView(
             val modelIconMatched = remember(modelName) {
                 isLocal && modelName.isNotBlank() && computeAIIconByName(modelName) != null
             }
-            // AI 署名：智能体名 · 模型名（显示取模型 id 末段）
-            val displayModel = modelName.substringAfterLast('/')
+            // AI 署名：智能体名 · 模型名（复合引用取 modelId 段；modelId 本身可含 '/'）
+            val displayModel = com.cjhsy.linkzone.ai.provider.ModelRef.decode(modelName)?.second
+                ?: modelName
             val senderLabel = if (displayModel.isNotBlank() && !message.senderName.contains(displayModel)) {
                 "${message.senderName} · $displayModel"
             } else {

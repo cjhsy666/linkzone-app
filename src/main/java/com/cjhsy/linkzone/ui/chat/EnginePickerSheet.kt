@@ -117,7 +117,7 @@ fun EnginePickerSheet(
                         EngineRow(
                             title = agent.name.ifBlank { "未命名智能体" },
                             subtitle = agent.chatModelId
-                                ?.substringAfterLast('/')
+                                ?.let { com.cjhsy.linkzone.ai.provider.ModelRef.decode(it)?.second ?: it }
                                 ?.ifBlank { null }
                                 ?: "默认模型",
                             selected = currentIsLocal && agent.id == currentAgentId,

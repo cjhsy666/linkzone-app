@@ -236,3 +236,43 @@ sealed class ProviderSetting {
         }
     }
 }
+
+/**
+ * 模型引用：`providerId/modelId`。
+ *
+ * 同一个 modelId 可能同时出现在多个服务商下（不同 key、不同 baseUrl、同名的中转渠道等），
+ * 只存 modelId 无法定位到具体是哪一个，选择器里两条同 id 模型也无法区分。
+ * 因此凡是需要记住「用户选了哪个模型」的地方（智能体配置、最近使用、重答选择器）
+ * 都统一存这个复合引用。providerId 是 UUID，本身不含 '/'，所以用首个 '/' 拆分是安全的；
+ * modelId 允许含 '/'（如 `anthropic/claude-sonnet-4`），拆分后原样保留。
+ */
+object ModelRef {
+    fun encode(providerId: String, modelId: String): String = "$providerId/$modelId"
+
+    /** 拆解引用；不是复合格式（旧数据只有 modelId）时返回 null */
+    fun decode(ref: String?): Pair<String, String>? {
+        if (ref.isNullOrBlank()) return null
+        val i = ref.indexOf('/')
+        if (i <= 0 || i >= ref.length - 1) return null
+        return ref.substring(0, i) to ref.substring(i + 1)
+    }
+}
+
+/**
+ * 按引用解析到具体的服务商与模型。
+ * 兼容旧数据：不满足复合格式时退回「按服务商顺序取首个同 modelId 的模型」。
+ */
+fun List<ProviderSetting>.resolveModel(ref: String?): Pair<ProviderSetting, Model>? {
+    if (ref.isNullOrBlank()) return null
+    val decoded = ModelRef.decode(ref)
+    if (decoded != null) {
+        val (providerId, modelId) = decoded
+        // 复合引用必须精确命中：找不到就返回 null（模型已删除），
+        // 不能再按 modelId 在别的服务商里兜底，否则会悄悄串到别的渠道
+        val provider = firstOrNull { it.id == providerId } ?: return null
+        val model = provider.models.firstOrNull { it.modelId == modelId } ?: return null
+        return provider to model
+    }
+    forEach { p -> p.models.firstOrNull { it.modelId == ref }?.let { return p to it } }
+    return null
+}

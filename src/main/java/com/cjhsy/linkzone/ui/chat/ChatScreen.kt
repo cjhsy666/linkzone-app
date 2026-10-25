@@ -2273,12 +2273,12 @@ internal fun ModelPickerDialog(
                         .heightIn(max = 360.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    items(models, key = { it.modelId + it.providerName }) { option ->
+                    items(models, key = { it.ref }) { option ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { onPick(option.modelId) }
+                                .clickable { onPick(option.ref) }
                                 .padding(horizontal = 10.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {

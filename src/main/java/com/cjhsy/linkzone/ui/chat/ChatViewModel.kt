@@ -20,11 +20,13 @@ import com.cjhsy.linkzone.ai.core.MessageRole
 import com.cjhsy.linkzone.ai.core.TokenUsage
 import com.cjhsy.linkzone.ai.core.Tool
 import com.cjhsy.linkzone.ai.provider.Model
+import com.cjhsy.linkzone.ai.provider.ModelRef
 import com.cjhsy.linkzone.ai.provider.ModelType
 import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.ProviderManager
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.ai.provider.TextGenerationParams
+import com.cjhsy.linkzone.ai.provider.resolveModel
 import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.ui.StreamChunk
 import com.cjhsy.linkzone.ai.ui.StreamChunkHandler
@@ -179,6 +181,7 @@ data class EditTarget(
 
 /** 可选模型项（多模型重答选择器用） */
 data class ChatModelOption(
+    val providerId: String,
     val modelId: String,
     val label: String,
     /** provider 显示名（副标题） */
@@ -189,7 +192,10 @@ data class ChatModelOption(
     val supportsTools: Boolean = false,
     /** 是否支持深度思考（reasoning） */
     val supportsReasoning: Boolean = false,
-)
+) {
+    /** 全局唯一的模型引用：providerId/modelId */
+    val ref: String get() = ModelRef.encode(providerId, modelId)
+}
 
 /**
  * 聊天 ViewModel —— 与 LinkZone 适配器直连的会话模型。
@@ -2016,24 +2022,18 @@ class ChatViewModel(
     /** 解析 Agent 绑定的模型；未绑定时回退第一个可用 Provider 的首个 CHAT 模型 */
     private suspend fun resolveChatModel(agent: LlmAgent): Pair<ProviderSetting, Model>? {
         val providers = llmRepository.getProviders().filter { it.enabled }
-        agent.chatModelId?.let { modelId ->
-            providers.forEach { p ->
-                p.models.firstOrNull { it.modelId == modelId }?.let { return p to it }
-            }
-        }
+        // chatModelId 存的是「providerId/modelId」复合引用：同一 modelId 出现在多个
+        // 服务商下时也能精确命中用户选的那一个
+        providers.resolveModel(agent.chatModelId)?.let { return it }
         providers.forEach { p ->
             p.models.firstOrNull { it.type == ModelType.CHAT }?.let { return p to it }
         }
         return null
     }
 
-    /** 按 modelId 精确解析模型（多模型重答用）；找不到返回 null 回退默认解析 */
-    private suspend fun resolveChatModelById(modelId: String): Pair<ProviderSetting, Model>? {
-        llmRepository.getProviders().filter { it.enabled }.forEach { p ->
-            p.models.firstOrNull { it.modelId == modelId }?.let { return p to it }
-        }
-        return null
-    }
+    /** 按复合引用精确解析模型（多模型重答用）；找不到返回 null 回退默认解析 */
+    private suspend fun resolveChatModelById(modelRef: String): Pair<ProviderSetting, Model>? =
+        llmRepository.getProviders().filter { it.enabled }.resolveModel(modelRef)
 
     /**
      * 解析图片生成模型：优先智能体指定的 imageModelId，否则取第一个 IMAGE 类型模型。
@@ -2041,11 +2041,7 @@ class ChatViewModel(
      */
     private suspend fun resolveImageModel(agent: LlmAgent): Pair<ProviderSetting, Model>? {
         val providers = llmRepository.getProviders().filter { it.enabled }
-        agent.imageModelId?.let { id ->
-            providers.forEach { p ->
-                p.models.firstOrNull { it.modelId == id }?.let { return p to it }
-            }
-        }
+        providers.resolveModel(agent.imageModelId)?.let { return it }
         providers.forEach { p ->
             p.models.firstOrNull { it.type == ModelType.IMAGE }?.let { return p to it }
         }
@@ -2053,13 +2049,9 @@ class ChatViewModel(
     }
 
     /** 解析 OCR 视觉模型：优先 ocrModelId，否则取第一个支持 IMAGE 输入的 CHAT 模型 */
-    private suspend fun resolveVisionChatModel(preferredId: String?): Pair<ProviderSetting, Model>? {
+    private suspend fun resolveVisionChatModel(preferredRef: String?): Pair<ProviderSetting, Model>? {
         val providers = llmRepository.getProviders().filter { it.enabled }
-        preferredId?.let { id ->
-            providers.forEach { p ->
-                p.models.firstOrNull { it.modelId == id }?.let { return p to it }
-            }
-        }
+        providers.resolveModel(preferredRef)?.let { return it }
         providers.forEach { p ->
             p.models.firstOrNull {
                 it.type == ModelType.CHAT && Modality.IMAGE in it.inputModalities
@@ -3214,6 +3206,7 @@ class ChatViewModel(
                         val reasoning = com.cjhsy.linkzone.ai.provider.ModelAbility.REASONING in m.abilities ||
                                 (m.abilities.isEmpty() && com.cjhsy.linkzone.ai.provider.ModelAbility.REASONING in registryAbilities)
                         ChatModelOption(
+                            providerId = p.id,
                             modelId = m.modelId,
                             label = m.displayName.ifBlank { m.modelId },
                             providerName = p.name,
@@ -3223,17 +3216,17 @@ class ChatViewModel(
                         )
                     }
                 }
-                // 同一服务商下允许用户把同一个模型加两次（列表 key 为「服务商_模型ID」），
+                // 同一服务商下允许用户把同一个模型加两次（列表 key 为「providerId/modelId」），
                 // 不去重会让选择器 LazyColumn 抛 duplicate key 崩溃
-                .distinctBy { it.providerName to it.modelId }
+                .distinctBy { it.providerId to it.modelId }
         }
     }
 
     /** 更新本地智能体默认模型：聊天页内改模型只写入本会话覆盖（不影响原智能体全局配置） */
-    fun setLocalAgentModel(agent: LlmAgent, modelId: String) {
-        if (agent.chatModelId == modelId) return
-        updateCurrentAgent { it.copy(chatModelId = modelId) }
-        recordRecentModel(modelId)
+    fun setLocalAgentModel(agent: LlmAgent, modelRef: String) {
+        if (agent.chatModelId == modelRef) return
+        updateCurrentAgent { it.copy(chatModelId = modelRef) }
+        recordRecentModel(modelRef)
     }
 
     /**
@@ -3290,10 +3283,10 @@ class ChatViewModel(
             .jsonArray.map { it.jsonPrimitive.content }
     }.getOrDefault(emptyList())
 
-    private fun recordRecentModel(modelId: String) {
+    private fun recordRecentModel(modelRef: String) {
         val list = recentModelIds.value.toMutableList().apply {
-            remove(modelId)
-            add(0, modelId)
+            remove(modelRef)
+            add(0, modelRef)
         }.take(8)
         recentPrefs.edit()
             .putString(KEY_RECENT, kotlinx.serialization.json.JsonArray(list.map { kotlinx.serialization.json.JsonPrimitive(it) }).toString())
@@ -3306,7 +3299,7 @@ class ChatViewModel(
      * 用指定模型对最后一个 AI 节点重新生成一个**新版本**（旧版本保留可切换）；
      * 新回复署名带模型名，旧回复不参与本次上下文。
      */
-    fun regenerateWithModel(modelId: String) {
+    fun regenerateWithModel(modelRef: String) {
         if (!isLocalConv()) return
         if (generatingJob?.isActive == true) return
         viewModelScope.launch {
@@ -3318,7 +3311,7 @@ class ChatViewModel(
             generatingJob = viewModelScope.launch {
                 runLocalGeneration(
                     botId = _state.value.currentBotId,
-                    overrideModelId = modelId,
+                    overrideModelId = modelRef,
                     trimTrailingAssistant = true,
                     versionAnchorId = node.anchorId,
                     versionIdx = node.versions.size,

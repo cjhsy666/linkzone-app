@@ -84,11 +84,14 @@ data class TranslateModelOption(
     val providerName: String,
     val modelId: String,
     val label: String,
-)
+) {
+    /** 全局唯一引用：providerId/modelId */
+    val ref: String get() = com.cjhsy.linkzone.ai.provider.ModelRef.encode(providerId, modelId)
+}
 
 data class TranslateUiState(
     val models: List<TranslateModelOption> = emptyList(),
-    /** 记忆的 modelId（跨 provider 查找） */
+    /** 记忆的模型引用（providerId/modelId；旧数据可能只有 modelId） */
     val selectedModelId: String = "",
     val selectedLanguage: String = "English",
     val source: String = "",
@@ -143,10 +146,13 @@ class TranslateViewModel(
                 .distinctBy { it.providerId to it.modelId }
             _state.value = _state.value.copy(
                 models = options,
-                // 记忆的模型已被删除时回落到第一个
-                selectedModelId = options.firstOrNull { it.modelId == _state.value.selectedModelId }
-                    ?.modelId
-                    ?: options.firstOrNull()?.modelId
+                // 记忆的模型已被删除时回落到第一个；引用是「providerId/modelId」，
+                // 旧数据只有 modelId，按同 id 首个命中
+                selectedModelId = (
+                    options.firstOrNull { it.ref == _state.value.selectedModelId }
+                        ?: options.firstOrNull { it.modelId == _state.value.selectedModelId }
+                        ?: options.firstOrNull()
+                    )?.ref
                     ?: ""
             )
         }
@@ -164,9 +170,9 @@ class TranslateViewModel(
         scheduleAutoTranslate()
     }
 
-    fun selectModel(modelId: String) {
-        _state.value = _state.value.copy(selectedModelId = modelId)
-        llmPrefs.putString(LlmPrefs.KEY_TRANSLATION_MODEL, modelId)
+    fun selectModel(modelRef: String) {
+        _state.value = _state.value.copy(selectedModelId = modelRef)
+        llmPrefs.putString(LlmPrefs.KEY_TRANSLATION_MODEL, modelRef)
     }
 
     fun toggleAuto(enabled: Boolean) {
@@ -199,7 +205,8 @@ class TranslateViewModel(
         val s = _state.value
         if (s.translating) return
         if (s.source.isBlank()) return
-        val option = s.models.firstOrNull { it.modelId == s.selectedModelId }
+        val option = s.models.firstOrNull { it.ref == s.selectedModelId }
+            ?: s.models.firstOrNull { it.modelId == s.selectedModelId }
         if (option == null) {
             _state.value = s.copy(error = "尚未配置可用模型，请到「设置 → AI 模型服务」添加")
             return
@@ -326,7 +333,8 @@ fun TranslateScreen(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = state.models.firstOrNull { it.modelId == state.selectedModelId }
+                        text = (state.models.firstOrNull { it.ref == state.selectedModelId }
+                            ?: state.models.firstOrNull { it.modelId == state.selectedModelId })
                             ?.label ?: "选择模型",
                         maxLines = 1
                     )
@@ -429,18 +437,18 @@ fun TranslateScreen(
                             .height(360.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        items(state.models, key = { it.providerId + it.modelId }) { option ->
+                        items(state.models, key = { it.ref }) { option ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(
-                                        if (option.modelId == state.selectedModelId)
+                                        if (option.ref == state.selectedModelId)
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                                         else androidx.compose.ui.graphics.Color.Transparent
                                     )
                                     .clickable {
-                                        viewModel.selectModel(option.modelId)
+                                        viewModel.selectModel(option.ref)
                                         showModelPicker = false
                                     }
                                     .padding(horizontal = 10.dp, vertical = 10.dp),
