@@ -96,6 +96,9 @@ data class LlmProviderUiState(
     val editing: ProviderSetting? = null,
     /** 正在拉取模型列表的 provider id */
     val fetchingModelsFor: String? = null,
+    /** 拉取完成待勾选的模型列表（属于 fetchedModelsProviderId），确认前不落库 */
+    val fetchedModels: List<com.cjhsy.linkzone.ai.provider.Model>? = null,
+    val fetchedModelsProviderId: String? = null,
     val saving: Boolean = false,
     val message: String? = null,
     val error: String? = null,
@@ -261,14 +264,18 @@ class LlmProviderViewModel(
     // ============ 拉取模型 ============
 
     /**
-     * 拉取远端模型并与本地合并：
-     * - 已有同 modelId 的模型保留用户配置（改名、能力、排序中的位置）
-     * - 新增模型经 ModelRegistry 识别后写入默认模态/能力
-     * - 本地独有（远端已下线或手动添加）的模型保留，不被全量覆盖
+     * 从服务商拉取模型列表。
+     *
+     * 对齐 RikkaHub：拉取结果**不直接落库**，先进待选列表弹勾选 Sheet，由用户勾选
+     * 需要的模型后确认才写入。聚合型网关（OpenRouter 等）/models 会返回几百个模型，
+     * 全量合并会把大量用不到的模型灌进配置，污染模型选择器。
      */
     fun fetchModels(provider: ProviderSetting) {
         if (_state.value.fetchingModelsFor != null) return
-        _state.value = _state.value.copy(fetchingModelsFor = provider.id, error = null, message = null)
+        _state.value = _state.value.copy(
+            fetchingModelsFor = provider.id, error = null, message = null,
+            fetchedModels = null, fetchedModelsProviderId = null,
+        )
         viewModelScope.launch {
             try {
                 val remote = providerManager.getProviderByType(provider).listModels(provider)
@@ -279,25 +286,19 @@ class LlmProviderViewModel(
                     )
                     return@launch
                 }
-                val existingById = provider.models.associateBy { it.modelId }
-                val remoteIds = remote.mapTo(HashSet()) { it.modelId }
-                val merged = remote.map { fetched ->
-                    val old = existingById[fetched.modelId]
-                    if (old != null) {
-                        // 远端能更准确识别 embedding 等类型
-                        if (old.type == ModelType.CHAT && fetched.type != ModelType.CHAT) {
-                            old.copy(type = fetched.type)
-                        } else old
+                // 新模型用内置注册表识别模态/能力；已有的保留用户自定义（确认时才真正合并）
+                val existingIds = provider.models.mapTo(HashSet()) { it.modelId }
+                val recognized = remote.map { fetched ->
+                    if (fetched.modelId in existingIds) {
+                        provider.models.first { it.modelId == fetched.modelId }
                     } else {
                         recognizeFetched(fetched)
                     }
-                } + provider.models.filter { it.modelId !in remoteIds }
-                val added = merged.size - provider.models.size
-                persistProviderModelChange(provider, provider.copyProvider(models = merged))
+                }
                 _state.value = _state.value.copy(
                     fetchingModelsFor = null,
-                    message = "拉取完成：共 ${merged.size} 个" +
-                        if (added > 0) "，新增 $added 个" else "（无新增）",
+                    fetchedModels = recognized,
+                    fetchedModelsProviderId = provider.id,
                 )
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
@@ -306,6 +307,37 @@ class LlmProviderViewModel(
                 )
             }
         }
+    }
+
+    /** 勾选确认：selected 为远端列表中被勾中的子集；远端已下线的本地模型保留不动 */
+    fun confirmFetchSelection(provider: ProviderSetting, selected: List<Model>) {
+        val pending = _state.value.fetchedModels ?: return
+        val remoteIds = pending.mapTo(HashSet()) { it.modelId }
+        val localOnly = provider.models.filter { it.modelId !in remoteIds }
+        val existingById = provider.models.associateBy { it.modelId }
+        val merged = selected.map { fetched ->
+            val old = existingById[fetched.modelId]
+            if (old != null) {
+                // 远端能更准确识别 embedding 等类型
+                if (old.type == ModelType.CHAT && fetched.type != ModelType.CHAT) {
+                    old.copy(type = fetched.type)
+                } else old
+            } else fetched
+        } + localOnly
+        val added = merged.count { it.modelId !in existingById }
+        viewModelScope.launch {
+            persistProviderModelChange(provider, provider.copyProvider(models = merged))
+            _state.value = _state.value.copy(
+                fetchedModels = null, fetchedModelsProviderId = null,
+                message = "已更新模型列表：共 ${merged.size} 个" +
+                    if (added > 0) "，新增 $added 个" else "",
+            )
+        }
+    }
+
+    /** 放弃本次拉取结果 */
+    fun dismissFetchSelection() {
+        _state.value = _state.value.copy(fetchedModels = null, fetchedModelsProviderId = null)
     }
 
     /** 新拉取到的模型：用内置注册表填充默认模态与能力 */
@@ -531,6 +563,21 @@ fun LlmProviderScreen(
     viewModel: LlmProviderViewModel = koinViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+
+    // 拉取模型结果待勾选：列表卡片 / 编辑页 / 模型页三个入口共用同一 Sheet
+    state.fetchedModels?.let { fetched ->
+        val pid = state.fetchedModelsProviderId
+        val target = state.editing?.takeIf { it.id == pid }
+            ?: state.providers.firstOrNull { it.id == pid }
+        if (target != null) {
+            FetchModelsSelectionSheet(
+                fetched = fetched,
+                existingIds = target.models.mapTo(HashSet()) { it.modelId },
+                onDismiss = viewModel::dismissFetchSelection,
+                onConfirm = { viewModel.confirmFetchSelection(target, it) },
+            )
+        }
+    }
 
     if (state.showAddSheet) {
         AddProviderSheet(

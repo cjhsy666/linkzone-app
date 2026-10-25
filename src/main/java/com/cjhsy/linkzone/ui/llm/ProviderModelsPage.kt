@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -257,6 +259,124 @@ fun ProviderModelsPage(
                 TextButton(onClick = { pendingDelete = null }) { Text("取消") }
             },
         )
+    }
+}
+
+/**
+ * 拉取结果勾选 Sheet（对齐 RikkaHub）：已在用模型默认勾中，新模型默认不勾，
+ * 确认后才写回服务商配置；本地手动添加/远端已下线的模型不在此列、不受影响。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FetchModelsSelectionSheet(
+    fetched: List<Model>,
+    existingIds: Set<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<Model>) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var checkedIds by remember {
+        mutableStateOf(fetched.mapNotNull { m -> m.modelId.takeIf { it in existingIds } }.toSet())
+    }
+    val keyword = query.trim()
+    val shown = if (keyword.isBlank()) fetched else fetched.filter {
+        it.modelId.contains(keyword, ignoreCase = true) || it.displayName.contains(keyword, ignoreCase = true)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 20.dp),
+        ) {
+            Text(
+                "选择要保留的模型（${checkedIds.size}/${fetched.size}）",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                "未勾选的模型不会加入服务商配置",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("搜索模型 ID 或名称") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = {
+                    checkedIds = checkedIds + shown.map { it.modelId }
+                }) { Text("全选") }
+                TextButton(onClick = {
+                    checkedIds = checkedIds - shown.map { it.modelId }.toSet()
+                }) { Text("全不选") }
+            }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(360.dp),
+            ) {
+                items(shown, key = { it.modelId }) { model ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                checkedIds = if (model.modelId in checkedIds) {
+                                    checkedIds - model.modelId
+                                } else {
+                                    checkedIds + model.modelId
+                                }
+                            }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = model.modelId in checkedIds,
+                            onCheckedChange = null,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                model.displayName.ifBlank { model.modelId },
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            if (model.displayName.isNotBlank() && model.displayName != model.modelId) {
+                                Text(
+                                    model.modelId,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onDismiss) { Text("取消") }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = { onConfirm(fetched.filter { it.modelId in checkedIds }) },
+                ) { Text("确定（${checkedIds.size}）") }
+            }
+        }
     }
 }
 
