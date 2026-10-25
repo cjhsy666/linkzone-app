@@ -3223,6 +3223,9 @@ class ChatViewModel(
                         )
                     }
                 }
+                // 同一服务商下允许用户把同一个模型加两次（列表 key 为「服务商_模型ID」），
+                // 不去重会让选择器 LazyColumn 抛 duplicate key 崩溃
+                .distinctBy { it.providerName to it.modelId }
         }
     }
 

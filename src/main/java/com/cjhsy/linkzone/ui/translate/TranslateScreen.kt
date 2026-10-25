@@ -139,6 +139,8 @@ class TranslateViewModel(
                         )
                     }
                 }
+                // 选择器 key 为「providerId + modelId」：同服务商下重复添加同一个模型会 key 冲突
+                .distinctBy { it.providerId to it.modelId }
             _state.value = _state.value.copy(
                 models = options,
                 // 记忆的模型已被删除时回落到第一个
