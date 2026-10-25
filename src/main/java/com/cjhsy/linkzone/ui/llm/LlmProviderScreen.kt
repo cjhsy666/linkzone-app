@@ -309,28 +309,14 @@ class LlmProviderViewModel(
         }
     }
 
-    /** 勾选确认：selected 为远端列表中被勾中的子集；远端已下线的本地模型保留不动 */
+    /** 勾选确认：selected 即最终模型列表（Sheet 已含在用保留/已下架剔除语义） */
     fun confirmFetchSelection(provider: ProviderSetting, selected: List<Model>) {
-        val pending = _state.value.fetchedModels ?: return
-        val remoteIds = pending.mapTo(HashSet()) { it.modelId }
-        val localOnly = provider.models.filter { it.modelId !in remoteIds }
-        val existingById = provider.models.associateBy { it.modelId }
-        val merged = selected.map { fetched ->
-            val old = existingById[fetched.modelId]
-            if (old != null) {
-                // 远端能更准确识别 embedding 等类型
-                if (old.type == ModelType.CHAT && fetched.type != ModelType.CHAT) {
-                    old.copy(type = fetched.type)
-                } else old
-            } else fetched
-        } + localOnly
-        val added = merged.count { it.modelId !in existingById }
+        if (_state.value.fetchedModels == null) return
         viewModelScope.launch {
-            persistProviderModelChange(provider, provider.copyProvider(models = merged))
+            persistProviderModelChange(provider, provider.copyProvider(models = selected))
             _state.value = _state.value.copy(
                 fetchedModels = null, fetchedModelsProviderId = null,
-                message = "已更新模型列表：共 ${merged.size} 个" +
-                    if (added > 0) "，新增 $added 个" else "",
+                message = "已更新模型列表：共 ${selected.size} 个",
             )
         }
     }
@@ -572,7 +558,7 @@ fun LlmProviderScreen(
         if (target != null) {
             FetchModelsSelectionSheet(
                 fetched = fetched,
-                existingIds = target.models.mapTo(HashSet()) { it.modelId },
+                existing = target.models,
                 onDismiss = viewModel::dismissFetchSelection,
                 onConfirm = { viewModel.confirmFetchSelection(target, it) },
             )

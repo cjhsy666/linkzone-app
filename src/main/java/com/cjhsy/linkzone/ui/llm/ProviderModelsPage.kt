@@ -1,6 +1,8 @@
 package com.cjhsy.linkzone.ui.llm
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -45,6 +47,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TriStateCheckbox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -54,7 +57,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.cjhsy.linkzone.ai.provider.BuiltInTools
 import com.cjhsy.linkzone.ai.provider.Model
@@ -263,25 +268,37 @@ fun ProviderModelsPage(
 }
 
 /**
- * 拉取结果勾选 Sheet（对齐 RikkaHub）：已在用模型默认勾中，新模型默认不勾，
- * 确认后才写回服务商配置；本地手动添加/远端已下线的模型不在此列、不受影响。
+ * 拉取结果勾选 Sheet：参考 linkzone-admin ModelPickerDialog.vue。
+ * - Tab：全部（远端）/ 已添加 / 已下架（本地有但远端没有，可取消勾选清理）
+ * - 品牌分组（前缀归一：gpt/claude/deepseek/qwen…），可折叠、品牌级三态勾选
+ * - 确认后 selected 即最终模型列表
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FetchModelsSelectionSheet(
     fetched: List<Model>,
-    existingIds: Set<String>,
+    existing: List<Model>,
     onDismiss: () -> Unit,
     onConfirm: (List<Model>) -> Unit,
 ) {
+    val existingById = remember(existing) { existing.associateBy { it.modelId } }
+    val remoteIds = remember(fetched) { fetched.mapTo(HashSet()) { it.modelId } }
+    val deletedIds = remember(existing, remoteIds) { existing.filter { it.modelId !in remoteIds }.map { it.modelId } }
+
+    var tab by remember { mutableStateOf(0) } // 0 全部 / 1 已添加 / 2 已下架
     var query by remember { mutableStateOf("") }
-    var checkedIds by remember {
-        mutableStateOf(fetched.mapNotNull { m -> m.modelId.takeIf { it in existingIds } }.toSet())
+    var checkedIds by remember { mutableStateOf(existing.map { it.modelId }.toSet()) }
+    var expandedBrands by remember { mutableStateOf(setOf<String>()) }
+
+    val tabIds = when (tab) {
+        1 -> existing.map { it.modelId }
+        2 -> deletedIds
+        else -> fetched.map { it.modelId }
     }
-    val keyword = query.trim()
-    val shown = if (keyword.isBlank()) fetched else fetched.filter {
-        it.modelId.contains(keyword, ignoreCase = true) || it.displayName.contains(keyword, ignoreCase = true)
-    }
+    val kw = query.trim().lowercase()
+    val filteredIds = if (kw.isEmpty()) tabIds else tabIds.filter { it.lowercase().contains(kw) }
+    val brands = remember(filteredIds) { buildModelBrands(filteredIds) }
+    val allFilteredChecked = filteredIds.isNotEmpty() && filteredIds.all { it in checkedIds }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -290,25 +307,46 @@ fun FetchModelsSelectionSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .height(600.dp)
+                .imePadding()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 20.dp),
+                .padding(bottom = 16.dp),
         ) {
-            Text(
-                "选择要保留的模型（${checkedIds.size}/${fetched.size}）",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "未勾选的模型不会加入服务商配置",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(10.dp))
+            // 标题 + 统计
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "选择模型",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "已选 ${checkedIds.size}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    " / 共 ${fetched.size}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+
+            // Tab：全部 / 已添加 / 已下架
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                PickerTab("全部模型", fetched.size, tab == 0) { tab = 0; query = "" }
+                PickerTab("已添加", existing.size, tab == 1) { tab = 1; query = "" }
+                PickerTab("已下架", deletedIds.size, tab == 2, danger = true) { tab = 2; query = "" }
+            }
+            Spacer(Modifier.height(8.dp))
+
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("搜索模型 ID 或名称") },
+                placeholder = { Text(if (tab == 2) "搜索已下架模型…" else "搜索模型…") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp),
@@ -318,66 +356,279 @@ fun FetchModelsSelectionSheet(
                 horizontalArrangement = Arrangement.End,
             ) {
                 TextButton(onClick = {
-                    checkedIds = checkedIds + shown.map { it.modelId }
-                }) { Text("全选") }
+                    checkedIds = if (allFilteredChecked) checkedIds - filteredIds.toSet()
+                    else checkedIds + filteredIds
+                }) { Text(if (allFilteredChecked) "全不选" else "全选") }
                 TextButton(onClick = {
-                    checkedIds = checkedIds - shown.map { it.modelId }.toSet()
-                }) { Text("全不选") }
+                    expandedBrands = if (expandedBrands.size == brands.size) emptySet()
+                    else brands.map { it.key }.toSet()
+                }) { Text(if (expandedBrands.size == brands.size) "收起全部" else "展开全部") }
             }
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(360.dp),
-            ) {
-                items(shown, key = { it.modelId }) { model ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable {
-                                checkedIds = if (model.modelId in checkedIds) {
-                                    checkedIds - model.modelId
-                                } else {
-                                    checkedIds + model.modelId
+
+            // 品牌分组树
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                brands.forEach { brand ->
+                    item(key = "brand-${brand.key}") {
+                        val brandChecked = brand.ids.isNotEmpty() && brand.ids.all { it in checkedIds }
+                        val brandPartial = !brandChecked && brand.ids.any { it in checkedIds }
+                        val expanded = brand.key in expandedBrands
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    expandedBrands = if (expanded) expandedBrands - brand.key
+                                    else expandedBrands + brand.key
                                 }
-                            }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(
-                            checked = model.modelId in checkedIds,
-                            onCheckedChange = null,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                model.displayName.ifBlank { model.modelId },
-                                style = MaterialTheme.typography.bodyMedium,
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TriStateCheckbox(
+                                state = when {
+                                    brandChecked -> ToggleableState.On
+                                    brandPartial -> ToggleableState.Indeterminate
+                                    else -> ToggleableState.Off
+                                },
+                                onClick = {
+                                    checkedIds = if (brandChecked) checkedIds - brand.ids.toSet()
+                                    else checkedIds + brand.ids
+                                },
                             )
-                            if (model.displayName.isNotBlank() && model.displayName != model.modelId) {
+                            Box(
+                                modifier = Modifier
+                                    .height(24.dp)
+                                    .width(24.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 Text(
-                                    model.modelId,
+                                    brand.label.first().toString(),
                                     style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(brand.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                            Text(
+                                "${brand.ids.count { it in checkedIds }}/${brand.ids.size}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Icon(
+                                if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (brand.key in expandedBrands) {
+                        items(brand.ids, key = { "m-${brand.key}-$it" }) { id ->
+                            val isDeleted = id !in remoteIds
+                            val isExisting = id in existingById
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        checkedIds = if (id in checkedIds) checkedIds - id else checkedIds + id
+                                    }
+                                    .padding(start = 28.dp, top = 2.dp, bottom = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(checked = id in checkedIds, onCheckedChange = null)
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    id,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isDeleted) MaterialTheme.colorScheme.onSurfaceVariant
+                                    else MaterialTheme.colorScheme.onSurface,
+                                    textDecoration = if (isDeleted) TextDecoration.LineThrough else null,
+                                )
+                                if (isDeleted) {
+                                    SheetTag("已下架", MaterialTheme.colorScheme.error)
+                                } else if (tab == 0 && isExisting) {
+                                    SheetTag("已添加", MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                     }
                 }
+                if (brands.isEmpty()) {
+                    item {
+                        Text(
+                            if (kw.isNotEmpty()) "无匹配结果" else if (tab == 2) "无已下架模型" else "暂无模型",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 24.dp),
+                        )
+                    }
+                }
             }
+
             Spacer(Modifier.height(10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                // 已选预览（前 3 个）
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    checkedIds.take(3).forEach { id ->
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        ) {
+                            Text(
+                                id,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                    if (checkedIds.size > 3) {
+                        Text(
+                            "+${checkedIds.size - 3}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 TextButton(onClick = onDismiss) { Text("取消") }
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    onClick = { onConfirm(fetched.filter { it.modelId in checkedIds }) },
+                    enabled = checkedIds.isNotEmpty(),
+                    onClick = {
+                        // 顺序：远端顺序在前，已下架（保留的）在后；已有模型沿用用户自定义配置
+                        val selected = fetched.filter { it.modelId in checkedIds } +
+                            deletedIds.filter { it in checkedIds }.mapNotNull { existingById[it] }
+                        onConfirm(selected)
+                    },
                 ) { Text("确定（${checkedIds.size}）") }
             }
         }
     }
+}
+
+@Composable
+private fun PickerTab(
+    label: String,
+    count: Int,
+    active: Boolean,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val color = when {
+        active && danger -> MaterialTheme.colorScheme.error
+        active -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp, horizontal = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = color,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+        )
+        Spacer(Modifier.width(4.dp))
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = when {
+                active && danger -> MaterialTheme.colorScheme.errorContainer
+                active -> MaterialTheme.colorScheme.primaryContainer
+                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            },
+        ) {
+            Text(
+                count.toString(),
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = color,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetTag(text: String, color: androidx.compose.ui.graphics.Color) {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = color.copy(alpha = 0.1f),
+    ) {
+        Text(
+            text,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = color,
+        )
+    }
+}
+
+private data class ModelBrand(val key: String, val label: String, val ids: List<String>)
+
+private val MODEL_BRAND_LABELS = mapOf(
+    "gpt" to "OpenAI", "claude" to "Claude", "gemini" to "Gemini",
+    "deepseek" to "DeepSeek", "qwen" to "Qwen", "llama" to "LLaMA",
+    "mistral" to "Mistral", "doubao" to "豆包", "glm" to "GLM",
+    "moonshot" to "Moonshot", "yi" to "Yi", "ernie" to "文心",
+    "hunyuan" to "混元", "spark" to "星火", "baichuan" to "百川",
+    "minimax" to "MiniMax", "step" to "阶跃", "grok" to "Grok",
+    "cohere" to "Cohere", "mimo" to "小米",
+    "embedding" to "Embedding", "rerank" to "Rerank", "moderation" to "Moderation",
+)
+
+/** 从模型 id 首段归一品牌（与 linkzone-admin extractBrand 同表） */
+private fun extractModelBrand(modelId: String): String {
+    val prefix = modelId.split('-', '_', '/', '.').firstOrNull()?.lowercase() ?: return "other"
+    return when (prefix) {
+        "gpt", "o1", "o3", "o4", "chatgpt", "text", "davinci", "babbage", "curie",
+        "whisper", "dall", "tts" -> "gpt"
+        "claude" -> "claude"
+        "gemini" -> "gemini"
+        "deepseek" -> "deepseek"
+        "qwen", "qwq" -> "qwen"
+        "llama" -> "llama"
+        "mistral", "codestral", "mixtral" -> "mistral"
+        "doubao" -> "doubao"
+        "glm", "chatglm" -> "glm"
+        "moonshot" -> "moonshot"
+        "yi" -> "yi"
+        "ernie" -> "ernie"
+        "hunyuan" -> "hunyuan"
+        "spark", "general" -> "spark"
+        "baichuan" -> "baichuan"
+        "minimax", "abab" -> "minimax"
+        "step" -> "step"
+        "grok" -> "grok"
+        "command" -> "cohere"
+        "mimo" -> "mimo"
+        "embed" -> "embedding"
+        "rerank" -> "rerank"
+        "text-moderation" -> "moderation"
+        else -> prefix
+    }
+}
+
+private fun buildModelBrands(ids: List<String>): List<ModelBrand> {
+    val grouped = ids.groupBy(::extractModelBrand)
+    return grouped.entries
+        .sortedByDescending { it.value.size }
+        .map { (key, list) ->
+            ModelBrand(
+                key = key,
+                label = MODEL_BRAND_LABELS[key]
+                    ?: key.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() },
+                ids = list,
+            )
+        }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
