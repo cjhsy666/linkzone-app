@@ -1,6 +1,5 @@
 package com.cjhsy.linkzone.ui.llm
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +67,8 @@ import com.cjhsy.linkzone.ai.provider.ModelType
 import com.cjhsy.linkzone.ai.provider.Modality
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
 import com.cjhsy.linkzone.ai.registry.ModelRegistry
+import com.cjhsy.linkzone.ui.components.AutoAIIcon
+import com.cjhsy.linkzone.ui.components.computeAIIconByName
 
 /** registry 对某个 modelId 的识别结果 */
 data class RecognizedModel(
@@ -394,21 +395,7 @@ fun FetchModelsSelectionSheet(
                                     else checkedIds + brand.ids
                                 },
                             )
-                            Box(
-                                modifier = Modifier
-                                    .height(24.dp)
-                                    .width(24.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    brand.label.first().toString(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
+                            BrandModelIcon(brand)
                             Spacer(Modifier.width(8.dp))
                             Text(brand.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
                             Text(
@@ -438,7 +425,8 @@ fun FetchModelsSelectionSheet(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Checkbox(checked = id in checkedIds, onCheckedChange = null)
-                                Spacer(Modifier.width(4.dp))
+                                AutoAIIcon(name = id, size = 18.dp)
+                                Spacer(Modifier.width(6.dp))
                                 Text(
                                     id,
                                     modifier = Modifier.weight(1f),
@@ -574,6 +562,18 @@ private fun SheetTag(text: String, color: androidx.compose.ui.graphics.Color) {
 
 private data class ModelBrand(val key: String, val label: String, val ids: List<String>)
 
+/** 品牌图标：优先用品牌名匹配，其次用任一模型 id（覆盖"混元"等中文名），都未命中回退品牌名首字母 */
+@Composable
+private fun BrandModelIcon(brand: ModelBrand) {
+    val name = remember(brand) {
+        when {
+            computeAIIconByName(brand.label) != null -> brand.label
+            else -> brand.ids.firstOrNull { computeAIIconByName(it) != null } ?: brand.label
+        }
+    }
+    AutoAIIcon(name = name, size = 24.dp)
+}
+
 private val MODEL_BRAND_LABELS = mapOf(
     "gpt" to "OpenAI", "claude" to "Claude", "gemini" to "Gemini",
     "deepseek" to "DeepSeek", "qwen" to "Qwen", "llama" to "LLaMA",
@@ -658,6 +658,8 @@ private fun ModelManageRow(
             modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            AutoAIIcon(name = model.modelId, size = 38.dp)
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     text = model.displayName.ifBlank { model.modelId },

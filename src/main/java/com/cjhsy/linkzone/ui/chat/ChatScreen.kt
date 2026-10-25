@@ -143,6 +143,7 @@ import coil.compose.AsyncImage
 import com.cjhsy.linkzone.R
 import com.cjhsy.linkzone.data.model.MessageSegment
 import com.cjhsy.linkzone.di.BASE_URL
+import com.cjhsy.linkzone.ui.components.AutoAIIcon
 import com.cjhsy.linkzone.ui.theme.SuccessGreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -2282,12 +2283,7 @@ internal fun ModelPickerDialog(
                                 .padding(horizontal = 10.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.SmartToy,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
+                            AutoAIIcon(name = option.modelId, size = 26.dp)
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(

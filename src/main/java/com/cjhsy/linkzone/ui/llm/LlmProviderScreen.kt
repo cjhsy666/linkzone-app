@@ -3,6 +3,7 @@ package com.cjhsy.linkzone.ui.llm
 import com.cjhsy.linkzone.core.error.ErrorMessages
 import com.cjhsy.linkzone.core.error.toUserMessage
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -570,6 +571,11 @@ fun LlmProviderScreen(
             onDismiss = viewModel::closeAddSheet,
             onSelect = viewModel::addPreset,
         )
+    }
+
+    // 系统返回键逐层后退：模型页 → 服务商编辑页 → 服务商列表，而不是直接退出到 AI 中心
+    BackHandler(enabled = state.editing != null) {
+        if (state.modelsPage) viewModel.closeModelsPage() else viewModel.cancelEdit()
     }
 
     val editing = state.editing
