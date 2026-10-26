@@ -1180,7 +1180,7 @@ internal fun LocalToolSwitchList(
         Triple("时间查询", "查询设备当前日期、时间与时区", LocalToolOption.TimeInfo),
         Triple("剪贴板", "读取或写入剪贴板文本", LocalToolOption.Clipboard),
         Triple("主动追问", "信息不足时暂停生成向你提问（可跳过）", LocalToolOption.AskUser),
-        Triple("日历读写", "查询/创建系统日历日程", LocalToolOption.Calendar),
+        Triple("日历读写", "查询/创建/删除系统日历日程", LocalToolOption.Calendar),
         Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript),
         Triple(
             "手机控制",
@@ -1191,7 +1191,7 @@ internal fun LocalToolSwitchList(
         Triple("定位", "get_location：获取当前 GPS/网络定位", LocalToolOption.Location),
         Triple("通讯录", "按姓名或号码查询手机联系人", LocalToolOption.Contacts),
         Triple("短信与通话记录", "查询近期短信和通话记录（仅读取）", LocalToolOption.SmsCallLog),
-        Triple("闹钟与定时器", "alarm_create / timer_create：调用系统时钟 App 定闹钟、倒计时", LocalToolOption.Reminder),
+        Triple("闹钟与定时器", "alarm_create / timer_create 定闹钟、倒计时；alarm_show 打开时钟 App 管理/删除", LocalToolOption.Reminder),
         Triple("HTTP 请求", "http_request：让模型调用任意 HTTP 接口", LocalToolOption.HttpRequest)
     )
     Column(modifier = modifier) {

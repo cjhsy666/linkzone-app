@@ -18,18 +18,21 @@ import com.cjhsy.linkzone.ai.core.Tool
 import com.cjhsy.linkzone.ai.ui.UIMessagePart
 
 /**
- * 定时工具集：alarm_create（闹钟）+ timer_create（倒计时定时器）。
+ * 定时工具集：alarm_create（闹钟）+ timer_create（倒计时定时器）+ alarm_show（打开时钟 App）。
  *
  * 不自己维护调度，而是调用系统时钟 App（AlarmClock.ACTION_SET_ALARM / ACTION_SET_TIMER）创建
  * 真正的系统闹钟/定时器——由系统负责到点响铃/通知，本应用不持有任何定时状态，
  * 也无法列举或取消它们（归属系统时钟 App）。
+ *
+ * 系统闹钟没有公开的删除 API：用户要求删除/修改时由 alarm_show 打开时钟 App 列表手动操作。
  *
  * 注意：targetSdk 30+ 必须在 Manifest <queries> 声明 SET_ALARM / SET_TIMER，
  * 否则包可见性过滤会解析不到系统时钟 App（曾导致闹钟工具不可用）。
  */
 fun buildReminderTools(context: Context): List<Tool> = listOf(
     buildAlarmCreateTool(context),
-    buildTimerCreateTool(context)
+    buildTimerCreateTool(context),
+    buildAlarmShowTool(context)
 )
 
 private fun buildAlarmCreateTool(context: Context): Tool = Tool(
@@ -40,7 +43,7 @@ private fun buildAlarmCreateTool(context: Context): Tool = Tool(
         - `message` is the alarm label shown by the clock app.
         - `days` is an optional array of weekdays to repeat: 1=Monday ... 7=Sunday (ISO weekday). Omit for a one-time alarm.
         - `skip_ui` defaults to true (create silently); set false to open the clock app's create screen for the user to confirm.
-        Returns success plus the resolved time. This tool cannot list or cancel alarms afterwards — they belong to the system clock app.
+        Returns success plus the resolved time. Alarms belong to the system clock app and cannot be listed or cancelled by this tool afterwards; when the user wants to view/edit/delete them, call alarm_show to open the clock app for the user.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -119,7 +122,7 @@ private fun buildTimerCreateTool(context: Context): Tool = Tool(
         - `duration_seconds` (or `minutes` for convenience) defines the countdown length.
         - `message` is the timer label shown by the clock app.
         - `skip_ui` defaults to true (create silently); set false to open the clock app's timer screen for the user to confirm.
-        Returns success plus the resolved duration. The timer belongs to the system clock app and cannot be listed or cancelled afterwards.
+        Returns success plus the resolved duration. Timers belong to the system clock app and cannot be listed or cancelled by this tool afterwards; when the user wants to manage them, call alarm_show to open the clock app for the user.
         For alarms at a specific time of day (e.g. 'wake me at 7:30'), use alarm_create instead.
     """.trimIndent().replace("\n", " "),
     parameters = {
@@ -176,6 +179,37 @@ private fun buildTimerCreateTool(context: Context): Tool = Tool(
     }
 )
 
+private fun buildAlarmShowTool(context: Context): Tool = Tool(
+    name = "alarm_show",
+    description = """
+        Open the system clock app's alarm list so the user can view, edit, or delete alarms and timers.
+        The system provides no API to list or delete alarms from another app — whenever the user asks to
+        check, change, or cancel an existing alarm/timer, call this tool and tell the user to finish the
+        operation in the clock app. Do NOT call this for creating new alarms (use alarm_create / timer_create).
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject { }
+        )
+    },
+    execute = {
+        val intent = Intent(AlarmClock.ACTION_SHOW_ALARMS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val (ok, err) = startClockIntent(context, intent, "show")
+        if (!ok) return@Tool listOf(UIMessagePart.Text(buildJsonObject {
+            put("success", false)
+            put("error", "NO_CLOCK_APP")
+            put("message", err)
+        }.toString()))
+
+        listOf(UIMessagePart.Text(buildJsonObject {
+            put("success", true)
+            put("action", "show_alarms")
+            put("message", "已打开系统时钟 App 的闹钟列表，用户可在其中查看、修改或删除闹钟/定时器。")
+        }.toString()))
+    }
+)
+
 /** 统一启动时钟 Intent：失败返回 (false, 用户可读错误)，成功返回 (true, null) */
 private fun startClockIntent(context: Context, intent: Intent, kind: String): Pair<Boolean, String?> =
     runCatching {
@@ -183,7 +217,12 @@ private fun startClockIntent(context: Context, intent: Intent, kind: String): Pa
     }.fold(
         onSuccess = { true to null },
         onFailure = {
-            false to "无法启动系统时钟 App 创建${if (kind == "alarm") "闹钟" else "定时器"}，请检查设备是否安装时钟应用（${it.message ?: "unknown"}）"
+            val what = when (kind) {
+                "alarm" -> "创建闹钟"
+                "timer" -> "创建定时器"
+                else -> "打开闹钟列表"
+            }
+            false to "无法启动系统时钟 App（$what）：${it.message ?: "unknown"}，请检查设备是否安装时钟应用"
         }
     )
 

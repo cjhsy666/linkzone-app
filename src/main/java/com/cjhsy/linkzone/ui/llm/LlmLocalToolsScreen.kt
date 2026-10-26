@@ -118,7 +118,7 @@ private val LOCAL_TOOLS_SYSTEM = listOf(
     ToolInfo(LocalToolOption.TimeInfo, "时间查询", "查询设备当前日期、时间与时区"),
     ToolInfo(LocalToolOption.Clipboard, "剪贴板读写", "读取或写入剪贴板文本"),
     ToolInfo(LocalToolOption.AskUser, "主动追问", "信息不足时暂停生成向你提问（可跳过）"),
-    ToolInfo(LocalToolOption.Calendar, "日历读写", "calendar_query / calendar_create：查询/创建系统日历日程", listOf("CALENDAR")),
+    ToolInfo(LocalToolOption.Calendar, "日历读写", "calendar_query / calendar_create / calendar_delete：查询/创建/删除系统日历日程", listOf("CALENDAR")),
     ToolInfo(LocalToolOption.Javascript, "JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算"),
     ToolInfo(LocalToolOption.SystemControl, "手机控制", "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、手电筒"),
     ToolInfo(LocalToolOption.DeviceInfo, "设备信息", "device_info：查询设备型号、系统、电量、网络、屏幕、存储"),
@@ -128,6 +128,6 @@ private val LOCAL_TOOLS_SYSTEM = listOf(
 )
 
 private val LOCAL_TOOLS_EXTENDED = listOf(
-    ToolInfo(LocalToolOption.Reminder, "闹钟与定时器", "alarm_create / timer_create：调用系统时钟 App 定闹钟、定倒计时（由系统响铃）"),
+    ToolInfo(LocalToolOption.Reminder, "闹钟与定时器", "alarm_create / timer_create / alarm_show：定闹钟、倒计时；系统闹钟的删除需打开时钟 App 操作"),
     ToolInfo(LocalToolOption.HttpRequest, "HTTP 请求", "http_request：让模型调用任意 HTTP 接口")
 )
