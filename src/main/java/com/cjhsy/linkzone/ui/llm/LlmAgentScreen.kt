@@ -64,8 +64,6 @@ import com.cjhsy.linkzone.ai.character.CharacterCardParser
 import com.cjhsy.linkzone.ai.core.ReasoningLevel
 import com.cjhsy.linkzone.ai.provider.Model
 import com.cjhsy.linkzone.ai.provider.ProviderSetting
-import com.cjhsy.linkzone.data.ai.LinkZoneAdminConfig
-import com.cjhsy.linkzone.data.ai.LocalToolOption
 import com.cjhsy.linkzone.data.ai.mcp.McpServerConfig
 import com.cjhsy.linkzone.data.model.LlmAgent
 import com.cjhsy.linkzone.data.model.LlmLorebook
@@ -772,36 +770,6 @@ private fun AgentEditor(
                         }
                     }
                 )
-                // 服务端联动：全局框架地址 + admin token（对应服务端 system.server.admin_token）
-                if (agent.localTools.contains(LocalToolOption.LinkZone)) {
-                    val appContext = LocalContext.current.applicationContext
-                    var serverUrl by remember {
-                        mutableStateOf(LinkZoneAdminConfig.serverUrl(appContext))
-                    }
-                    var adminToken by remember {
-                        mutableStateOf(LinkZoneAdminConfig.adminToken(appContext))
-                    }
-                    OutlinedTextField(
-                        value = serverUrl,
-                        onValueChange = {
-                            serverUrl = it
-                            LinkZoneAdminConfig.save(appContext, it, adminToken)
-                        },
-                        label = { Text("框架地址") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = adminToken,
-                        onValueChange = {
-                            adminToken = it
-                            LinkZoneAdminConfig.save(appContext, serverUrl, it)
-                        },
-                        label = { Text("admin token（服务端 system.server.admin_token）") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
                 SwitchRow(
                     title = "联网搜索",
                     desc = "search_web / scrape_web",
