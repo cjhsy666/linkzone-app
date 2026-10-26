@@ -93,7 +93,7 @@ internal fun buildPhoneControlTool(context: Context): Tool = Tool(
                 })
                 put("settings_section", buildJsonObject {
                     put("type", "string")
-                    put("description", "Section for open_settings: general/wifi/bluetooth/location/apps/display/sound/storage/notification. Defaults to general.")
+                    put("description", "Section for open_settings: general/wifi/bluetooth/location/apps/display/sound/storage/usage/notification. 'usage' opens the Usage Access permission page (needed by the usage_stats tool). Defaults to general.")
                 })
                 put("text", buildJsonObject {
                     put("type", "string")
@@ -241,6 +241,7 @@ private fun settingsIntent(section: String): Intent = when (section.lowercase())
     "display" -> Intent(Settings.ACTION_DISPLAY_SETTINGS)
     "sound" -> Intent(Settings.ACTION_SOUND_SETTINGS)
     "storage" -> Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)
+    "usage" -> Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
     "notification" -> Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
         .putExtra(Settings.EXTRA_APP_PACKAGE, "com.cjhsy.linkzone")
     else -> Intent(Settings.ACTION_SETTINGS)

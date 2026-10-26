@@ -67,6 +67,11 @@ sealed class LocalToolOption {
     @SerialName("location")
     object Location : LocalToolOption()
 
+    /** 应用使用统计 usage_stats（需「使用情况访问」特殊权限，系统设置页手动授权） */
+    @Serializable
+    @SerialName("usage_stats")
+    object UsageStats : LocalToolOption()
+
     /** 通讯录读取 contacts_query（需 READ_CONTACTS 运行时权限） */
     @Serializable
     @SerialName("contacts")

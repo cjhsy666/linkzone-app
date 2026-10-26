@@ -1176,6 +1176,7 @@ internal fun LocalToolSwitchList(
     val permLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { }
+    val context = androidx.compose.ui.platform.LocalContext.current
     val tools = listOf(
         Triple("时间查询", "查询设备当前日期、时间与时区", LocalToolOption.TimeInfo),
         Triple("剪贴板", "读取或写入剪贴板文本", LocalToolOption.Clipboard),
@@ -1190,6 +1191,7 @@ internal fun LocalToolSwitchList(
             LocalToolOption.SystemControl
         ),
         Triple("设备信息", "device_info：查询设备型号、系统、电量、网络、屏幕、存储", LocalToolOption.DeviceInfo),
+        Triple("应用使用统计", "usage_stats：今天/本周屏幕时长与各 App 占比（需系统授权）", LocalToolOption.UsageStats),
         Triple("定位", "get_location：获取当前 GPS/网络定位", LocalToolOption.Location),
         Triple("通讯录", "按姓名或号码查询手机联系人", LocalToolOption.Contacts),
         Triple("短信与通话记录", "查询近期短信和通话记录（仅读取）", LocalToolOption.SmsCallLog),
@@ -1207,6 +1209,17 @@ internal fun LocalToolSwitchList(
                     onToggle(option, !enabled)
                     // 开启时顺带申请该工具所需的运行时权限（拒绝不影响开关状态，调用时会再次提示）
                     if (!enabled) {
+                        // 「使用情况访问」为特殊权限：只能跳系统设置页让用户手动授权
+                        if (option is LocalToolOption.UsageStats &&
+                            !com.cjhsy.linkzone.data.ai.hasUsageStatsPermission(context)
+                        ) {
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                        }
                         val perms = when (option) {
                             is LocalToolOption.Calendar -> arrayOf(
                                 android.Manifest.permission.READ_CALENDAR,

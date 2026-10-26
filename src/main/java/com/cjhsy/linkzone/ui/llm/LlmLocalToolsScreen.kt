@@ -124,6 +124,7 @@ private val LOCAL_TOOLS_SYSTEM = listOf(
     ToolInfo(LocalToolOption.Javascript, "JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算"),
     ToolInfo(LocalToolOption.SystemControl, "手机控制", "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、手电筒"),
     ToolInfo(LocalToolOption.DeviceInfo, "设备信息", "device_info：查询设备型号、系统、电量、网络、屏幕、存储"),
+    ToolInfo(LocalToolOption.UsageStats, "应用使用统计", "usage_stats：今天/本周屏幕时长与各 App 使用占比（需在系统设置授权）", listOf("使用情况访问")),
     ToolInfo(LocalToolOption.Location, "定位", "get_location：获取当前 GPS/网络定位", listOf("定位")),
     ToolInfo(LocalToolOption.Contacts, "通讯录", "contacts_query：按姓名或号码查询手机联系人", listOf("通讯录")),
     ToolInfo(LocalToolOption.SmsCallLog, "短信与通话记录", "sms_query / call_log_query：查询近期短信和通话记录", listOf("SMS", "通话记录"))
