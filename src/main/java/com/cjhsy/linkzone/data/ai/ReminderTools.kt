@@ -191,15 +191,22 @@ internal class ReminderStore(context: Context) {
     }
 }
 
-/** AlarmManager 调度（非精确闹钟，休眠时允许唤醒） */
+/** AlarmManager 调度（精确闹钟；USE_EXACT_ALARM 权限使系统不延迟到点触发） */
 internal object ReminderScheduler {
 
     fun schedule(context: Context, reminder: Reminder) {
-        alarmManager(context).setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            reminder.triggerAt,
-            pendingIntent(context, reminder)
-        )
+        val am = alarmManager(context)
+        val pi = pendingIntent(context, reminder)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            if (am.canScheduleExactAlarms()) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAt, pi)
+            } else {
+                // 没精确闹钟权限时降级到非精确，但仍允许 Doze 期间唤醒
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAt, pi)
+            }
+        } else {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAt, pi)
+        }
     }
 
     fun cancel(context: Context, id: Int) {

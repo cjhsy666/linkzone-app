@@ -52,11 +52,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cjhsy.linkzone.ai.core.ReasoningLevel
 import com.cjhsy.linkzone.ai.provider.ModelRef
+import com.cjhsy.linkzone.data.ai.LinkZoneAdminConfig
 import com.cjhsy.linkzone.data.ai.LocalToolOption
 import com.cjhsy.linkzone.data.ai.mcp.McpServerConfig
 import com.cjhsy.linkzone.data.ai.mcp.McpStatus
@@ -1230,6 +1232,36 @@ internal fun LocalToolSwitchList(
                         if (perms.isNotEmpty()) permLauncher.launch(perms)
                     }
                 }
+            )
+        }
+        // LinkZone 开关开启时追加配置：框架地址 + admin token
+        if (LocalToolOption.LinkZone in selected) {
+            val appContext = LocalContext.current.applicationContext
+            var serverUrl by remember { mutableStateOf(LinkZoneAdminConfig.serverUrl(appContext)) }
+            var adminToken by remember { mutableStateOf(LinkZoneAdminConfig.adminToken(appContext)) }
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = {
+                    serverUrl = it
+                    LinkZoneAdminConfig.save(appContext, it, adminToken)
+                },
+                label = { Text("框架地址") },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 4.dp)
+            )
+            OutlinedTextField(
+                value = adminToken,
+                onValueChange = {
+                    adminToken = it
+                    LinkZoneAdminConfig.save(appContext, serverUrl, it)
+                },
+                label = { Text("admin token（服务端 system.server.admin_token）") },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 4.dp)
             )
         }
     }
