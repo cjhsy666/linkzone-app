@@ -54,6 +54,8 @@ fun createLocalTools(
         add(buildCalendarCreateTool(context))
     }
     if (options.contains(LocalToolOption.SystemControl)) add(buildPhoneControlTool(context))
+    if (options.contains(LocalToolOption.DeviceInfo)) add(buildDeviceInfoTool(context))
+    if (options.contains(LocalToolOption.Location)) add(buildLocationTool(context))
     if (options.contains(LocalToolOption.Contacts)) add(buildContactsQueryTool(context))
     if (options.contains(LocalToolOption.SmsCallLog)) {
         add(buildSmsQueryTool(context))

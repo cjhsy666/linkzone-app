@@ -42,10 +42,20 @@ sealed class LocalToolOption {
     @SerialName("javascript")
     object Javascript : LocalToolOption()
 
-    /** 手机控制 phone_control（打开 App / 链接 / 拨号盘 / 设置 / 系统分享 / 设备信息 / 定位） */
+    /** 手机控制 phone_control（打开 App / 链接 / 拨号盘 / 设置 / 系统分享 / 手电筒） */
     @Serializable
     @SerialName("system_control")
     object SystemControl : LocalToolOption()
+
+    /** 设备信息 device_info（型号 / 系统 / 电量 / 网络 / 屏幕 / 存储） */
+    @Serializable
+    @SerialName("device_info")
+    object DeviceInfo : LocalToolOption()
+
+    /** 定位 get_location（需定位运行时权限） */
+    @Serializable
+    @SerialName("location")
+    object Location : LocalToolOption()
 
     /** 通讯录读取 contacts_query（需 READ_CONTACTS 运行时权限） */
     @Serializable
@@ -57,7 +67,7 @@ sealed class LocalToolOption {
     @SerialName("sms_call_log")
     object SmsCallLog : LocalToolOption()
 
-    /** 定时提醒 alarm_create：调用系统闹钟 App 定闹钟 */
+    /** 闹钟与定时器 alarm_create / timer_create：调用系统时钟 App 定闹钟、定倒计时 */
     @Serializable
     @SerialName("reminder")
     object Reminder : LocalToolOption()

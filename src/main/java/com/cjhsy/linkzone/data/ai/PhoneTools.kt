@@ -34,7 +34,9 @@ import java.time.ZoneId
 
 /**
  * 手机操作类本地工具：
- * - phone_control：打开 App / 网页 / 拨号盘 / 系统设置、系统分享、设备信息、定位
+ * - phone_control：打开 App / 网页 / 拨号盘 / 系统设置、系统分享、手电筒
+ * - device_info：设备信息（型号/系统/电量/网络/屏幕/存储）
+ * - get_location：定位（ACCESS_FINE/COARSE_LOCATION）
  * - contacts_query：通讯录检索（READ_CONTACTS）
  * - sms_query：短信检索（READ_SMS）
  * - call_log_query：通话记录检索（READ_CALL_LOG）
@@ -63,8 +65,7 @@ internal fun buildPhoneControlTool(context: Context): Tool = Tool(
         - dial: open the dialer with a phone number pre-filled (the call is NOT placed automatically).
         - open_settings: open a system settings screen (section: general, wifi, bluetooth, location, apps, display, sound, storage, notification).
         - share: bring up the system share sheet with plain text.
-        - device_info: read device model, OS, battery, network, screen and storage info.
-        - get_location: get the current GPS/network location (requires location permission).
+        - flashlight: turn the torch/flashlight on or off.
         Only perform these actions when the user explicitly requests them.
     """.trimIndent().replace("\n", " "),
     parameters = {
@@ -74,7 +75,7 @@ internal fun buildPhoneControlTool(context: Context): Tool = Tool(
                     put("type", "string")
                     put("enum", buildJsonArray {
                         add("open_app"); add("open_url"); add("dial"); add("open_settings")
-                        add("share"); add("device_info"); add("get_location")
+                        add("share"); add("flashlight")
                     })
                     put("description", "The phone action to perform.")
                 })
@@ -97,6 +98,10 @@ internal fun buildPhoneControlTool(context: Context): Tool = Tool(
                 put("text", buildJsonObject {
                     put("type", "string")
                     put("description", "Text content for share.")
+                })
+                put("on", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "For flashlight: true = turn on (default), false = turn off.")
                 })
             },
             required = listOf("action")
@@ -188,26 +193,37 @@ internal fun buildPhoneControlTool(context: Context): Tool = Tool(
                 }.toString()))
             }
 
-            "device_info" -> listOf(UIMessagePart.Text(collectDeviceInfo(appContext).toString()))
-
-            "get_location" -> {
-                if (!hasPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) &&
-                    !hasPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION)
-                ) {
-                    noPermissionResult(
-                        "ACCESS_FINE_LOCATION",
-                        "未授予定位权限，请在系统设置中允许 LinkZone 使用位置信息后重试。"
-                    )
+            "flashlight" -> {
+                val on = params["on"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
+                val cm = appContext.getSystemService(Context.CAMERA_SERVICE) as? android.hardware.camera2.CameraManager
+                val cameraId = cm?.cameraIdList?.firstOrNull {
+                    cm.getCameraCharacteristics(it)
+                        .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                }
+                if (cm == null || cameraId == null) {
+                    listOf(UIMessagePart.Text(buildJsonObject {
+                        put("success", false)
+                        put("error", "NO_FLASH")
+                        put("message", "设备没有可用的闪光灯，无法${if (on) "打开" else "关闭"}手电筒。")
+                    }.toString()))
                 } else {
-                    val loc = currentLocation(appContext)
-                    if (loc == null) {
-                        listOf(UIMessagePart.Text(buildJsonObject {
-                            put("error", "LOCATION_UNAVAILABLE")
-                            put("message", "暂时无法获取定位，请确认已开启定位服务（GPS/网络定位）并在室外重试。")
-                        }.toString()))
-                    } else {
-                        listOf(UIMessagePart.Text(locationJson(loc).toString()))
-                    }
+                    // setTorchMode 无需相机运行时权限；进程被杀后系统可能自动关闭手电筒
+                    runCatching { cm.setTorchMode(cameraId, on) }.fold(
+                        onSuccess = {
+                            listOf(UIMessagePart.Text(buildJsonObject {
+                                put("success", true)
+                                put("action", "flashlight")
+                                put("on", on)
+                            }.toString()))
+                        },
+                        onFailure = { e ->
+                            listOf(UIMessagePart.Text(buildJsonObject {
+                                put("success", false)
+                                put("error", "TORCH_FAILED")
+                                put("message", "手电筒操作失败：${e.toUserMessage("")}")
+                            }.toString()))
+                        }
+                    )
                 }
             }
 
@@ -317,6 +333,58 @@ private fun locationJson(loc: Location) = buildJsonObject {
     put("provider", loc.provider ?: "")
     put("timestamp", Instant.ofEpochMilli(loc.time).atZone(ZoneId.systemDefault()).toString())
 }
+
+// ===================== device_info =====================
+
+internal fun buildDeviceInfoTool(context: Context): Tool = Tool(
+    name = "device_info",
+    description = "Read the device's hardware and system info: brand, model, Android version, battery level and charging state, network type and online state, screen size and density, storage capacity, locale and timezone.",
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject { }
+        )
+    },
+    execute = {
+        listOf(UIMessagePart.Text(collectDeviceInfo(context.applicationContext).toString()))
+    }
+)
+
+// ===================== get_location =====================
+
+internal fun buildLocationTool(context: Context): Tool = Tool(
+    name = "get_location",
+    description = """
+        Get the device's current location (GPS/network based): latitude, longitude, accuracy,
+        optional altitude/speed/bearing, provider and timestamp.
+        Requires location permission; if it is not granted, an error is returned.
+    """.trimIndent().replace("\n", " "),
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject { }
+        )
+    },
+    execute = {
+        val appContext = context.applicationContext
+        if (!hasPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) &&
+            !hasPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION)
+        ) {
+            noPermissionResult(
+                "ACCESS_FINE_LOCATION",
+                "未授予定位权限，请在开启「定位」工具时允许，或到系统设置中授权。"
+            )
+        } else {
+            val loc = currentLocation(appContext)
+            if (loc == null) {
+                listOf(UIMessagePart.Text(buildJsonObject {
+                    put("error", "LOCATION_UNAVAILABLE")
+                    put("message", "暂时无法获取定位，请确认已开启定位服务（GPS/网络定位）并在室外重试。")
+                }.toString()))
+            } else {
+                listOf(UIMessagePart.Text(locationJson(loc).toString()))
+            }
+        }
+    }
+)
 
 // ===================== contacts_query =====================
 

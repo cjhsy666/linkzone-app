@@ -1184,12 +1184,14 @@ internal fun LocalToolSwitchList(
         Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript),
         Triple(
             "手机控制",
-            "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、查设备信息与定位",
+            "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、手电筒",
             LocalToolOption.SystemControl
         ),
+        Triple("设备信息", "device_info：查询设备型号、系统、电量、网络、屏幕、存储", LocalToolOption.DeviceInfo),
+        Triple("定位", "get_location：获取当前 GPS/网络定位", LocalToolOption.Location),
         Triple("通讯录", "按姓名或号码查询手机联系人", LocalToolOption.Contacts),
         Triple("短信与通话记录", "查询近期短信和通话记录（仅读取）", LocalToolOption.SmsCallLog),
-        Triple("定时提醒", "alarm_create：调用系统闹钟 App 定闹钟", LocalToolOption.Reminder),
+        Triple("闹钟与定时器", "alarm_create / timer_create：调用系统时钟 App 定闹钟、倒计时", LocalToolOption.Reminder),
         Triple("HTTP 请求", "http_request：让模型调用任意 HTTP 接口", LocalToolOption.HttpRequest)
     )
     Column(modifier = modifier) {
@@ -1208,7 +1210,7 @@ internal fun LocalToolSwitchList(
                                 android.Manifest.permission.READ_CALENDAR,
                                 android.Manifest.permission.WRITE_CALENDAR
                             )
-                            is LocalToolOption.SystemControl -> arrayOf(
+                            is LocalToolOption.Location -> arrayOf(
                                 android.Manifest.permission.ACCESS_COARSE_LOCATION,
                                 android.Manifest.permission.ACCESS_FINE_LOCATION
                             )

@@ -34,6 +34,14 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
+        <!-- 定闹钟/定时器：targetSdk 30+ 必须声明才能解析系统时钟 App，
+             否则 resolveActivity 返回 null → alarm_create / timer_create 报「设备没有可用的闹钟 App」 -->
+        <intent>
+            <action android:name="android.intent.action.SET_ALARM" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_TIMER" />
+        </intent>
     </queries>
 
     <application

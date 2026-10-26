@@ -62,7 +62,7 @@ fun LlmLocalToolsScreen(onBack: () -> Unit) {
         item { Text("系统工具", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
         items(LOCAL_TOOLS_SYSTEM.size) { i -> ToolRow(LOCAL_TOOLS_SYSTEM[i]) }
 
-        item { Text("扩展工具", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+        item { Text("定时与扩展", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
         items(LOCAL_TOOLS_EXTENDED.size) { i -> ToolRow(LOCAL_TOOLS_EXTENDED[i]) }
     }
 }
@@ -120,12 +120,14 @@ private val LOCAL_TOOLS_SYSTEM = listOf(
     ToolInfo(LocalToolOption.AskUser, "主动追问", "信息不足时暂停生成向你提问（可跳过）"),
     ToolInfo(LocalToolOption.Calendar, "日历读写", "calendar_query / calendar_create：查询/创建系统日历日程", listOf("CALENDAR")),
     ToolInfo(LocalToolOption.Javascript, "JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算"),
-    ToolInfo(LocalToolOption.SystemControl, "手机控制", "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、查设备信息与定位", listOf("定位")),
+    ToolInfo(LocalToolOption.SystemControl, "手机控制", "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、手电筒"),
+    ToolInfo(LocalToolOption.DeviceInfo, "设备信息", "device_info：查询设备型号、系统、电量、网络、屏幕、存储"),
+    ToolInfo(LocalToolOption.Location, "定位", "get_location：获取当前 GPS/网络定位", listOf("定位")),
     ToolInfo(LocalToolOption.Contacts, "通讯录", "contacts_query：按姓名或号码查询手机联系人", listOf("通讯录")),
     ToolInfo(LocalToolOption.SmsCallLog, "短信与通话记录", "sms_query / call_log_query：查询近期短信和通话记录", listOf("SMS", "通话记录"))
 )
 
 private val LOCAL_TOOLS_EXTENDED = listOf(
-    ToolInfo(LocalToolOption.Reminder, "定时闹钟", "alarm_create：调用系统闹钟 App 定闹钟（由系统响铃）"),
+    ToolInfo(LocalToolOption.Reminder, "闹钟与定时器", "alarm_create / timer_create：调用系统时钟 App 定闹钟、定倒计时（由系统响铃）"),
     ToolInfo(LocalToolOption.HttpRequest, "HTTP 请求", "http_request：让模型调用任意 HTTP 接口")
 )
