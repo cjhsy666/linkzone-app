@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +59,8 @@ fun EnginePickerSheet(
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        // 跳过半展开锚点：内容较高时默认状态会走 partial→expand 两段动画，表现为打开时卡一下
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         // 关闭 sheet 拖拽手势，避免内层列表 fling 过界与 sheet 拖拽互抢导致跳动；
         // 点空白/返回键仍可关闭
         sheetGesturesEnabled = false

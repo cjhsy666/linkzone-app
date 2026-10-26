@@ -116,9 +116,14 @@ fun MainScreen(
                         chatViewModel.clearMainConversation()
                     },
                     onNewLocalConversation = {
-                        closeDrawer()
-                        pickerForNew = true
-                        showEnginePicker = true
+                        // 串行化动画：drawerState.close() 挂起直到抽屉收起动画结束，
+                        // 再弹引擎选择器。否则抽屉滑出 + sheet 滑入两个全屏动画同帧抢渲染，
+                        // 压在消息列表上会明显掉帧
+                        scope.launch {
+                            drawerState.close()
+                            pickerForNew = true
+                            showEnginePicker = true
+                        }
                     },
                     onNavigate = { route ->
                         closeDrawer()
