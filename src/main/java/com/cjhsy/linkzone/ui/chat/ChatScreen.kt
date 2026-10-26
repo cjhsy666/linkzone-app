@@ -2,6 +2,7 @@ package com.cjhsy.linkzone.ui.chat
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -391,6 +392,21 @@ fun ChatScreen(
                         prompt = prompt,
                         onSubmit = viewModel::submitAskUser,
                         onSkip = viewModel::skipAskUser
+                    )
+                }
+            }
+
+            // ask_user_for_photo 选图卡：模型要图时挂起生成，弹系统 Photo Picker 后回传
+            AnimatedVisibility(
+                visible = state.askPhotoReason != null,
+                enter = expandVertically(tween(200)) + fadeIn(tween(200)),
+                exit = shrinkVertically(tween(200)) + fadeOut(tween(200))
+            ) {
+                state.askPhotoReason?.let { reason ->
+                    AskPhotoCard(
+                        reason = reason,
+                        onPicked = viewModel::submitAskPhoto,
+                        onCancel = viewModel::cancelAskPhoto
                     )
                 }
             }
@@ -1209,6 +1225,83 @@ private fun AskUserAnswerCard(
                     .height(40.dp)
             ) {
                 Text("提交回答", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/**
+ * ask_user_for_photo 选图卡（HITL）：
+ * 模型调用 ask_user_for_photo 后生成挂起，此卡浮在输入栏上方。
+ * 点击「去相册选图」启动系统 Photo Picker（无需任何权限，系统授权临时只读），
+ * 选完把图拷进缓存以 file:// 回传工具；点「不提供」则取消。
+ */
+@Composable
+private fun AskPhotoCard(
+    reason: String,
+    onPicked: (Uri) -> Unit,
+    onCancel: () -> Unit
+) {
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onPicked(uri) else onCancel()
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(12.dp),
+        shadowElevation = 2.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.AddPhotoAlternate,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "智能体需要一张图片",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onCancel) {
+                    Text("不提供", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            Text(
+                text = reason,
+                style = MaterialTheme.typography.bodyMedium
+            )
+
+            Button(
+                onClick = {
+                    photoPickerLauncher.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly
+                        )
+                    )
+                },
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp)
+            ) {
+                Text("去相册选图", style = MaterialTheme.typography.labelLarge)
             }
         }
     }

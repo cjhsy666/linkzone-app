@@ -1180,6 +1180,8 @@ internal fun LocalToolSwitchList(
         Triple("时间查询", "查询设备当前日期、时间与时区", LocalToolOption.TimeInfo),
         Triple("剪贴板", "读取或写入剪贴板文本", LocalToolOption.Clipboard),
         Triple("主动追问", "信息不足时暂停生成向你提问（可跳过）", LocalToolOption.AskUser),
+        Triple("请求选图", "ask_user_for_photo：模型要图时弹系统相册让你选", LocalToolOption.AskUserPhoto),
+        Triple("相册搜索", "photo_query：静默按时间/相册/关键词搜图（需图片权限）", LocalToolOption.PhotoSearch),
         Triple("日历读写", "查询/创建/删除系统日历日程", LocalToolOption.Calendar),
         Triple("JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", LocalToolOption.Javascript),
         Triple(
@@ -1215,6 +1217,11 @@ internal fun LocalToolSwitchList(
                                 android.Manifest.permission.ACCESS_FINE_LOCATION
                             )
                             is LocalToolOption.Contacts -> arrayOf(android.Manifest.permission.READ_CONTACTS)
+                            is LocalToolOption.PhotoSearch ->
+                                if (android.os.Build.VERSION.SDK_INT >= 33)
+                                    arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES)
+                                else
+                                    arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
                             is LocalToolOption.SmsCallLog -> arrayOf(
                                 android.Manifest.permission.READ_SMS,
                                 android.Manifest.permission.READ_CALL_LOG

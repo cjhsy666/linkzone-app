@@ -146,6 +146,8 @@ data class ChatUiState(
     val generating: Boolean = false,
     /** ask_user 追问挂起中（非空时聊天页显示作答卡，提交后生成继续） */
     val askUser: AskUserPrompt? = null,
+    /** ask_user_for_photo 选图挂起中（非空时聊天页显示选图卡，reason 为给用户的说明） */
+    val askPhotoReason: String? = null,
     /** AI 生成的回复建议（首答后生成，点击直接发送） */
     val aiSuggestions: List<String> = emptyList(),
     /** 当前会话绑定的本地智能体（非本地会话为 null）。本地会话中可能是会话级覆盖快照 */
@@ -373,6 +375,70 @@ class ChatViewModel(
         pendingAskUser?.complete(buildJsonObject {
             put("_skipped", "The user skipped these questions. Continue with reasonable assumptions.")
         })
+    }
+
+    /** ask_user_for_photo 挂起中的应答通道；工具 execute 内 await，选完图 complete 继续 */
+    private var pendingAskPhoto: CompletableDeferred<JsonElement>? = null
+
+    /**
+     * ask_user_for_photo 桥：置入 UI 状态并挂起，等用户在系统 Photo Picker 选图/跳过。
+     * 用户停止生成时协程被取消，await 抛 CancellationException 随工具链路向上传播。
+     */
+    private val askPhotoBridge = com.cjhsy.linkzone.data.ai.AskPhotoBridge { reason ->
+        val deferred = CompletableDeferred<JsonElement>()
+        pendingAskPhoto = deferred
+        _state.value = _state.value.copy(askPhotoReason = reason)
+        try {
+            deferred.await()
+        } finally {
+            pendingAskPhoto = null
+            _state.value = _state.value.copy(askPhotoReason = null)
+        }
+    }
+
+    /**
+     * 用户在 Photo Picker 选完图：拷贝到缓存后以 file:// 回传工具。
+     * 在 IO 线程拷贝，避免大图卡主线程。
+     */
+    fun submitAskPhoto(uri: android.net.Uri) {
+        val deferred = pendingAskPhoto ?: return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val payload = runCatching { copyPickedPhotoToCache(uri) }
+                .map { file ->
+                    buildJsonObject {
+                        put("url", "file://${file.absolutePath}")
+                        put("display_name", file.name)
+                    }
+                }
+                .getOrElse {
+                    buildJsonObject { put("cancelled", true) }
+                }
+            _state.value = _state.value.copy(askPhotoReason = null)
+            pendingAskPhoto = null
+            deferred.complete(payload)
+        }
+    }
+
+    /** 用户跳过选图 */
+    fun cancelAskPhoto() {
+        pendingAskPhoto?.complete(buildJsonObject { put("cancelled", true) })
+    }
+
+    /** Photo Picker 的 content:// 拷进应用缓存，返回真实文件（vision/OCR 链路统一走 file://） */
+    private fun copyPickedPhotoToCache(uri: android.net.Uri): java.io.File {
+        val resolver = appContext.contentResolver
+        val name = runCatching {
+            resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull()
+        val ext = (name?.substringAfterLast('.', "") ?: resolver.getType(uri)?.substringAfter("image/", ""))
+            .takeIf { it.length in 2..5 } ?: "jpg"
+        val dir = java.io.File(appContext.cacheDir, "photo_asks").apply { mkdirs() }
+        val target = java.io.File(dir, "pick_${System.currentTimeMillis()}.$ext")
+        resolver.openInputStream(uri)?.use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        } ?: error("Cannot open picked photo: $uri")
+        return target
     }
 
     /** 上传中被用户删除的媒体消息 clientId（不含 local- 前缀），上传完成后放弃发送 */
@@ -1600,7 +1666,7 @@ class ChatViewModel(
             addAll(createSearchTools(searchOptions))
             addAll(createSkillTools(agent.enabledSkills, llmRepository.getSkills()))
             // 本地工具：时间感知/剪贴板/追问/日历/TTS，按智能体开关启用
-            addAll(createLocalTools(appContext, agent.localTools, askUserBridge))
+            addAll(createLocalTools(appContext, agent.localTools, askUserBridge, askPhotoBridge))
             // 会话查询工具：让模型按需检索历史会话（仅本地会话可见）
             if (agent.enableConversationTools) {
                 addAll(createConversationTools(

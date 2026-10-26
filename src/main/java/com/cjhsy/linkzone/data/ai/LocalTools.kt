@@ -44,10 +44,13 @@ fun createLocalTools(
     context: Context,
     options: List<LocalToolOption>,
     askUser: AskUserBridge,
+    askPhoto: AskPhotoBridge,
 ): List<Tool> = buildList {
     if (options.contains(LocalToolOption.TimeInfo)) add(buildTimeInfoTool())
     if (options.contains(LocalToolOption.Clipboard)) add(buildClipboardTool(context))
     if (options.contains(LocalToolOption.AskUser)) add(buildAskUserTool(askUser))
+    if (options.contains(LocalToolOption.AskUserPhoto)) add(buildAskUserPhotoTool(askPhoto))
+    if (options.contains(LocalToolOption.PhotoSearch)) add(buildPhotoQueryTool(context))
     if (options.contains(LocalToolOption.Javascript)) add(buildJavascriptTool())
     if (options.contains(LocalToolOption.Calendar)) {
         add(buildCalendarQueryTool(context))

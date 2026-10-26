@@ -26,6 +26,16 @@ sealed class LocalToolOption {
     @SerialName("ask_user")
     object AskUser : LocalToolOption()
 
+    /** 请求用户选图 ask_user_for_photo（HITL：弹出系统相册 Photo Picker，选完回传给模型） */
+    @Serializable
+    @SerialName("ask_user_photo")
+    object AskUserPhoto : LocalToolOption()
+
+    /** 相册静默搜索 photo_query（MediaStore 按时间/相册/关键词搜图，需图片权限） */
+    @Serializable
+    @SerialName("photo_search")
+    object PhotoSearch : LocalToolOption()
+
     /** 日历读写 calendar_query / calendar_create（需系统日历权限） */
     @Serializable
     @SerialName("calendar")

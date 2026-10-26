@@ -25,6 +25,13 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
+    <!-- 相册静默搜索工具（photo_query）：Android 13+ 读图片，旧版本读外存，Android 14 部分授权 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <!-- 定时闹钟工具：调用系统闹钟 App 创建闹钟 -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 

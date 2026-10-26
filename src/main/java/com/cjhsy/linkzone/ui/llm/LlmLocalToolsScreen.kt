@@ -118,6 +118,8 @@ private val LOCAL_TOOLS_SYSTEM = listOf(
     ToolInfo(LocalToolOption.TimeInfo, "时间查询", "查询设备当前日期、时间与时区"),
     ToolInfo(LocalToolOption.Clipboard, "剪贴板读写", "读取或写入剪贴板文本"),
     ToolInfo(LocalToolOption.AskUser, "主动追问", "信息不足时暂停生成向你提问（可跳过）"),
+    ToolInfo(LocalToolOption.AskUserPhoto, "请求选图", "ask_user_for_photo：模型要图时弹系统相册让你选（无需权限）"),
+    ToolInfo(LocalToolOption.PhotoSearch, "相册搜索", "photo_query：静默按时间/相册/关键词搜图并回传", listOf("图片")),
     ToolInfo(LocalToolOption.Calendar, "日历读写", "calendar_query / calendar_create / calendar_delete：查询/创建/删除系统日历日程", listOf("CALENDAR")),
     ToolInfo(LocalToolOption.Javascript, "JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算"),
     ToolInfo(LocalToolOption.SystemControl, "手机控制", "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、手电筒"),
