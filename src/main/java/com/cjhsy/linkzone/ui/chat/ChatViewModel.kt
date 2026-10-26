@@ -431,7 +431,9 @@ class ChatViewModel(
             resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
                 ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
         }.getOrNull()
-        val ext = (name?.substringAfterLast('.', "") ?: resolver.getType(uri)?.substringAfter("image/", ""))
+        val ext = (name?.substringAfterLast('.', "")
+            ?: resolver.getType(uri)?.substringAfter("image/", ""))
+            .orEmpty()
             .takeIf { it.length in 2..5 } ?: "jpg"
         val dir = java.io.File(appContext.cacheDir, "photo_asks").apply { mkdirs() }
         val target = java.io.File(dir, "pick_${System.currentTimeMillis()}.$ext")
