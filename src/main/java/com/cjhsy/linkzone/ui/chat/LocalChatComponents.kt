@@ -1189,9 +1189,8 @@ internal fun LocalToolSwitchList(
         ),
         Triple("通讯录", "按姓名或号码查询手机联系人", LocalToolOption.Contacts),
         Triple("短信与通话记录", "查询近期短信和通话记录（仅读取）", LocalToolOption.SmsCallLog),
-        Triple("定时提醒", "reminder_create/list/cancel：到点系统通知提醒", LocalToolOption.Reminder),
-        Triple("HTTP 请求", "http_request：让模型调用任意 HTTP 接口", LocalToolOption.HttpRequest),
-        Triple("服务端联动", "linkzone_push / linkzone_schedule：操作框架推送与定时任务", LocalToolOption.LinkZone)
+        Triple("定时提醒", "alarm_create：调用系统闹钟 App 定闹钟", LocalToolOption.Reminder),
+        Triple("HTTP 请求", "http_request：让模型调用任意 HTTP 接口", LocalToolOption.HttpRequest)
     )
     Column(modifier = modifier) {
         tools.forEach { (title, subtitle, option) ->
@@ -1218,13 +1217,6 @@ internal fun LocalToolSwitchList(
                                 android.Manifest.permission.READ_SMS,
                                 android.Manifest.permission.READ_CALL_LOG
                             )
-                            // 提醒到点走系统通知：Android 13+ 需运行时通知权限
-                            is LocalToolOption.Reminder ->
-                                if (android.os.Build.VERSION.SDK_INT >= 33) {
-                                    arrayOf(android.Manifest.permission.POST_NOTIFICATIONS)
-                                } else {
-                                    emptyArray()
-                                }
                             else -> emptyArray()
                         }
                         if (perms.isNotEmpty()) permLauncher.launch(perms)

@@ -18,31 +18,21 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.cjhsy.linkzone.data.ai.LinkZoneAdminConfig
 import com.cjhsy.linkzone.data.ai.LocalToolOption
 
 /**
  * 本地工具独立配置页：
  * - 工具清单 + 用途说明 + 所需权限（只读浏览，实际开关在智能体编辑页勾选）
- * - LinkZone 服务端联动的全局配置（框架地址 + admin token）
  */
 @Composable
 fun LlmLocalToolsScreen(onBack: () -> Unit) {
-    val appContext = LocalContext.current.applicationContext
-
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -62,35 +52,10 @@ fun LlmLocalToolsScreen(onBack: () -> Unit) {
         }
         item {
             Text(
-                "让智能体操作本机的能力：时间/剪贴板/日历/通讯录/短信/提醒/HTTP 请求/服务端联动等。开关在智能体编辑页里按智能体单独勾选，每个智能体的工具集相互独立。",
+                "让智能体操作本机的能力：时间/剪贴板/日历/通讯录/短信/闹钟/HTTP 请求等。开关在智能体编辑页里按智能体单独勾选，每个智能体的工具集相互独立。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-
-        // LinkZone 全局配置卡（唯一需要填全局参数的本地工具）
-        item {
-            val serverUrl by remember { mutableStateOf(LinkZoneAdminConfig.serverUrl(appContext)) }
-            val adminToken by remember { mutableStateOf(LinkZoneAdminConfig.adminToken(appContext)) }
-            GlobalConfigCard(
-                title = "服务端联动全局配置",
-                subtitle = "linkzone_push / linkzone_schedule：控制 LinkZone 框架的推送与定时任务，需要 admin token"
-            ) {
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = { LinkZoneAdminConfig.save(appContext, it, adminToken); (it) },
-                    label = { Text("框架地址") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = adminToken,
-                    onValueChange = { LinkZoneAdminConfig.save(appContext, serverUrl, it); (it) },
-                    label = { Text("admin token（system.server.admin_token）") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
         }
 
         // 工具清单：按分组展示
@@ -141,37 +106,6 @@ private fun ToolRow(info: ToolInfo) {
     }
 }
 
-/** 全局配置卡 */
-@Composable
-private fun GlobalConfigCard(
-    title: String,
-    subtitle: String,
-    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Column {
-                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            content()
-        }
-    }
-}
-
 /** 工具展示元数据 */
 private data class ToolInfo(
     val option: LocalToolOption,
@@ -192,7 +126,6 @@ private val LOCAL_TOOLS_SYSTEM = listOf(
 )
 
 private val LOCAL_TOOLS_EXTENDED = listOf(
-    ToolInfo(LocalToolOption.Reminder, "定时提醒", "reminder_create / list / cancel：到点系统通知提醒", listOf("通知")),
-    ToolInfo(LocalToolOption.HttpRequest, "HTTP 请求", "http_request：让模型调用任意 HTTP 接口"),
-    ToolInfo(LocalToolOption.LinkZone, "服务端联动", "linkzone_push / linkzone_schedule：操作 LinkZone 框架推送与定时任务")
+    ToolInfo(LocalToolOption.Reminder, "定时闹钟", "alarm_create：调用系统闹钟 App 定闹钟（由系统响铃）"),
+    ToolInfo(LocalToolOption.HttpRequest, "HTTP 请求", "http_request：让模型调用任意 HTTP 接口")
 )

@@ -1,229 +1,123 @@
 package com.cjhsy.linkzone.data.ai
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.add
+import android.provider.AlarmClock
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import com.cjhsy.linkzone.ai.core.InputSchema
 import com.cjhsy.linkzone.ai.core.Tool
 import com.cjhsy.linkzone.ai.ui.UIMessagePart
-import java.time.Instant
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 
 /**
- * 定时提醒工具：reminder_create / reminder_list / reminder_cancel。
+ * 定时闹钟工具：alarm_create。
  *
- * - 持久化：SharedPreferences 存 JSON（避免 Room 迁移），提醒量小足够
- * - 调度：AlarmManager.setAndAllowWhileIdle（非精确闹钟，免 SCHEDULE_EXACT_ALARM 权限）
- * - 触发：[ReminderReceiver] 收到广播后发系统通知
+ * 不自己维护调度，而是调用系统闹钟 App（AlarmClock.ACTION_SET_ALARM）创建一个真正的系统闹钟——
+ * 由系统负责到点响铃/通知，本应用不持有任何定时状态，也无法列举或取消系统闹钟。
  */
-fun buildReminderTools(context: Context): List<Tool> {
-    val store = ReminderStore(context)
-    return listOf(
-        buildReminderCreateTool(context, store),
-        buildReminderListTool(store),
-        buildReminderCancelTool(context, store)
-    )
-}
+fun buildReminderTools(context: Context): List<Tool> = listOf(
+    buildAlarmCreateTool(context)
+)
 
-private fun buildReminderCreateTool(context: Context, store: ReminderStore): Tool = Tool(
-    name = "reminder_create",
+private fun buildAlarmCreateTool(context: Context): Tool = Tool(
+    name = "alarm_create",
     description = """
-        Create a local reminder on the user's device. When the time arrives, a system notification is shown.
-        Provide EITHER `delay_minutes` (e.g. 30 = half an hour later) OR `at` (absolute time, "yyyy-MM-dd HH:mm" local time).
-        Use get_time_info first if you need the current time. Returns the created reminder with its id.
+        Create a system alarm on the user's device via the stock clock app. The system alarm will ring/vibrate at the given time.
+        - `hour` and `minute` are required (24-hour local time, e.g. hour=8 minute=30 means 08:30).
+        - `message` is the alarm label shown by the clock app.
+        - `days` is an optional array of weekdays to repeat: 1=Monday ... 7=Sunday (ISO weekday). Omit for a one-time alarm.
+        - `skip_ui` defaults to true (create silently); set false to open the clock app's create screen for the user to confirm.
+        Returns success plus the resolved time. This tool cannot list or cancel alarms afterwards — they belong to the system clock app.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
-                put("title", buildJsonObject {
-                    put("type", "string")
-                    put("description", "What to remind about, shown in the notification")
+                put("hour", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Hour of day, 0-23 (24-hour local time)")
                 })
-                put("delay_minutes", buildJsonObject {
-                    put("type", "number")
-                    put("description", "Minutes from now until the reminder fires (optional)")
+                put("minute", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Minute, 0-59")
                 })
-                put("at", buildJsonObject {
+                put("message", buildJsonObject {
                     put("type", "string")
-                    put("description", "Absolute local time 'yyyy-MM-dd HH:mm' (optional)")
+                    put("description", "Alarm label shown by the clock app")
+                })
+                put("days", buildJsonObject {
+                    put("type", "array")
+                    put("description", "Optional weekdays to repeat: 1=Mon ... 7=Sun. Omit for one-time.")
+                    put("items", buildJsonObject { put("type", "integer") })
+                })
+                put("skip_ui", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "True = create silently (default); false = open clock app create screen")
                 })
             },
-            required = listOf("title")
+            required = listOf("hour", "minute")
         )
     },
     execute = {
         val params = it.jsonObject
-        val title = params["title"]?.jsonPrimitive?.contentOrNull ?: error("title is required")
-        val delayMinutes = params["delay_minutes"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
-        val at = params["at"]?.jsonPrimitive?.contentOrNull
-        val zone = ZoneId.systemDefault()
-        val triggerAt = when {
-            delayMinutes != null -> System.currentTimeMillis() + (delayMinutes * 60_000).toLong()
-            !at.isNullOrBlank() -> runCatching {
-                LocalDateTime.parse(at.trim(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                    .atZone(zone).toInstant().toEpochMilli()
-            }.getOrElse { error("invalid 'at' format, expect 'yyyy-MM-dd HH:mm'") }
-            else -> error("either delay_minutes or at is required")
-        }
-        if (triggerAt <= System.currentTimeMillis()) error("reminder time must be in the future")
-        val reminder = store.add(title, triggerAt)
-        ReminderScheduler.schedule(context, reminder)
-        listOf(UIMessagePart.Text(reminderToJson(reminder, zone).toString()))
-    }
-)
+        val hour = params["hour"]?.jsonPrimitive?.intOrNull ?: error("hour is required (0-23)")
+        val minute = params["minute"]?.jsonPrimitive?.intOrNull ?: error("minute is required (0-59)")
+        require(hour in 0..23) { "hour must be 0-23" }
+        require(minute in 0..59) { "minute must be 0-59" }
+        val message = params["message"]?.jsonPrimitive?.contentOrNull ?: "提醒"
+        val days = parseDays(params["days"])
+        val skipUi = params["skip_ui"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
 
-private fun buildReminderListTool(store: ReminderStore): Tool = Tool(
-    name = "reminder_list",
-    description = "List all pending local reminders (id, title, trigger time).",
-    parameters = { InputSchema.Obj(properties = buildJsonObject { }) },
-    execute = {
-        val zone = ZoneId.systemDefault()
-        val items = store.list()
-        val payload = buildJsonObject {
-            put("count", items.size)
-            put("reminders", buildJsonArray {
-                items.forEach { add(reminderToJson(it, zone)) }
-            })
+        val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(AlarmClock.EXTRA_HOUR, hour)
+            putExtra(AlarmClock.EXTRA_MINUTES, minute)
+            putExtra(AlarmClock.EXTRA_MESSAGE, message)
+            putExtra(AlarmClock.EXTRA_SKIP_UI, skipUi)
+            if (days != null) {
+                val calendarDays = days.map { isoToCalendarDay(it) }.toIntArray()
+                putExtra(AlarmClock.EXTRA_DAYS, ArrayList<Int>(calendarDays.toList()))
+            }
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        listOf(UIMessagePart.Text(payload.toString()))
-    }
-)
 
-private fun buildReminderCancelTool(context: Context, store: ReminderStore): Tool = Tool(
-    name = "reminder_cancel",
-    description = "Cancel a pending local reminder by its id (see reminder_list).",
-    parameters = {
-        InputSchema.Obj(
-            properties = buildJsonObject {
-                put("id", buildJsonObject {
-                    put("type", "integer")
-                    put("description", "Reminder id to cancel")
-                })
-            },
-            required = listOf("id")
-        )
-    },
-    execute = {
-        val id = it.jsonObject["id"]?.jsonPrimitive?.intOrNull ?: error("id is required")
-        val removed = store.remove(id)
-        if (removed) ReminderScheduler.cancel(context, id)
+        if (intent.resolveActivity(context.packageManager) == null) {
+            error("设备没有可用的闹钟 App")
+        }
+        context.startActivity(intent)
+
         listOf(UIMessagePart.Text(buildJsonObject {
-            put("success", removed)
-            put("id", id)
+            put("success", true)
+            put("hour", hour)
+            put("minute", minute)
+            put("message", message)
+            put("days", buildJsonArray { days?.forEach { add(it) } })
+            put("skip_ui", skipUi)
         }.toString()))
     }
 )
 
-@Serializable
-data class Reminder(
-    val id: Int,
-    val title: String,
-    val triggerAt: Long
-)
-
-private fun reminderToJson(reminder: Reminder, zone: ZoneId) = buildJsonObject {
-    put("id", reminder.id)
-    put("title", reminder.title)
-    put("trigger_at", reminder.triggerAt)
-    put(
-        "trigger_time",
-        LocalDateTime.ofInstant(Instant.ofEpochMilli(reminder.triggerAt), zone)
-            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-    )
-}
-
-/** SharedPreferences JSON 存储 */
-internal class ReminderStore(context: Context) {
-
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences("reminder_store", Context.MODE_PRIVATE)
-    private val json = Json { ignoreUnknownKeys = true }
-    private val listSerializer = ListSerializer(Reminder.serializer())
-
-    @Synchronized
-    fun list(): List<Reminder> =
-        runCatching {
-            json.decodeFromString(listSerializer, prefs.getString(KEY, "[]") ?: "[]")
-        }.getOrDefault(emptyList())
-            .filter { it.triggerAt > System.currentTimeMillis() - 60_000 }
-            .sortedBy { it.triggerAt }
-
-    @Synchronized
-    fun add(title: String, triggerAt: Long): Reminder {
-        val items = list().toMutableList()
-        var id = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
-        while (items.any { it.id == id }) id = (id + 1) % Int.MAX_VALUE
-        val reminder = Reminder(id, title, triggerAt)
-        items.add(reminder)
-        save(items)
-        return reminder
+/** ISO 星期（1=周一 ... 7=周日）→ Calendar.xxx_DAY */
+private fun isoToCalendarDay(iso: Int): Int =
+    when (iso) {
+        1 -> java.util.Calendar.MONDAY
+        2 -> java.util.Calendar.TUESDAY
+        3 -> java.util.Calendar.WEDNESDAY
+        4 -> java.util.Calendar.THURSDAY
+        5 -> java.util.Calendar.FRIDAY
+        6 -> java.util.Calendar.SATURDAY
+        7 -> java.util.Calendar.SUNDAY
+        else -> error("invalid weekday: $iso, expect 1-7")
     }
 
-    @Synchronized
-    fun remove(id: Int): Boolean {
-        val items = list().toMutableList()
-        val removed = items.removeAll { it.id == id }
-        if (removed) save(items)
-        return removed
-    }
-
-    private fun save(items: List<Reminder>) {
-        prefs.edit().putString(KEY, json.encodeToString(listSerializer, items)).apply()
-    }
-
-    private companion object {
-        const val KEY = "items"
-    }
-}
-
-/** AlarmManager 调度（精确闹钟；USE_EXACT_ALARM 权限使系统不延迟到点触发） */
-internal object ReminderScheduler {
-
-    fun schedule(context: Context, reminder: Reminder) {
-        val am = alarmManager(context)
-        val pi = pendingIntent(context, reminder)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            if (am.canScheduleExactAlarms()) {
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAt, pi)
-            } else {
-                // 没精确闹钟权限时降级到非精确，但仍允许 Doze 期间唤醒
-                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAt, pi)
-            }
-        } else {
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.triggerAt, pi)
-        }
-    }
-
-    fun cancel(context: Context, id: Int) {
-        alarmManager(context).cancel(pendingIntent(context, Reminder(id, "", 0)))
-    }
-
-    private fun alarmManager(context: Context) =
-        context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-    private fun pendingIntent(context: Context, reminder: Reminder): PendingIntent =
-        PendingIntent.getBroadcast(
-            context,
-            reminder.id,
-            Intent(context, ReminderReceiver::class.java).apply {
-                putExtra(ReminderReceiver.EXTRA_ID, reminder.id)
-                putExtra(ReminderReceiver.EXTRA_TITLE, reminder.title)
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+private fun parseDays(element: JsonElement?): List<Int>? {
+    if (element == null) return null
+    return runCatching {
+        element.jsonArray.map { it.jsonPrimitive.intOrNull ?: error("days item must be integer") }
+    }.getOrNull()
 }

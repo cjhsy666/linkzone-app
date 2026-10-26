@@ -61,7 +61,6 @@ fun createLocalTools(
     }
     if (options.contains(LocalToolOption.Reminder)) addAll(buildReminderTools(context))
     if (options.contains(LocalToolOption.HttpRequest)) add(buildHttpRequestTool())
-    if (options.contains(LocalToolOption.LinkZone)) addAll(buildLinkZoneTools(context))
 }
 
 /** ask_user 的挂起桥：execute 内等待用户作答，返回 JSON（问题 id → 用户答案） */

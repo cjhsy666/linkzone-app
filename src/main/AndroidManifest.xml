@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -26,10 +25,8 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
-    <!-- 定时提醒：精确闹钟（Android 12+ 安装即授予，免系统省电策略延迟） -->
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
-        tools:ignore="ProtectedPermissions" />
+    <!-- 定时闹钟工具：调用系统闹钟 App 创建闹钟 -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <!-- 朗读（TtsPlayer）：targetSdk 30+ 包可见性过滤，需声明才能发现系统 TTS 引擎；
          缺失时部分国产 ROM（小米等）解析 TTS 引擎直接崩溃 -->
@@ -64,11 +61,6 @@
             android:name=".service.ChatGenerationForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-
-        <!-- 定时提醒工具：AlarmManager 到点触发系统通知 -->
-        <receiver
-            android:name=".data.ai.ReminderReceiver"
-            android:exported="false" />
 
         <!-- 拍照：向系统相机交付临时文件 URI -->
         <provider

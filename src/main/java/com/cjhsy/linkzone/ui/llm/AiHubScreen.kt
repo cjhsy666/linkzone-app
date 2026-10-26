@@ -210,7 +210,7 @@ private val aiHubEntries = listOf(
     AiHubEntry(
         icon = Icons.Filled.Notifications,
         title = "本地工具",
-        desc = "剪贴板/日历/提醒/HTTP/服务端联动等",
+        desc = "剪贴板/日历/闹钟/HTTP 请求等",
         route = Routes.LLM_LOCAL_TOOLS
     ),
     AiHubEntry(
