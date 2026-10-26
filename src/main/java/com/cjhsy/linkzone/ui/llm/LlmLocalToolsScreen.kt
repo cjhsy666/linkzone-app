@@ -1,9 +1,7 @@
 package com.cjhsy.linkzone.ui.llm
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,8 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -32,9 +28,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.cjhsy.linkzone.data.ai.LinkZoneAdminConfig
@@ -108,7 +101,7 @@ fun LlmLocalToolsScreen(onBack: () -> Unit) {
     }
 }
 
-/** 工具一行：图标 + 名称 + 说明 + 权限标签 */
+/** 工具一行：名称 + 说明 + 权限标签 */
 @Composable
 private fun ToolRow(info: ToolInfo) {
     Card(
@@ -118,33 +111,17 @@ private fun ToolRow(info: ToolInfo) {
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
     ) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
-            // 图标圆底
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = info.icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(info.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     info.permissions.forEach { perm ->
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.height(4.dp))
                         Surface(
                             shape = RoundedCornerShape(6.dp),
                             color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f)
                         ) {
                             Text(
-                                perm,
+                                " 需要 $perm 权限 ",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.secondary,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
@@ -163,7 +140,7 @@ private fun ToolRow(info: ToolInfo) {
     }
 }
 
-/** 全局配置卡：白卡细边，内容在 ColumnScope 内 */
+/** 全局配置卡 */
 @Composable
 private fun GlobalConfigCard(
     title: String,
@@ -199,36 +176,22 @@ private data class ToolInfo(
     val option: LocalToolOption,
     val name: String,
     val desc: String,
-    val icon: ImageVector,
     val permissions: List<String> = emptyList()
 )
 
-// 图标复用（Material Icons）
-private val ICON_TIME: ImageVector get() = androidx.compose.material.icons.Icons.Filled.Schedule
-private val ICON_CLIP: ImageVector get() = androidx.compose.material.icons.Icons.Filled.ContentCopy
-private val ICON_ASK: ImageVector get() = androidx.compose.material.icons.Icons.Filled.Help
-private val ICON_CAL: ImageVector get() = androidx.compose.material.icons.Icons.Filled.CalendarMonth
-private val ICON_JS: ImageVector get() = androidx.compose.material.icons.Icons.Filled.Code
-private val ICON_PHONE: ImageVector get() = androidx.compose.material.icons.Icons.Filled.Smartphone
-private val ICON_CONTACTS: ImageVector get() = androidx.compose.material.icons.Icons.Filled.People
-private val ICON_SMS: ImageVector get() = androidx.compose.material.icons.Icons.Filled.TextMessages
-private val ICON_REMIND: ImageVector get() = androidx.compose.material.icons.Icons.Filled.Notifications
-private val ICON_HTTP: ImageVector get() = androidx.compose.material.icons.Icons.Filled.Language
-private val ICON_LZ: ImageVector get() = androidx.compose.material.icons.Icons.Filled.Hub
-
 private val LOCAL_TOOLS_SYSTEM = listOf(
-    ToolInfo(LocalToolOption.TimeInfo, "时间查询", "查询设备当前日期、时间与时区", ICON_TIME),
-    ToolInfo(LocalToolOption.Clipboard, "剪贴板读写", "读取或写入剪贴板文本", ICON_CLIP),
-    ToolInfo(LocalToolOption.AskUser, "主动追问", "信息不足时暂停生成向你提问（可跳过）", ICON_ASK),
-    ToolInfo(LocalToolOption.Calendar, "日历读写", "calendar_query / calendar_create：查询/创建系统日历日程", ICON_CAL, listOf("CALENDAR")),
-    ToolInfo(LocalToolOption.Javascript, "JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算", ICON_JS),
-    ToolInfo(LocalToolOption.SystemControl, "手机控制", "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、查设备信息与定位", ICON_PHONE, listOf("定位")),
-    ToolInfo(LocalToolOption.Contacts, "通讯录", "contacts_query：按姓名或号码查询手机联系人", ICON_CONTACTS, listOf("通讯录")),
-    ToolInfo(LocalToolOption.SmsCallLog, "短信与通话记录", "sms_query / call_log_query：查询近期短信和通话记录", ICON_SMS, listOf("SMS", "通话记录"))
+    ToolInfo(LocalToolOption.TimeInfo, "时间查询", "查询设备当前日期、时间与时区"),
+    ToolInfo(LocalToolOption.Clipboard, "剪贴板读写", "读取或写入剪贴板文本"),
+    ToolInfo(LocalToolOption.AskUser, "主动追问", "信息不足时暂停生成向你提问（可跳过）"),
+    ToolInfo(LocalToolOption.Calendar, "日历读写", "calendar_query / calendar_create：查询/创建系统日历日程", listOf("CALENDAR")),
+    ToolInfo(LocalToolOption.Javascript, "JS 执行", "eval_javascript：用 QuickJS 运行 JS 代码/计算"),
+    ToolInfo(LocalToolOption.SystemControl, "手机控制", "打开 App / 网页 / 拨号盘 / 系统设置、系统分享、查设备信息与定位", listOf("定位")),
+    ToolInfo(LocalToolOption.Contacts, "通讯录", "contacts_query：按姓名或号码查询手机联系人", listOf("通讯录")),
+    ToolInfo(LocalToolOption.SmsCallLog, "短信与通话记录", "sms_query / call_log_query：查询近期短信和通话记录", listOf("SMS", "通话记录"))
 )
 
 private val LOCAL_TOOLS_EXTENDED = listOf(
-    ToolInfo(LocalToolOption.Reminder, "定时提醒", "reminder_create / list / cancel：到点系统通知提醒", ICON_REMIND, listOf("通知")),
-    ToolInfo(LocalToolOption.HttpRequest, "HTTP 请求", "http_request：让模型调用任意 HTTP 接口", ICON_HTTP),
-    ToolInfo(LocalToolOption.LinkZone, "服务端联动", "linkzone_push / linkzone_schedule：操作 LinkZone 框架推送与定时任务", ICON_LZ)
+    ToolInfo(LocalToolOption.Reminder, "定时提醒", "reminder_create / list / cancel：到点系统通知提醒", listOf("通知")),
+    ToolInfo(LocalToolOption.HttpRequest, "HTTP 请求", "http_request：让模型调用任意 HTTP 接口"),
+    ToolInfo(LocalToolOption.LinkZone, "服务端联动", "linkzone_push / linkzone_schedule：操作 LinkZone 框架推送与定时任务")
 )

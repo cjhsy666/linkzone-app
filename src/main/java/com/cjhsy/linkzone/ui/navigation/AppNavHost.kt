@@ -17,6 +17,7 @@ import com.cjhsy.linkzone.ui.auth.ForgotPasswordScreen
 import com.cjhsy.linkzone.ui.llm.AiHubScreen
 import com.cjhsy.linkzone.ui.llm.LlmAgentScreen
 import com.cjhsy.linkzone.ui.llm.LlmExtensionScreen
+import com.cjhsy.linkzone.ui.llm.LlmLocalToolsScreen
 import com.cjhsy.linkzone.ui.llm.LlmMcpScreen
 import com.cjhsy.linkzone.ui.llm.LlmMemoryScreen
 import com.cjhsy.linkzone.ui.llm.LlmProviderScreen
