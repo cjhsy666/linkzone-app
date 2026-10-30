@@ -1,6 +1,7 @@
 package com.cjhsy.linkzone.data.ai
 
 import com.cjhsy.linkzone.data.model.SshWorkspaceConfig
+import com.cjhsy.linkzone.workspace.MAX_SHELL_OUTPUT_CHARS
 import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.JSch
