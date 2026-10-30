@@ -90,6 +90,9 @@ dependencies {
     // QuickJS：eval_javascript 工具的 JS 引擎（ES2020，无 DOM/Node API）
     implementation 'io.github.dokar3:quickjs-kt:1.0.15'
 
+    // JSch（mwiede 维护分支）：SSH 工作区的 exec/sftp 通道，纯 Java 无 native 依赖
+    implementation 'com.github.mwiede:jsch:0.2.24'
+
     // Lifecycle / ViewModel / Activity
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.11.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.11.0'

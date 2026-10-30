@@ -92,6 +92,8 @@ data class LlmAgentUiState(
     val quickMessages: List<LlmQuickMessage> = emptyList(),
     /** MCP 服务器清单（编辑页多选） */
     val mcpServers: List<McpServerConfig> = emptyList(),
+    /** SSH 工作区清单（编辑页绑定选择） */
+    val sshWorkspaces: List<com.cjhsy.linkzone.data.model.SshWorkspaceConfig> = emptyList(),
     /** 非空时显示编辑页 */
     val editing: LlmAgent? = null,
     val saving: Boolean = false,
@@ -154,6 +156,11 @@ class LlmAgentViewModel(
         viewModelScope.launch {
             llmRepository.observeMcpServers().collect { list ->
                 _state.value = _state.value.copy(mcpServers = list)
+            }
+        }
+        viewModelScope.launch {
+            llmRepository.observeSshWorkspaces().collect { list ->
+                _state.value = _state.value.copy(sshWorkspaces = list)
             }
         }
     }
@@ -846,6 +853,13 @@ private fun AgentEditor(
             }
         }
 
+        // ===== SSH 工作区 =====
+        item {
+            ConfigCard(title = "SSH 工作区", subtitle = "绑定后注入 ssh_read_file / ssh_write_file / ssh_list_dir / ssh_shell 工具") {
+                SshWorkspaceSelector(agent, state.sshWorkspaces, viewModel, onNavigate)
+            }
+        }
+
         // ===== 高级设置（自定义请求 / 预设对话 / 输出正则，默认收起） =====
         item {
             AdvancedConfigCard(subtitle = "自定义请求、预设对话、输出正则") {
@@ -1521,6 +1535,111 @@ private fun WorkspaceManageDialog(
             TextButton(onClick = onDismiss) { Text("完成") }
         }
     )
+}
+
+/** SSH 工作区绑定选择器：列出已配置的 SSH 工作区，选择后把 id 写回智能体 */
+@Composable
+private fun SshWorkspaceSelector(
+    agent: LlmAgent,
+    sshWorkspaces: List<com.cjhsy.linkzone.data.model.SshWorkspaceConfig>,
+    viewModel: LlmAgentViewModel,
+    onNavigate: (String) -> Unit = {}
+) {
+    var showDialog by remember { mutableStateOf(false) }
+    val bound = sshWorkspaces.firstOrNull { it.id == agent.sshWorkspaceId }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .clickable { showDialog = true }
+            .padding(horizontal = 14.dp, vertical = 14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                bound?.let { "${it.name.ifBlank { it.summary }}（${it.summary}）" } ?: "未绑定（点击选择）",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (bound != null) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+            Text("选择 ▾", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("SSH 工作区") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 420.dp)) {
+                    Text(
+                        "绑定后智能体可通过 SSH 在远程服务器执行命令、读写文件（路径限制在工作目录内）。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(
+                        onClick = {
+                            showDialog = false
+                            onNavigate(com.cjhsy.linkzone.ui.navigation.Routes.LLM_SSH)
+                        },
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        Text("管理 SSH 工作区（新增 / 测试连接）↗", style = MaterialTheme.typography.labelMedium)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    if (sshWorkspaces.isEmpty()) {
+                        Text("还没有 SSH 工作区，点上方「管理」新增。", style = MaterialTheme.typography.bodySmall)
+                    }
+                    LazyColumn(
+                        modifier = Modifier.weight(1f, fill = false).heightIn(max = 260.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(sshWorkspaces, key = { it.id }) { ws ->
+                            val selected = ws.id == agent.sshWorkspaceId
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                    )
+                                    .clickable { viewModel.updateEditing { it.copy(sshWorkspaceId = ws.id) } }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        (if (selected) "✓ " else "") + ws.name.ifBlank { ws.summary },
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        ws.summary + if (!ws.enabled) " · 已停用" else "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (ws.enabled) MaterialTheme.colorScheme.onSurfaceVariant
+                                        else MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.updateEditing { it.copy(sshWorkspaceId = null) } }) {
+                    Text("取消绑定")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) { Text("完成") }
+            }
+        )
+    }
 }
 
 /** 通用多选 chips（横向换行简化为纵向排列的横向滚动） */

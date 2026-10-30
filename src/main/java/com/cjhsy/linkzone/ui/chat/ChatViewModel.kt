@@ -1698,6 +1698,12 @@ class ChatViewModel(
                     )
                 }
             }
+            // SSH 工作区：绑定后注入 ssh_read_file/write_file/list_dir/shell（JSch exec/sftp）
+            agent.sshWorkspaceId?.let { sshId ->
+                llmRepository.getSshWorkspace(sshId)?.takeIf { it.enabled }?.let { sshConfig ->
+                    addAll(com.cjhsy.linkzone.data.ai.createSshTools(appContext, sshConfig))
+                }
+            }
             mcpManager.getAllAvailableTools(agent.mcpServers).forEach { (serverId, serverName, tool) ->
                 add(
                     Tool(

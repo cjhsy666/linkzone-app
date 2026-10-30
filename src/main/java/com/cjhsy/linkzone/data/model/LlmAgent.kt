@@ -68,6 +68,8 @@ data class LlmAgent(
     val ocrModelId: String? = null,
     /** 绑定的代码工作区 id（非空时注入 workspace_read_file/write_file/edit_file/shell 工具） */
     val workspaceId: String? = null,
+    /** 绑定的 SSH 工作区 id（非空时注入 ssh_read_file/write_file/list_dir/shell 工具） */
+    val sshWorkspaceId: String? = null,
     /** 请求级自定义请求头（合并进 Provider 自身配置） */
     val customHeaders: List<CustomHeader> = emptyList(),
     /** 请求级自定义 body 字段 */

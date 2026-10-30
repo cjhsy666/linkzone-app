@@ -31,6 +31,7 @@ import com.cjhsy.linkzone.ui.llm.LlmMcpViewModel
 import com.cjhsy.linkzone.ui.llm.LlmMemoryViewModel
 import com.cjhsy.linkzone.ui.llm.LlmProviderViewModel
 import com.cjhsy.linkzone.ui.llm.LlmSearchViewModel
+import com.cjhsy.linkzone.ui.llm.LlmSshViewModel
 import com.cjhsy.linkzone.ui.notification.NotificationViewModel
 import com.cjhsy.linkzone.ui.profile.ProfileEditViewModel
 import com.cjhsy.linkzone.ui.profile.ProfileViewModel
@@ -181,7 +182,8 @@ val appModule = module {
                 AppDatabase.MIGRATION_5_6,
                 AppDatabase.MIGRATION_6_7,
                 AppDatabase.MIGRATION_7_8,
-                AppDatabase.MIGRATION_8_9
+                AppDatabase.MIGRATION_8_9,
+                AppDatabase.MIGRATION_9_10
             )
             .fallbackToDestructiveMigration()
             .build()
@@ -228,6 +230,7 @@ val appModule = module {
     viewModel { LlmExtensionViewModel(androidContext(), get()) }
     viewModel { LlmMcpViewModel(get(), get()) }
     viewModel { LlmSearchViewModel(get()) }
+    viewModel { LlmSshViewModel(androidContext(), get()) }
     viewModel { LlmMemoryViewModel(get()) }
     viewModel { com.cjhsy.linkzone.ui.stats.StatsViewModel(get()) }
     viewModel { com.cjhsy.linkzone.ui.workspace.WorkspaceViewModel(androidContext()) }

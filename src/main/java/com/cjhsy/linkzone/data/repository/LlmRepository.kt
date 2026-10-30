@@ -330,6 +330,38 @@ class LlmRepository(
         db.llmMcpServerDao().deleteById(id)
     }
 
+    // ============ SSH 工作区 ============
+
+    fun observeSshWorkspaces(): Flow<List<com.cjhsy.linkzone.data.model.SshWorkspaceConfig>> =
+        db.llmSshWorkspaceDao().observeAll().map { list -> list.mapNotNull { it.toSshConfig() } }
+
+    suspend fun getSshWorkspaces(): List<com.cjhsy.linkzone.data.model.SshWorkspaceConfig> =
+        db.llmSshWorkspaceDao().getAll().mapNotNull { it.toSshConfig() }
+
+    suspend fun getSshWorkspace(id: String): com.cjhsy.linkzone.data.model.SshWorkspaceConfig? =
+        db.llmSshWorkspaceDao().getById(id)?.toSshConfig()
+
+    suspend fun upsertSshWorkspace(config: com.cjhsy.linkzone.data.model.SshWorkspaceConfig) {
+        val dao = db.llmSshWorkspaceDao()
+        val existing = dao.getById(config.id)
+        dao.upsert(
+            com.cjhsy.linkzone.data.db.LlmSshWorkspaceEntity(
+                id = config.id,
+                name = config.name,
+                host = config.host,
+                port = config.port,
+                username = config.username,
+                enabled = config.enabled,
+                sort = existing?.sort ?: System.currentTimeMillis(),
+                json = json.encodeToString(com.cjhsy.linkzone.data.model.SshWorkspaceConfig.serializer(), config)
+            )
+        )
+    }
+
+    suspend fun deleteSshWorkspace(id: String) {
+        db.llmSshWorkspaceDao().deleteById(id)
+    }
+
     // ============ 联网搜索服务 ============
 
     fun observeSearchProviders(): Flow<List<Pair<SearchServiceOptions, LlmSearchProviderEntity>>> =
@@ -465,6 +497,9 @@ class LlmRepository(
 
     private fun LlmMcpServerEntity.toMcpServer(): McpServerConfig? =
         runCatching { jsonFormat.decodeFromString(McpServerConfig.serializer(), json) }.getOrNull()
+
+    private fun com.cjhsy.linkzone.data.db.LlmSshWorkspaceEntity.toSshConfig(): com.cjhsy.linkzone.data.model.SshWorkspaceConfig? =
+        runCatching { jsonFormat.decodeFromString(com.cjhsy.linkzone.data.model.SshWorkspaceConfig.serializer(), json) }.getOrNull()
 
     private fun LlmSearchProviderEntity.toSearchOptions(): SearchServiceOptions? =
         runCatching { jsonFormat.decodeFromString(SearchServiceOptions.serializer(), json) }.getOrNull()

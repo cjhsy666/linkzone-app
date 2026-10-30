@@ -28,8 +28,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CloudQuickCommandEntity::class,
         CloudConversationEntity::class,
         CloudMessageEntity::class,
+        LlmSshWorkspaceEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -46,6 +47,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun localChatDao(): LocalChatDao
     abstract fun cloudQuickCommandDao(): CloudQuickCommandDao
     abstract fun cloudChatDao(): CloudChatDao
+    abstract fun llmSshWorkspaceDao(): LlmSshWorkspaceDao
 
     companion object {
         const val DB_NAME = "linkzone.db"
@@ -270,6 +272,26 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_cloud_message_timestamp ON cloud_message(timestamp)"
+                )
+            }
+        }
+
+        /** v9 → v10：SSH 工作区配置表（常用列 + 全量 JSON 列，同 MCP 策略） */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS llm_ssh_workspace (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        host TEXT NOT NULL,
+                        port INTEGER NOT NULL,
+                        username TEXT NOT NULL,
+                        enabled INTEGER NOT NULL,
+                        sort INTEGER NOT NULL,
+                        json TEXT NOT NULL
+                    )
+                    """.trimIndent()
                 )
             }
         }
