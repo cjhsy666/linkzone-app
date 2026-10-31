@@ -528,6 +528,7 @@ fun ChatScreen(
                 onOpenEnginePicker()
             },
             onBindWorkspace = viewModel::bindWorkspace,
+            onBindSshWorkspace = viewModel::bindSshWorkspace,
             onCreateWorkspace = viewModel::createAndBindWorkspace,
             onOpenWorkspaceManager = onOpenWorkspace,
             onCompressNow = viewModel::compressContextNow,

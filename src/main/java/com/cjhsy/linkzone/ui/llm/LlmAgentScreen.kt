@@ -43,6 +43,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,8 +93,6 @@ data class LlmAgentUiState(
     val quickMessages: List<LlmQuickMessage> = emptyList(),
     /** MCP 服务器清单（编辑页多选） */
     val mcpServers: List<McpServerConfig> = emptyList(),
-    /** SSH 工作区清单（编辑页绑定选择） */
-    val sshWorkspaces: List<com.cjhsy.linkzone.data.model.SshWorkspaceConfig> = emptyList(),
     /** 非空时显示编辑页 */
     val editing: LlmAgent? = null,
     val saving: Boolean = false,
@@ -156,11 +155,6 @@ class LlmAgentViewModel(
         viewModelScope.launch {
             llmRepository.observeMcpServers().collect { list ->
                 _state.value = _state.value.copy(mcpServers = list)
-            }
-        }
-        viewModelScope.launch {
-            llmRepository.observeSshWorkspaces().collect { list ->
-                _state.value = _state.value.copy(sshWorkspaces = list)
             }
         }
     }
@@ -846,17 +840,10 @@ private fun AgentEditor(
             }
         }
 
-        // ===== 代码工作区 =====
+        // ===== 代码工作区（本地目录或 SSH 远端，同一份列表） =====
         item {
             ConfigCard(title = "代码工作区", subtitle = "绑定后注入 workspace_read_file / write_file / edit_file / shell 工具") {
                 WorkspaceSelector(agent, viewModel, onNavigate)
-            }
-        }
-
-        // ===== SSH 工作区 =====
-        item {
-            ConfigCard(title = "SSH 工作区", subtitle = "绑定后注入 ssh_read_file / ssh_write_file / ssh_edit_file / ssh_list_dir / ssh_shell 工具") {
-                SshWorkspaceSelector(agent, state.sshWorkspaces, viewModel, onNavigate)
             }
         }
 
@@ -1373,18 +1360,21 @@ private fun ExtensionAssociationBlock(
 private fun toggleIn(set: Set<String>, id: String): Set<String> =
     if (id in set) set - id else set + id
 
-/** 工作区绑定选择器：列出/新建/删除工作区，并把所选 id 写回智能体 */
+/** 工作区绑定选择器：本地目录与 SSH 远端合并为同一份列表，所选 id 写回智能体 */
 @Composable
 private fun WorkspaceSelector(
     agent: LlmAgent,
     viewModel: LlmAgentViewModel,
     onNavigate: (String) -> Unit = {}
 ) {
-    val workspaceManager = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.WorkspaceManager>()
+    val repo = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.UnifiedWorkspaceRepository>()
     var showDialog by remember { mutableStateOf(false) }
-    val boundName = remember(agent.workspaceId, showDialog) {
-        agent.workspaceId?.let { workspaceManager.get(it)?.name }
+    var entries by remember { mutableStateOf(listOf<com.cjhsy.linkzone.workspace.WorkspaceEntry>()) }
+    LaunchedEffect(showDialog, agent.workspaceId, agent.sshWorkspaceId) {
+        entries = repo.list()
     }
+    val boundId = agent.workspaceId ?: agent.sshWorkspaceId
+    val bound = entries.firstOrNull { it.id == boundId }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1399,173 +1389,10 @@ private fun WorkspaceSelector(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                boundName ?: "未绑定（点击管理工作区）",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (boundName != null) MaterialTheme.colorScheme.onSurface
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text("管理 ▾", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-        }
-    }
-
-    if (showDialog) {
-        WorkspaceManageDialog(
-            workspaceManager = workspaceManager,
-            selectedId = agent.workspaceId,
-            onSelect = { id ->
-                viewModel.updateEditing { it.copy(workspaceId = id) }
-            },
-            onOpenManager = { showDialog = false; onNavigate(com.cjhsy.linkzone.ui.navigation.Routes.LLM_WORKSPACE) },
-            onDismiss = { showDialog = false }
-        )
-    }
-}
-
-@Composable
-private fun WorkspaceManageDialog(
-    workspaceManager: com.cjhsy.linkzone.workspace.WorkspaceManager,
-    selectedId: String?,
-    onSelect: (String?) -> Unit,
-    onOpenManager: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    var refreshTick by remember { mutableStateOf(0) }
-    val workspaces = remember(refreshTick) { workspaceManager.list() }
-    var newName by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
-    fun refresh() { refreshTick++ }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("代码工作区") },
-        text = {
-            Column(modifier = Modifier.heightIn(max = 460.dp)) {
-                if (workspaceManager.shellMode == "PRoot Linux") {
-                    Text(
-                        "Shell 模式：PRoot Linux（完整发行版用户态）。AI 可在绑定工作区内读写文件、执行命令（workspace_read_file/write_file/edit_file/shell）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    Text(
-                        "Shell 模式：Android Shell（/system/bin/sh，toybox 命令集）。\n" +
-                            "如需完整 Linux（apt/python/node），将可执行 proot 二进制放到 " +
-                            "filesDir/proot/bin/proot、解压 rootfs 到 filesDir/linux/rootfs 后自动切换为 PRoot。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                TextButton(
-                    onClick = onOpenManager,
-                    modifier = Modifier.padding(top = 2.dp)
-                ) {
-                    Text("打开完整管理页（文件浏览 / 终端）↗", style = MaterialTheme.typography.labelMedium)
-                }
-                Spacer(Modifier.height(8.dp))
-                if (workspaces.isEmpty()) {
-                    Text("还没有工作区，在下方新建一个。", style = MaterialTheme.typography.bodySmall)
-                }
-                androidx.compose.foundation.lazy.LazyColumn(
-                    modifier = Modifier.weight(1f, fill = false).heightIn(max = 260.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(workspaces, key = { it.id }) { ws ->
-                        val stats = remember(ws.id, refreshTick) { workspaceManager.get(ws.id)?.let { workspaceManager.stats(it) } }
-                        val selected = ws.id == selectedId
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (selected) MaterialTheme.colorScheme.primaryContainer
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                )
-                                .clickable { onSelect(ws.id) }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    (if (selected) "✓ " else "") + ws.name,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    "${stats?.fileCount ?: 0} 个文件 · ${(stats?.totalBytes ?: 0) / 1024} KB",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Text("删除", color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.clickable {
-                                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                        workspaceManager.delete(ws.id)
-                                        refresh()
-                                    }
-                                })
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = newName,
-                        onValueChange = { newName = it },
-                        label = { Text("新工作区名称") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = {
-                        if (newName.isNotBlank()) {
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                val ws = workspaceManager.create(newName.trim())
-                                newName = ""
-                                refresh()
-                                onSelect(ws.id)
-                            }
-                        }
-                    }) { Text("新建") }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSelect(null) }) { Text("取消绑定") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("完成") }
-        }
-    )
-}
-
-/** SSH 工作区绑定选择器：列出已配置的 SSH 工作区，选择后把 id 写回智能体 */
-@Composable
-private fun SshWorkspaceSelector(
-    agent: LlmAgent,
-    sshWorkspaces: List<com.cjhsy.linkzone.data.model.SshWorkspaceConfig>,
-    viewModel: LlmAgentViewModel,
-    onNavigate: (String) -> Unit = {}
-) {
-    var showDialog by remember { mutableStateOf(false) }
-    val bound = sshWorkspaces.firstOrNull { it.id == agent.sshWorkspaceId }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .clickable { showDialog = true }
-            .padding(horizontal = 14.dp, vertical = 14.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                bound?.let { "${it.name.ifBlank { it.summary }}（${it.summary}）" } ?: "未绑定（点击选择）",
+                bound?.let { "${it.name}（${if (it.isSsh) "SSH" else "本地"}）" } ?: "未绑定（点击选择工作区）",
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (bound != null) MaterialTheme.colorScheme.onSurface
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
+                else MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text("选择 ▾", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         }
@@ -1574,33 +1401,33 @@ private fun SshWorkspaceSelector(
     if (showDialog) {
         AlertDialog(
             onDismissRequest = { showDialog = false },
-            title = { Text("SSH 工作区") },
+            title = { Text("代码工作区") },
             text = {
-                Column(modifier = Modifier.heightIn(max = 420.dp)) {
+                Column(modifier = Modifier.heightIn(max = 460.dp)) {
                     Text(
-                        "绑定后智能体可通过 SSH 在远程服务器执行命令、读写文件（路径限制在工作目录内）。",
+                        "本地目录与 SSH 远端都是同一种工作区，绑定后注入同一套 workspace_* 工具。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     TextButton(
                         onClick = {
                             showDialog = false
-                            onNavigate(com.cjhsy.linkzone.ui.navigation.Routes.LLM_SSH)
+                            onNavigate(com.cjhsy.linkzone.ui.navigation.Routes.LLM_WORKSPACE)
                         },
                         modifier = Modifier.padding(top = 2.dp)
                     ) {
-                        Text("管理 SSH 工作区（新增 / 测试连接）↗", style = MaterialTheme.typography.labelMedium)
+                        Text("打开完整管理页（文件浏览 / 命令台）↗", style = MaterialTheme.typography.labelMedium)
                     }
                     Spacer(Modifier.height(8.dp))
-                    if (sshWorkspaces.isEmpty()) {
-                        Text("还没有 SSH 工作区，点上方「管理」新增。", style = MaterialTheme.typography.bodySmall)
+                    if (entries.isEmpty()) {
+                        Text("还没有工作区，请到管理页新建。", style = MaterialTheme.typography.bodySmall)
                     }
                     LazyColumn(
-                        modifier = Modifier.weight(1f, fill = false).heightIn(max = 260.dp),
+                        modifier = Modifier.weight(1f, fill = false).heightIn(max = 300.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        items(sshWorkspaces, key = { it.id }) { ws ->
-                            val selected = ws.id == agent.sshWorkspaceId
+                        items(entries, key = { it.id }) { ws ->
+                            val selected = ws.id == boundId
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1609,17 +1436,28 @@ private fun SshWorkspaceSelector(
                                         if (selected) MaterialTheme.colorScheme.primaryContainer
                                         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                                     )
-                                    .clickable { viewModel.updateEditing { it.copy(sshWorkspaceId = ws.id) } }
+                                    .clickable {
+                                        if (ws.isSsh) {
+                                            viewModel.updateEditing {
+                                                it.copy(sshWorkspaceId = ws.id, workspaceId = null)
+                                            }
+                                        } else {
+                                            viewModel.updateEditing {
+                                                it.copy(workspaceId = ws.id, sshWorkspaceId = null)
+                                            }
+                                        }
+                                    }
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        (if (selected) "✓ " else "") + ws.name.ifBlank { ws.summary },
+                                        (if (selected) "✓ " else "") + ws.name,
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                     Text(
-                                        ws.summary + if (!ws.enabled) " · 已停用" else "",
+                                        (if (ws.isSsh) "SSH · " else "本地 · ") + ws.rootPath +
+                                            if (!ws.enabled) " · 已停用" else "",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = if (ws.enabled) MaterialTheme.colorScheme.onSurfaceVariant
                                         else MaterialTheme.colorScheme.error
@@ -1631,9 +1469,9 @@ private fun SshWorkspaceSelector(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.updateEditing { it.copy(sshWorkspaceId = null) } }) {
-                    Text("取消绑定")
-                }
+                TextButton(onClick = {
+                    viewModel.updateEditing { it.copy(workspaceId = null, sshWorkspaceId = null) }
+                }) { Text("取消绑定") }
             },
             dismissButton = {
                 TextButton(onClick = { showDialog = false }) { Text("完成") }
@@ -1641,6 +1479,7 @@ private fun SshWorkspaceSelector(
         )
     }
 }
+
 
 /** 通用多选 chips（横向换行简化为纵向排列的横向滚动） */
 @Composable

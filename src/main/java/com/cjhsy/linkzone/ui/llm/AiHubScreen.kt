@@ -21,7 +21,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Api
 import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Hub
@@ -217,14 +216,8 @@ private val aiHubEntries = listOf(
     AiHubEntry(
         icon = Icons.Filled.Terminal,
         title = "代码工作区",
-        desc = "文件浏览与 shell 命令台",
+        desc = "本机或 SSH 远端：文件浏览与命令台",
         route = Routes.LLM_WORKSPACE
-    ),
-    AiHubEntry(
-        icon = Icons.Filled.Cable,
-        title = "SSH 工作区",
-        desc = "连接远程服务器执行命令与读写文件",
-        route = Routes.LLM_SSH
     ),
     AiHubEntry(
         icon = Icons.Filled.BarChart,

@@ -31,7 +31,6 @@ import com.cjhsy.linkzone.ui.llm.LlmMcpViewModel
 import com.cjhsy.linkzone.ui.llm.LlmMemoryViewModel
 import com.cjhsy.linkzone.ui.llm.LlmProviderViewModel
 import com.cjhsy.linkzone.ui.llm.LlmSearchViewModel
-import com.cjhsy.linkzone.ui.llm.LlmSshViewModel
 import com.cjhsy.linkzone.ui.notification.NotificationViewModel
 import com.cjhsy.linkzone.ui.profile.ProfileEditViewModel
 import com.cjhsy.linkzone.ui.profile.ProfileViewModel
@@ -172,6 +171,9 @@ val appModule = module {
     // AI 代码工作区（filesDir/workspaces）
     single { com.cjhsy.linkzone.workspace.WorkspaceManager(androidContext()) }
 
+    // 统一工作区视图：本地目录 + SSH 远端合并为同一份列表
+    single { com.cjhsy.linkzone.workspace.UnifiedWorkspaceRepository(get(), get()) }
+
     single {
         Room.databaseBuilder(androidContext(), AppDatabase::class.java, AppDatabase.DB_NAME)
             .addMigrations(
@@ -230,9 +232,8 @@ val appModule = module {
     viewModel { LlmExtensionViewModel(androidContext(), get()) }
     viewModel { LlmMcpViewModel(get(), get()) }
     viewModel { LlmSearchViewModel(get()) }
-    viewModel { LlmSshViewModel(androidContext(), get()) }
     viewModel { LlmMemoryViewModel(get()) }
     viewModel { com.cjhsy.linkzone.ui.stats.StatsViewModel(get()) }
-    viewModel { com.cjhsy.linkzone.ui.workspace.WorkspaceViewModel(androidContext()) }
+    viewModel { com.cjhsy.linkzone.ui.workspace.WorkspaceViewModel(androidContext(), get()) }
     viewModel { SettingsViewModel(get(), get(), get()) }
 }

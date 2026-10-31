@@ -87,12 +87,14 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -108,6 +110,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -118,10 +121,15 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.cjhsy.linkzone.data.ai.SshSessionManager
+import com.cjhsy.linkzone.data.model.SshWorkspaceConfig
+import com.cjhsy.linkzone.workspace.UnifiedWorkspaceRepository
 import com.cjhsy.linkzone.workspace.Workspace
+import com.cjhsy.linkzone.workspace.WorkspaceBackend
 import com.cjhsy.linkzone.workspace.WorkspaceCommandResult
+import com.cjhsy.linkzone.workspace.WorkspaceEntry
+import com.cjhsy.linkzone.workspace.WorkspaceKind
 import com.cjhsy.linkzone.workspace.WorkspaceManager
-import com.cjhsy.linkzone.workspace.WorkspaceMeta
 import com.cjhsy.linkzone.workspace.WorkspaceShellContext
 import com.cjhsy.linkzone.workspace.WorkspaceShellRunner
 import com.cjhsy.linkzone.workspace.WorkspaceStats
@@ -155,15 +163,24 @@ data class FileEntry(
 )
 
 data class WorkspaceUiState(
-    val workspaces: List<WorkspaceMeta> = emptyList(),
+    val workspaces: List<WorkspaceEntry> = emptyList(),
     val stats: Map<String, WorkspaceStats> = emptyMap(),
     /** 非空时进入该工作区详情 */
-    val opened: WorkspaceMeta? = null,
+    val opened: WorkspaceEntry? = null,
     /** 当前浏览目录（相对工作区根，空串=根） */
     val cwd: String = "",
     val entries: List<FileEntry> = emptyList(),
-    /** 0=文件 1=终端 */
+    /** 0=文件 1=终端（SSH 为命令台） */
     val tab: Int = 0,
+    /** 非空时显示 SSH 配置编辑页 */
+    val editingSsh: SshWorkspaceConfig? = null,
+    /** 编辑的是已有配置（用于显示「移除」按钮） */
+    val sshEditingExisting: Boolean = false,
+    val sshSaving: Boolean = false,
+    val sshTesting: Boolean = false,
+    /** SSH 命令台输出 */
+    val commandOutput: String = "",
+    val commandRunning: Boolean = false,
     val message: String? = null,
     val error: String? = null,
 )
@@ -172,10 +189,14 @@ data class WorkspaceUiState(
  * 工作区管理页 VM：文件系统直读（无 Room），全部 IO 操作在 Dispatchers.IO。
  * 终端基于 WorkspaceShellRunner（自动选择宿主 sh / PRoot Linux）。
  */
-class WorkspaceViewModel(context: Context) : ViewModel() {
+class WorkspaceViewModel(
+    context: Context,
+    private val llmRepository: com.cjhsy.linkzone.data.repository.LlmRepository,
+) : ViewModel() {
 
     private val appContext = context.applicationContext
     private val manager = WorkspaceManager(appContext)
+    private val repo = UnifiedWorkspaceRepository(manager, llmRepository)
 
     /** 每次按当前环境重新选择 runner（安装完成后立即生效，无需重建 VM） */
     private fun runner(): WorkspaceShellRunner = WorkspaceShellRunner.select(appContext)
@@ -186,6 +207,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
     val shellMode: String get() = manager.shellMode
 
     init {
+        SshSessionManager.init(appContext.filesDir)
         refreshList()
     }
 
@@ -253,8 +275,9 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     fun refreshList() {
         viewModelScope.launch(Dispatchers.IO) {
-            val list = manager.list()
-            val stats = list.associate { meta ->
+            val list = repo.list()
+            // 只对本地工作区统计文件数/体积；SSH 统计需要连远端，放到详情页按需做
+            val stats = list.filter { it.kind == WorkspaceKind.LOCAL }.associate { meta ->
                 val ws = manager.get(meta.id)
                 meta.id to (ws?.let { manager.stats(it) } ?: WorkspaceStats(0, 0))
             }
@@ -264,17 +287,26 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     fun createWorkspace(name: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            manager.create(name)
-            notify("已创建工作区「${name.ifBlank { "工作区" }}」")
+            val entry = repo.createLocal(name)
+            notify("已创建工作区「${entry.name}」")
             refreshList()
         }
     }
 
     fun renameWorkspace(id: String, name: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            manager.rename(id, name)
+            val entry = _state.value.workspaces.firstOrNull { it.id == id }
+            if (entry?.isSsh == true) {
+                val cfg = entry.ssh ?: return@launch
+                llmRepository.upsertSshWorkspace(cfg.copy(name = name.ifBlank { cfg.summary }))
+                SshSessionManager.invalidate(cfg.id)
+            } else {
+                manager.rename(id, name)
+            }
             _state.value = _state.value.copy(
-                opened = _state.value.opened?.let { if (it.id == id) it.copy(name = name) else it }
+                opened = _state.value.opened?.let {
+                    if (it.id == id) it.copy(name = name.ifBlank { it.name }, ssh = it.ssh?.copy(name = name)) else it
+                }
             )
             notify("已重命名")
             refreshList()
@@ -283,11 +315,101 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     fun deleteWorkspace(id: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            manager.delete(id)
+            val entry = _state.value.workspaces.firstOrNull { it.id == id }
+            if (entry?.isSsh == true) {
+                SshSessionManager.invalidate(id)
+                llmRepository.deleteSshWorkspace(id)
+            } else {
+                manager.delete(id)
+            }
             if (_state.value.opened?.id == id) {
                 _state.value = _state.value.copy(opened = null, cwd = "", entries = emptyList())
             }
-            notify("已删除工作区")
+            notify(if (entry?.isSsh == true) "已移除 SSH 工作区" else "已删除工作区")
+            refreshList()
+        }
+    }
+
+    // ---------------- SSH 配置 ----------------
+
+    fun startCreateSsh() {
+        _state.value = _state.value.copy(
+            editingSsh = SshWorkspaceConfig(),
+            sshEditingExisting = false,
+            message = null,
+            error = null,
+        )
+    }
+
+    fun startEditSsh(config: SshWorkspaceConfig) {
+        _state.value = _state.value.copy(
+            editingSsh = config,
+            sshEditingExisting = true,
+            message = null,
+            error = null,
+        )
+    }
+
+    fun cancelSshEdit() {
+        _state.value = _state.value.copy(editingSsh = null, sshEditingExisting = false)
+    }
+
+    fun updateSshEditing(transform: (SshWorkspaceConfig) -> SshWorkspaceConfig) {
+        _state.value = _state.value.editingSsh?.let { cur ->
+            _state.value.copy(editingSsh = transform(cur))
+        } ?: _state.value
+    }
+
+    fun saveSsh() {
+        val current = _state.value.editingSsh ?: return
+        if (current.host.isBlank() || current.username.isBlank()) {
+            _state.value = _state.value.copy(error = "主机地址和用户名不能为空")
+            return
+        }
+        if (current.authType == "password" && current.password.isBlank()) {
+            _state.value = _state.value.copy(error = "密码不能为空（或改用私钥认证）")
+            return
+        }
+        if (current.authType == "key" && current.privateKey.isBlank()) {
+            _state.value = _state.value.copy(error = "私钥内容不能为空（或改用密码认证）")
+            return
+        }
+        val editing = if (current.name.isBlank()) current.copy(name = current.summary) else current
+        _state.value = _state.value.copy(sshSaving = true, error = null, message = null)
+        viewModelScope.launch(Dispatchers.IO) {
+            llmRepository.upsertSshWorkspace(editing)
+            SshSessionManager.invalidate(editing.id)
+            _state.value = _state.value.copy(
+                editingSsh = null,
+                sshSaving = false,
+                message = "已保存 SSH 工作区"
+            )
+            refreshList()
+        }
+    }
+
+    fun testSshConnection() {
+        val current = _state.value.editingSsh ?: return
+        _state.value = _state.value.copy(sshTesting = true, error = null, message = null)
+        viewModelScope.launch(Dispatchers.IO) {
+            SshSessionManager.invalidate(current.id)
+            runCatching { SshSessionManager.testConnection(current) }
+                .onSuccess { ms ->
+                    _state.value = _state.value.copy(sshTesting = false, message = "连接成功（${ms}ms）")
+                }
+                .onFailure { e ->
+                    _state.value = _state.value.copy(
+                        sshTesting = false,
+                        error = "连接失败：${e.toUserMessage("网络或认证异常")}"
+                    )
+                }
+        }
+    }
+
+    fun toggleSshEnabled(config: SshWorkspaceConfig, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            llmRepository.upsertSshWorkspace(config.copy(enabled = enabled))
+            if (!enabled) SshSessionManager.invalidate(config.id)
             refreshList()
         }
     }
@@ -295,8 +417,18 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
     // ---------------- 文件浏览 ----------------
 
     fun openWorkspace(id: String) {
-        val ws = manager.get(id) ?: return
-        _state.value = _state.value.copy(opened = ws.meta, cwd = "", tab = 0)
+        val entry = _state.value.workspaces.firstOrNull { it.id == id } ?: return
+        if (entry.isSsh && !entry.enabled) {
+            notify(null, "SSH 工作区已停用，请先在设置中启用")
+            return
+        }
+        _state.value = _state.value.copy(
+            opened = entry,
+            cwd = "",
+            tab = 0,
+            entries = emptyList(),
+            commandOutput = "",
+        )
         listDir("")
     }
 
@@ -326,41 +458,49 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         listDir(path)
     }
 
-    private fun rootOf(): Workspace? = _state.value.opened?.let { manager.get(it.id) }
+    /** 仅本地工作区可用的根目录（导入/导出/终端等本机能力） */
+    private fun rootOf(): Workspace? = _state.value.opened
+        ?.takeIf { it.kind == WorkspaceKind.LOCAL }
+        ?.let { manager.get(it.id) }
+
+    private fun openedBackend(): WorkspaceBackend? =
+        _state.value.opened?.let { repo.backendFor(it, appContext) }
+
+    /** 导入/导出/交互终端等本机能力仅对本地工作区开放 */
+    private fun localRootOrNotify(): Workspace? {
+        val ws = rootOf()
+        if (ws == null) notify(null, "该操作仅支持本地工作区（SSH 请用命令台）")
+        return ws
+    }
 
     private fun listDir(cwd: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf()
-            if (ws == null) {
+            val backend = openedBackend()
+            if (backend == null) {
                 _state.value = _state.value.copy(entries = emptyList())
                 return@launch
             }
-            val dir = File(ws.root, cwd.ifBlank { "." })
-            if (!dir.isDirectory) {
-                _state.value = _state.value.copy(cwd = "", entries = emptyList())
-                return@launch
+            val infos = runCatching { backend.listDir(cwd) }.getOrElse { e ->
+                notify(null, "读取目录失败：${e.toUserMessage("连接或权限异常")}")
+                emptyList()
             }
-            val entries = dir.listFiles()
-                ?.map { f ->
-                    FileEntry(
-                        name = f.name,
-                        isDir = f.isDirectory,
-                        size = if (f.isDirectory) 0L else f.length(),
-                        lastModified = f.lastModified(),
-                        relPath = joinPath(cwd, f.name),
-                    )
-                }
-                ?.sortedWith(compareByDescending<FileEntry> { it.isDir }.thenBy { it.name.lowercase() })
-                .orEmpty()
+            val entries = infos.map {
+                FileEntry(
+                    name = it.name,
+                    isDir = it.isDir,
+                    size = it.size,
+                    lastModified = it.lastModified,
+                    relPath = joinPath(cwd, it.name),
+                )
+            }
             _state.value = _state.value.copy(entries = entries)
         }
     }
 
     fun createDir(name: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
-            val ok = runCatching { File(ws.root, joinPath(_state.value.cwd, name)).mkdirs() }
-                .getOrDefault(false)
+            val backend = openedBackend() ?: return@launch
+            val ok = runCatching { backend.mkdir(joinPath(_state.value.cwd, name)) }.isSuccess
             notify(if (ok) "已创建文件夹「$name」" else null, if (ok) null else "创建失败")
             listDir(_state.value.cwd)
         }
@@ -368,11 +508,8 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     fun createFile(name: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
-            runCatching {
-                val f = File(ws.root, joinPath(_state.value.cwd, name))
-                if (!f.exists()) f.createNewFile()
-            }
+            val backend = openedBackend() ?: return@launch
+            runCatching { backend.touch(joinPath(_state.value.cwd, name)) }
             notify("已创建文件「$name」")
             listDir(_state.value.cwd)
         }
@@ -380,10 +517,8 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     fun renameEntry(entry: FileEntry, newName: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
-            val from = File(ws.root, entry.relPath)
-            val to = File(from.parentFile, newName)
-            val ok = runCatching { from.renameTo(to) }.getOrDefault(false)
+            val backend = openedBackend() ?: return@launch
+            val ok = runCatching { backend.rename(entry.relPath, newName) }.isSuccess
             notify(if (ok) "已重命名为「$newName」" else null, if (ok) null else "重命名失败")
             listDir(_state.value.cwd)
         }
@@ -391,28 +526,23 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     fun deleteEntry(entry: FileEntry) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
-            File(ws.root, entry.relPath).deleteRecursively()
-            notify("已删除「${entry.name}」")
+            val backend = openedBackend() ?: return@launch
+            val ok = runCatching { backend.delete(entry.relPath) }.isSuccess
+            notify(if (ok) "已删除「${entry.name}」" else null, if (ok) null else "删除失败")
             listDir(_state.value.cwd)
         }
     }
 
     /**
      * 读取文本文件用于预览：二进制文件返回 null 并提示；
-     * 超过 256KB 截断（预览用途，编辑走终端/AI）。
+     * 超过 256KB 截断（预览用途，编辑走命令台/AI）。
      */
     suspend fun readTextFile(entry: FileEntry): String? = withContext(Dispatchers.IO) {
-        val ws = rootOf() ?: return@withContext null
-        val f = File(ws.root, entry.relPath)
-        if (!f.isFile) return@withContext null
-        val bytes = runCatching { f.readBytes() }.getOrNull() ?: return@withContext null
-        val isBinary = bytes.take(8192).any { it == 0.toByte() }
-        if (isBinary) {
-            notify(null, "「${entry.name}」是二进制文件，不支持预览")
+        val backend = openedBackend() ?: return@withContext null
+        var text = runCatching { backend.readText(entry.relPath) }.getOrElse { e ->
+            notify(null, "「${entry.name}」无法预览：${e.toUserMessage("可能是二进制文件")}")
             return@withContext null
         }
-        var text = String(bytes, Charsets.UTF_8)
         if (text.length > MAX_PREVIEW_CHARS) text = text.take(MAX_PREVIEW_CHARS) + "\n\n… [内容过长已截断]"
         text
     }
@@ -420,7 +550,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
     /** 导入文件（SAF content uri）到当前目录；重名自动加序号 */
     fun importFile(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
+            val ws = localRootOrNotify() ?: return@launch
             runCatching {
                 val resolver = appContext.contentResolver
                 val displayName = queryDisplayName(uri) ?: (uri.lastPathSegment ?: "imported")
@@ -458,7 +588,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
     /** 导出：复制到 cacheDir/exports 再走系统分享（FileProvider 仅开放 cache 目录） */
     fun exportFile(entry: FileEntry) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
+            val ws = localRootOrNotify() ?: return@launch
             runCatching {
                 val src = File(ws.root, entry.relPath)
                 val dir = File(appContext.cacheDir, "exports").apply { mkdirs() }
@@ -488,8 +618,8 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     // ---------------- SAF 导出到用户自选目录 ----------------
 
-    /** 当前打开工作区根目录的绝对路径（界面展示，让用户知道文件真实落盘位置） */
-    fun currentRootPath(): String? = rootOf()?.root?.absolutePath
+    /** 当前打开工作区的根路径（本地绝对路径 / SSH host:port · workDir） */
+    fun currentRootPath(): String? = openedBackend()?.rootLabel
 
     /**
      * 把单个文件保存到 SAF 用户选定的目录树（Download/U盘/自建文件夹均可）。
@@ -497,7 +627,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
      */
     fun exportEntryToTree(entry: FileEntry, treeUri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
+            val ws = localRootOrNotify() ?: return@launch
             runCatching {
                 val src = File(ws.root, entry.relPath)
                 require(src.isFile) { "不是文件" }
@@ -520,7 +650,7 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
      */
     fun exportWholeWorkspaceToTree(treeUri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = rootOf() ?: return@launch
+            val ws = localRootOrNotify() ?: return@launch
             runCatching {
                 val resolver = appContext.contentResolver
                 val treeRoot = DocumentsContract.buildDocumentUriUsingTree(
@@ -593,7 +723,10 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
 
     /** 打开当前工作区的交互会话；已存在则复用，restart=true 时重启 */
     fun startTerminal(restart: Boolean = false) {
-        val ws = rootOf() ?: return
+        val ws = rootOf() ?: run {
+            notify(null, "交互式终端仅支持本地工作区，SSH 请使用命令台")
+            return
+        }
         if (!restart && session != null) return
         stopTerminal()
         val s = TerminalLauncher.create(appContext, ws.root)
@@ -655,6 +788,38 @@ class WorkspaceViewModel(context: Context) : ViewModel() {
         _termFontSp.value = (_termFontSp.value + delta).coerceIn(9, 20)
     }
 
+    // ---------------- SSH 命令台 ----------------
+
+    /** 在 SSH 工作区执行单次命令（不做 PTY 交互，输出回填到面板） */
+    fun runCommand(command: String) {
+        if (command.isBlank() || _state.value.commandRunning) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val backend = openedBackend() ?: return@launch
+            _state.value = _state.value.copy(commandRunning = true)
+            val timeout = minOf(backend.maxTimeoutMs, 120_000L)
+            val output = runCatching { backend.exec(command, "", timeout) }
+                .fold(
+                    onSuccess = { res ->
+                        buildString {
+                            if (res.stdout.isNotBlank()) append(res.stdout.trimEnd())
+                            if (res.stderr.isNotBlank()) {
+                                if (isNotEmpty()) append('\n')
+                                append(res.stderr.trimEnd())
+                            }
+                            if (res.timedOut) append("\n[超时]")
+                            else append("\n[退出码 ${res.exitCode}]")
+                        }
+                    },
+                    onFailure = { e -> "执行失败：${e.toUserMessage("连接异常")}" }
+                )
+            _state.value = _state.value.copy(commandRunning = false, commandOutput = output)
+        }
+    }
+
+    fun clearCommandOutput() {
+        _state.value = _state.value.copy(commandOutput = "")
+    }
+
     override fun onCleared() {
         // 页面销毁时兜底回收 pty 子进程，避免 shell/proot 泄漏
         stopTerminal()
@@ -682,8 +847,10 @@ fun WorkspaceScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // 系统返回：先退出工作区（顺带停掉 PTY 会话），而不是直接把整页弹掉
-    BackHandler(enabled = state.opened != null) { viewModel.closeWorkspace() }
+    // 系统返回：先退出 SSH 编辑页/工作区详情，而不是直接把整页弹掉
+    BackHandler(enabled = state.opened != null || state.editingSsh != null) {
+        if (state.editingSsh != null) viewModel.cancelSshEdit() else viewModel.closeWorkspace()
+    }
 
     // Toast 提示
     state.message?.let {
@@ -693,6 +860,17 @@ fun WorkspaceScreen(
     state.error?.let {
         Toast.makeText(context, it, Toast.LENGTH_LONG).show()
         viewModel.consumeNotice()
+    }
+
+    val editingSsh = state.editingSsh
+    if (editingSsh != null) {
+        SshEditorPane(
+            config = editingSsh,
+            existing = state.sshEditingExisting,
+            state = state,
+            viewModel = viewModel,
+        )
+        return
     }
 
     if (state.opened == null) {
@@ -708,6 +886,8 @@ fun WorkspaceScreen(
             onBack = onBack,
             onOpen = viewModel::openWorkspace,
             onCreate = viewModel::createWorkspace,
+            onCreateSsh = viewModel::startCreateSsh,
+            onEditSsh = viewModel::startEditSsh,
             onRename = viewModel::renameWorkspace,
             onDelete = viewModel::deleteWorkspace
         )
@@ -732,12 +912,15 @@ private fun WorkspaceListPane(
     onBack: () -> Unit,
     onOpen: (String) -> Unit,
     onCreate: (String) -> Unit,
+    onCreateSsh: () -> Unit,
+    onEditSsh: (SshWorkspaceConfig) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit
 ) {
+    var showCreateType by remember { mutableStateOf(false) }
     var showCreate by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf<WorkspaceMeta?>(null) }
-    var deleting by remember { mutableStateOf<WorkspaceMeta?>(null) }
+    var renaming by remember { mutableStateOf<WorkspaceEntry?>(null) }
+    var deleting by remember { mutableStateOf<WorkspaceEntry?>(null) }
 
     // 手动导入 rootfs 压缩包（SAF）
     val rootfsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -766,14 +949,14 @@ private fun WorkspaceListPane(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f)
             )
-            IconButton(onClick = { showCreate = true }) {
+            IconButton(onClick = { showCreateType = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "新建工作区")
             }
         }
 
         // shell 模式说明
         Text(
-            text = "Shell 模式：$shellMode · AI 可在绑定的工作区读写文件、执行命令",
+            text = "本地 Shell：$shellMode · SSH 工作区使用远端登录 shell · AI 在两种工作区中使用同一套工具",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 24.dp)
@@ -908,7 +1091,7 @@ private fun WorkspaceListPane(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    Icons.Filled.Folder,
+                                    if (ws.isSsh) Icons.Filled.Terminal else Icons.Filled.Folder,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(20.dp)
@@ -924,10 +1107,17 @@ private fun WorkspaceListPane(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    "${stats?.fileCount ?: 0} 个文件 · ${formatBytes(stats?.totalBytes ?: 0)} · " +
-                                        formatDate(ws.createdAt),
+                                    if (ws.isSsh) {
+                                        "SSH · ${ws.rootPath}" + if (!ws.enabled) " · 已停用" else ""
+                                    } else {
+                                        "${stats?.fileCount ?: 0} 个文件 · ${formatBytes(stats?.totalBytes ?: 0)} · " +
+                                            formatDate(ws.createdAt)
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = if (!ws.enabled) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             Box {
@@ -935,12 +1125,23 @@ private fun WorkspaceListPane(
                                     Icon(Icons.Filled.MoreVert, contentDescription = "更多", modifier = Modifier.size(20.dp))
                                 }
                                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                    if (ws.isSsh) {
+                                        DropdownMenuItem(
+                                            text = { Text(if (ws.enabled) "设置" else "设置 · 已停用") },
+                                            onClick = { menuOpen = false; ws.ssh?.let(onEditSsh) }
+                                        )
+                                    }
                                     DropdownMenuItem(
                                         text = { Text("重命名") },
                                         onClick = { menuOpen = false; renaming = ws }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                        text = {
+                                            Text(
+                                                if (ws.isSsh) "移除" else "删除",
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                        },
                                         onClick = { menuOpen = false; deleting = ws }
                                     )
                                 }
@@ -950,6 +1151,32 @@ private fun WorkspaceListPane(
                 }
             }
         }
+    }
+
+    if (showCreateType) {
+        AlertDialog(
+            onDismissRequest = { showCreateType = false },
+            title = { Text("新建工作区") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CreateTypeRow(
+                        icon = Icons.Filled.Folder,
+                        title = "本地工作区",
+                        desc = "App 私有目录，支持导入导出与交互式终端",
+                        onClick = { showCreateType = false; showCreate = true }
+                    )
+                    CreateTypeRow(
+                        icon = Icons.Filled.Terminal,
+                        title = "SSH 工作区",
+                        desc = "连接远端主机，浏览文件并执行命令",
+                        onClick = { showCreateType = false; onCreateSsh() }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCreateType = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showCreate) {
@@ -980,17 +1207,51 @@ private fun WorkspaceListPane(
     deleting?.let { ws ->
         AlertDialog(
             onDismissRequest = { deleting = null },
-            title = { Text("删除工作区") },
-            text = { Text("将永久删除「${ws.name}」及其全部文件，此操作不可恢复。") },
+            title = { Text(if (ws.isSsh) "移除 SSH 工作区" else "删除工作区") },
+            text = {
+                Text(
+                    if (ws.isSsh) "将移除「${ws.name}」的连接配置（不影响远端文件）。"
+                    else "将永久删除「${ws.name}」及其全部文件，此操作不可恢复。"
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { onDelete(ws.id); deleting = null }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text(if (ws.isSsh) "移除" else "删除", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { deleting = null }) { Text("取消") }
             }
         )
+    }
+}
+
+/** 「新建工作区」类型选择行 */
+@Composable
+private fun CreateTypeRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    desc: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Text(
+                desc,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -1048,11 +1309,12 @@ private fun WorkspaceDetailPane(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "${stats?.fileCount ?: 0} 个文件 · ${formatBytes(stats?.totalBytes ?: 0)}",
+                    if (ws.isSsh) "SSH · ${ws.ssh?.summary.orEmpty()}"
+                    else "${stats?.fileCount ?: 0} 个文件 · ${formatBytes(stats?.totalBytes ?: 0)}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                // 真实落盘路径：让用户明确文件位置，点击复制
+                // 真实路径：本地为落盘目录，SSH 为 host:port · workDir；点击复制
                 if (rootPath != null) {
                     Row(
                         modifier = Modifier
@@ -1067,7 +1329,7 @@ private fun WorkspaceDetailPane(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            Icons.Filled.Folder,
+                            if (ws.isSsh) Icons.Filled.Terminal else Icons.Filled.Folder,
                             contentDescription = null,
                             modifier = Modifier.size(11.dp),
                             tint = MaterialTheme.colorScheme.outline
@@ -1086,12 +1348,22 @@ private fun WorkspaceDetailPane(
                     }
                 }
             }
-            IconButton(onClick = { exportAllLauncher.launch(null) }) {
-                Icon(
-                    Icons.Filled.Download,
-                    contentDescription = "导出整个工作区到所选文件夹",
-                    modifier = Modifier.size(20.dp)
-                )
+            if (ws.isSsh) {
+                IconButton(onClick = { ws.ssh?.let(viewModel::startEditSsh) }) {
+                    Icon(
+                        Icons.Filled.Edit,
+                        contentDescription = "SSH 设置",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            } else {
+                IconButton(onClick = { exportAllLauncher.launch(null) }) {
+                    Icon(
+                        Icons.Filled.Download,
+                        contentDescription = "导出整个工作区到所选文件夹",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
             IconButton(onClick = { showRenameWs = true }) {
                 Icon(Icons.Filled.Edit, contentDescription = "重命名工作区", modifier = Modifier.size(20.dp))
@@ -1115,11 +1387,17 @@ private fun WorkspaceDetailPane(
                 .padding(3.dp)
         ) {
             TabPill("文件", Icons.Filled.Folder, state.tab == 0, Modifier.weight(1f)) { viewModel.switchTab(0) }
-            TabPill("终端", Icons.Filled.Terminal, state.tab == 1, Modifier.weight(1f)) { viewModel.switchTab(1) }
+            TabPill(
+                if (ws.isSsh) "命令" else "终端",
+                Icons.Filled.Terminal,
+                state.tab == 1,
+                Modifier.weight(1f)
+            ) { viewModel.switchTab(1) }
         }
 
-        when (state.tab) {
-            0 -> FilesPane(state, viewModel)
+        when {
+            state.tab == 0 -> FilesPane(state, viewModel)
+            ws.isSsh -> SshCommandPane(state, viewModel)
             else -> TerminalPane(state, viewModel)
         }
     }
@@ -1140,13 +1418,18 @@ private fun WorkspaceDetailPane(
     if (showDeleteWs) {
         AlertDialog(
             onDismissRequest = { showDeleteWs = false },
-            title = { Text("删除工作区") },
-            text = { Text("将永久删除「${ws.name}」及其全部文件，此操作不可恢复。") },
+            title = { Text(if (ws.isSsh) "移除 SSH 工作区" else "删除工作区") },
+            text = {
+                Text(
+                    if (ws.isSsh) "将移除「${ws.name}」的连接配置（不影响远端文件）。"
+                    else "将永久删除「${ws.name}」及其全部文件，此操作不可恢复。"
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.deleteWorkspace(ws.id)
                     showDeleteWs = false
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                }) { Text(if (ws.isSsh) "移除" else "删除", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteWs = false }) { Text("取消") }
@@ -1188,6 +1471,224 @@ private fun TabPill(
     }
 }
 
+// ---------------- SSH 配置编辑 ----------------
+
+@Composable
+private fun SshEditorPane(
+    config: SshWorkspaceConfig,
+    existing: Boolean,
+    state: WorkspaceUiState,
+    viewModel: WorkspaceViewModel
+) {
+    var showRemove by remember { mutableStateOf(false) }
+    val upd: ((SshWorkspaceConfig) -> SshWorkspaceConfig) -> Unit = viewModel::updateSshEditing
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .imePadding()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = viewModel::cancelSshEdit) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Text(
+                if (existing) "SSH 工作区设置" else "新建 SSH 工作区",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = viewModel::saveSsh, enabled = !state.sshSaving) {
+                if (state.sshSaving) {
+                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text("保存")
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedTextField(
+                value = config.name,
+                onValueChange = { v -> upd { it.copy(name = v) } },
+                label = { Text("名称（可留空）") },
+                placeholder = { Text(config.summary) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = config.host,
+                onValueChange = { v -> upd { it.copy(host = v.trim()) } },
+                label = { Text("主机地址") },
+                placeholder = { Text("192.168.1.10 或 example.com") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = config.port.toString(),
+                    onValueChange = { v ->
+                        v.filter { it.isDigit() }.take(5).toIntOrNull()?.let { p ->
+                            if (p in 1..65535) upd { it.copy(port = p) }
+                        }
+                    },
+                    label = { Text("端口") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                    modifier = Modifier.width(110.dp)
+                )
+                OutlinedTextField(
+                    value = config.username,
+                    onValueChange = { v -> upd { it.copy(username = v.trim()) } },
+                    label = { Text("用户名") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Text("认证方式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = config.authType == "password",
+                    onClick = { upd { it.copy(authType = "password") } },
+                    label = { Text("密码") }
+                )
+                FilterChip(
+                    selected = config.authType == "key",
+                    onClick = { upd { it.copy(authType = "key") } },
+                    label = { Text("私钥") }
+                )
+            }
+
+            if (config.authType == "password") {
+                OutlinedTextField(
+                    value = config.password,
+                    onValueChange = { v -> upd { it.copy(password = v) } },
+                    label = { Text("密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                OutlinedTextField(
+                    value = config.privateKey,
+                    onValueChange = { v -> upd { it.copy(privateKey = v) } },
+                    label = { Text("私钥（PEM 文本）") },
+                    placeholder = { Text("-----BEGIN OPENSSH PRIVATE KEY-----") },
+                    minLines = 5,
+                    maxLines = 10,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = config.keyPassphrase,
+                    onValueChange = { v -> upd { it.copy(keyPassphrase = v) } },
+                    label = { Text("私钥口令（可留空）") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            OutlinedTextField(
+                value = config.workDir,
+                onValueChange = { v -> upd { it.copy(workDir = v) } },
+                label = { Text("远端工作目录") },
+                placeholder = { Text("~ 或 /home/user/project") },
+                singleLine = true,
+                supportingText = { Text("文件工具的相对路径与命令都在此目录执行") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("启用", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    Text(
+                        "停用后不会出现在智能体可选列表中",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = config.enabled,
+                    onCheckedChange = { v -> upd { it.copy(enabled = v) } }
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = viewModel::testSshConnection,
+                    enabled = !state.sshTesting && config.host.isNotBlank() && config.username.isNotBlank(),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    if (state.sshTesting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(if (state.sshTesting) "测试中…" else "测试连接")
+                }
+            }
+
+            if (existing) {
+                TextButton(onClick = { showRemove = true }) {
+                    Text("移除该 SSH 工作区", color = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            Text(
+                "说明：SSH 工作区提供远端文件浏览与单次命令执行；交互式终端仅本地工作区支持。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 24.dp)
+            )
+        }
+    }
+
+    if (showRemove) {
+        AlertDialog(
+            onDismissRequest = { showRemove = false },
+            title = { Text("移除 SSH 工作区") },
+            text = { Text("将移除「${config.name.ifBlank { config.summary }}」的连接配置（不影响远端文件）。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRemove = false
+                    viewModel.cancelSshEdit()
+                    viewModel.deleteWorkspace(config.id)
+                }) { Text("移除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemove = false }) { Text("取消") }
+            }
+        )
+    }
+}
+
 // ---------------- 文件面板 ----------------
 
 @Composable
@@ -1202,6 +1703,8 @@ private fun FilesPane(
     var deleting by remember { mutableStateOf<FileEntry?>(null) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val context = LocalContext.current
+    // 导入/导出依赖本机 SAF 与 FileProvider，SSH 工作区不提供
+    val isSsh = state.opened?.isSsh == true
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let(viewModel::importFile)
@@ -1241,10 +1744,12 @@ private fun FilesPane(
             horizontalArrangement = Arrangement.Start,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = { importLauncher.launch("*/*") }) {
-                Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(5.dp))
-                Text("导入", style = MaterialTheme.typography.labelMedium)
+            if (!isSsh) {
+                TextButton(onClick = { importLauncher.launch("*/*") }) {
+                    Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("导入", style = MaterialTheme.typography.labelMedium)
+                }
             }
             TextButton(onClick = { showNewDir = true }) {
                 Icon(Icons.Filled.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1261,7 +1766,8 @@ private fun FilesPane(
         if (state.entries.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    "空目录 · 用上方按钮导入或新建文件",
+                    if (isSsh) "空目录 · 用上方按钮新建文件，或切到「命令」在远端终端创建"
+                    else "空目录 · 用上方按钮导入或新建文件",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1321,18 +1827,20 @@ private fun FilesPane(
                                             }
                                         }
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text("导出分享") },
-                                        onClick = { menuOpen = false; viewModel.exportFile(entry) }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("保存到文件夹…") },
-                                        onClick = {
-                                            menuOpen = false
-                                            pendingSaveEntry = entry
-                                            saveToTreeLauncher.launch(null)
-                                        }
-                                    )
+                                    if (!isSsh) {
+                                        DropdownMenuItem(
+                                            text = { Text("导出分享") },
+                                            onClick = { menuOpen = false; viewModel.exportFile(entry) }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("保存到文件夹…") },
+                                            onClick = {
+                                                menuOpen = false
+                                                pendingSaveEntry = entry
+                                                saveToTreeLauncher.launch(null)
+                                            }
+                                        )
+                                    }
                                 }
                                 DropdownMenuItem(
                                     text = { Text("重命名") },
@@ -1517,6 +2025,105 @@ private fun FileViewerDialog(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 lineHeight = 15.sp
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------- SSH 命令面板 ----------------
+
+@Composable
+private fun SshCommandPane(
+    state: WorkspaceUiState,
+    viewModel: WorkspaceViewModel
+) {
+    var command by remember { mutableStateOf("") }
+    val outputScroll = rememberScrollState()
+    val run = { if (command.isNotBlank() && !state.commandRunning) viewModel.runCommand(command) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = command,
+                onValueChange = { command = it },
+                placeholder = { Text("输入命令，如 ls -la 或 git status") },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { run() }),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            FilledIconButton(
+                onClick = run,
+                enabled = !state.commandRunning && command.isNotBlank()
+            ) {
+                if (state.commandRunning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "运行", modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "在远端登录 shell 中执行，工作目录为配置的远端目录",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            if (state.commandOutput.isNotEmpty()) {
+                TextButton(onClick = viewModel::clearCommandOutput) {
+                    Text("清空", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 8.dp),
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+        ) {
+            if (state.commandOutput.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (state.commandRunning) "执行中…" else "命令输出会显示在这里",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                SelectionContainer {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(outputScroll)
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            state.commandOutput,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
                             )
                         )
                     }

@@ -52,7 +52,6 @@ object Routes {
     const val LLM_SEARCH = "llm_search"
     const val LLM_MEMORY = "llm_memory"
     const val LLM_WORKSPACE = "llm_workspace"
-    const val LLM_SSH = "llm_ssh"
     const val LLM_LOCAL_TOOLS = "llm_local_tools"
     const val STATS = "stats"
 }
@@ -223,10 +222,6 @@ fun AppNavHost(
 
         composable(Routes.LLM_WORKSPACE) {
             WorkspaceScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(Routes.LLM_SSH) {
-            com.cjhsy.linkzone.ui.llm.LlmSshScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.LLM_LOCAL_TOOLS) {

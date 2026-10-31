@@ -1686,24 +1686,28 @@ class ChatViewModel(
                     add(buildImageGenerateTool(appContext, providerManager, imgSetting, imgModel))
                 }
             }
-            // 代码工作区：绑定工作区后注入 read_file/write_file/edit_file/shell
-            agent.workspaceId?.let { wsId ->
-                workspaceManager.get(wsId)?.let { ws ->
-                    addAll(
-                        createWorkspaceTools(
-                            workspace = ws,
+            // 代码工作区：本地 / SSH 同一种工作区，统一注入 workspace_* 四工具。
+            // workspaceId 优先（新绑定总是只写一个字段）；sshWorkspaceId 兼容旧数据。
+            val wsBackend: com.cjhsy.linkzone.workspace.WorkspaceBackend? = run {
+                val localId = agent.workspaceId
+                if (localId != null) {
+                    workspaceManager.get(localId)?.let {
+                        com.cjhsy.linkzone.workspace.LocalWorkspaceBackend(
+                            workspace = it,
                             runner = com.cjhsy.linkzone.workspace.WorkspaceShellRunner
                                 .select(appContext)
                         )
-                    )
+                    }
+                } else {
+                    agent.sshWorkspaceId?.let { sshId ->
+                        llmRepository.getSshWorkspace(sshId)?.takeIf { it.enabled }?.let { cfg ->
+                            com.cjhsy.linkzone.data.ai.SshSessionManager.init(appContext.filesDir)
+                            com.cjhsy.linkzone.workspace.SshWorkspaceBackend(cfg)
+                        }
+                    }
                 }
             }
-            // SSH 工作区：绑定后注入 ssh_read_file/write_file/list_dir/shell（JSch exec/sftp）
-            agent.sshWorkspaceId?.let { sshId ->
-                llmRepository.getSshWorkspace(sshId)?.takeIf { it.enabled }?.let { sshConfig ->
-                    addAll(com.cjhsy.linkzone.data.ai.createSshTools(appContext, sshConfig))
-                }
-            }
+            wsBackend?.let { addAll(createWorkspaceTools(it)) }
             mcpManager.getAllAvailableTools(agent.mcpServers).forEach { (serverId, serverName, tool) ->
                 add(
                     Tool(
@@ -3348,15 +3352,20 @@ class ChatViewModel(
         }
     }
 
-    /** 会话内绑定/解绑代码工作区（只写会话覆盖；工具执行时按 agent.workspaceId 实时解析） */
+    /** 会话内绑定/解绑本地工作区（SSH 绑定字段同时清空，保持单一绑定点） */
     fun bindWorkspace(workspaceId: String?) {
-        updateCurrentAgent { it.copy(workspaceId = workspaceId) }
+        updateCurrentAgent { it.copy(workspaceId = workspaceId, sshWorkspaceId = null) }
+    }
+
+    /** 会话内绑定/解绑 SSH 工作区 */
+    fun bindSshWorkspace(sshWorkspaceId: String?) {
+        updateCurrentAgent { it.copy(sshWorkspaceId = sshWorkspaceId, workspaceId = null) }
     }
 
     /** 会话内新建工作区并立即绑定到本会话 */
     fun createAndBindWorkspace(name: String) {
         val ws = workspaceManager.create(name)
-        updateCurrentAgent { it.copy(workspaceId = ws.id) }
+        updateCurrentAgent { it.copy(workspaceId = ws.id, sshWorkspaceId = null) }
     }
 
     // ---- 最近使用模型（SharedPreferences，模型选择器「最近使用」分组） ----

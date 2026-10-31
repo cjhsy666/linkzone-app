@@ -547,6 +547,7 @@ internal fun LocalExtensionSheet(
     onPickModel: () -> Unit,
     onSwitchAgent: () -> Unit,
     onBindWorkspace: (String?) -> Unit,
+    onBindSshWorkspace: (String?) -> Unit,
     onCreateWorkspace: (String) -> Unit,
     onOpenWorkspaceManager: () -> Unit,
     onCompressNow: () -> Unit,
@@ -554,17 +555,14 @@ internal fun LocalExtensionSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val workspaceManager = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.WorkspaceManager>()
+    val workspaceRepo = org.koin.compose.koinInject<com.cjhsy.linkzone.workspace.UnifiedWorkspaceRepository>()
     var wsTick by remember { mutableStateOf(0) }
-    // 工作区列表是磁盘 IO（列目录 + 逐个解析 meta JSON），放到 IO 线程加载，
-    // 避免打开 AI 扩展面板时在主线程读盘造成卡顿
+    // 工作区列表含磁盘 IO 与 Room 查询，放到 IO 线程加载，避免打开面板时主线程卡顿
     var workspaces by remember {
-        mutableStateOf(listOf<com.cjhsy.linkzone.workspace.WorkspaceMeta>())
+        mutableStateOf(listOf<com.cjhsy.linkzone.workspace.WorkspaceEntry>())
     }
-    LaunchedEffect(wsTick, agent?.workspaceId) {
-        workspaces = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            workspaceManager.list()
-        }
+    LaunchedEffect(wsTick, agent?.workspaceId, agent?.sshWorkspaceId) {
+        workspaces = workspaceRepo.list()
     }
     var newWsName by remember { mutableStateOf("") }
 
@@ -817,19 +815,21 @@ internal fun LocalExtensionSheet(
                 item {
                     Column(modifier = Modifier.padding(horizontal = 20.dp)) {
                         // 未绑定
+                        val boundId = agent.workspaceId ?: agent.sshWorkspaceId
                         WorkspaceRadioRow(
                             title = "未绑定",
                             subtitle = "不启用文件与命令能力",
-                            selected = agent.workspaceId == null,
+                            selected = boundId == null,
                             onSelect = { onBindWorkspace(null) }
                         )
                         workspaces.forEach { ws ->
-                            val root = workspaceManager.get(ws.id)?.root?.absolutePath
                             WorkspaceRadioRow(
-                                title = ws.name,
-                                subtitle = root ?: "",
-                                selected = agent.workspaceId == ws.id,
-                                onSelect = { onBindWorkspace(ws.id) }
+                                title = ws.name + if (ws.isSsh) "（SSH）" else "",
+                                subtitle = ws.rootPath,
+                                selected = ws.id == boundId,
+                                onSelect = {
+                                    if (ws.isSsh) onBindSshWorkspace(ws.id) else onBindWorkspace(ws.id)
+                                }
                             )
                         }
                         // 新建并立即选中
@@ -859,13 +859,13 @@ internal fun LocalExtensionSheet(
                             ) { Text("新建并绑定") }
                         }
                         Text(
-                            "工作区位于应用私有目录，可在完整管理页浏览文件、执行命令；" +
-                                "文件可随时导出到 Download 等任意目录。",
+                            "本地工作区位于应用私有目录，SSH 工作区连接远程服务器；" +
+                                "两者在完整管理页共用同一套文件浏览与命令台。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         TextButton(onClick = onOpenWorkspaceManager) {
-                            Text("打开完整管理页（文件浏览 / 终端）↗")
+                            Text("打开完整管理页（文件浏览 / 终端 / SSH）↗")
                         }
                     }
                 }
