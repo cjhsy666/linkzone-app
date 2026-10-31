@@ -209,7 +209,7 @@ fun LlmSshScreen(
             item {
                 Text(
                     "SSH 工作区让智能体连接远程服务器：执行 shell 命令、读写文件（SFTP）。" +
-                        "添加后到智能体编辑页绑定，即注入 ssh_read_file / ssh_write_file / ssh_list_dir / ssh_shell 工具。",
+                        "添加后到智能体编辑页绑定，即注入 ssh_read_file / ssh_write_file / ssh_edit_file / ssh_list_dir / ssh_shell 工具。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * - 首次用时建立连接（密码或私钥），断线后下次调用自动重连
  * - 每个 Session 上的 channel 操作经 per-config Mutex 串行化（JSch Session 非线程安全）
+ * - 空闲 5 分钟后丢弃会话（手机端省电省内存；下次调用按配置重连）
  * - 主机密钥策略：accept-new（首次信任，之后校验）——手机端没有 known_hosts 交互场景，
  *   与 Termius/JuiceSSH 的默认行为一致；known_hosts 存 filesDir/ssh_known_hosts
  */
@@ -27,6 +28,11 @@ object SshSessionManager {
     private val jsch = JSch()
     private val sessions = ConcurrentHashMap<String, Session>()
     private val locks = ConcurrentHashMap<String, Mutex>()
+
+    /** 会话最后使用时间，用于空闲回收 */
+    private val lastUsedAt = ConcurrentHashMap<String, Long>()
+    private const val IDLE_TIMEOUT_MS = 5 * 60 * 1000L
+
     @Volatile private var knownHostsPath: String? = null
 
     /** 由 UI/工具层在 Application context 下调用一次，设置 known_hosts 路径 */
@@ -52,10 +58,7 @@ object SshSessionManager {
         cwd: String = "",
         timeoutMillis: Long = 30_000L,
     ): SshExecResult = withChannel(config) { session ->
-        val fullCommand = buildString {
-            append("cd ").append(shellQuote(resolveCwd(config.workDir, cwd))).append(" && ")
-            append(command)
-        }
+        val fullCommand = buildShellCommand(resolveCwd(config.workDir, cwd), command)
         val channel = session.openChannel("exec") as ChannelExec
         val stdout = ByteArrayOutputStream()
         val stderr = ByteArrayOutputStream()
@@ -109,6 +112,7 @@ object SshSessionManager {
 
     /** 配置变更/删除后调用，丢弃缓存会话 */
     fun invalidate(id: String) {
+        lastUsedAt.remove(id)
         sessions.remove(id)?.let { runCatching { it.disconnect() } }
     }
 
@@ -117,6 +121,19 @@ object SshSessionManager {
         val c = cwd.trim().trimStart('/')
         return if (c.isEmpty()) workDir else "$workDir/$c"
     }
+
+    /**
+     * 包装命令（对齐 RikkaHub 的 ssh shell 后端做法）：
+     * `env CI=true NO_COLOR=1 TERM=dumb sh -lc 'cd -- "$1" && eval "$2"' sh <cwd> <cmd>`
+     *
+     * - 登录 shell（-l）保证 PATH 包含 ~/.profile 里的路径（nvm/pyenv 等）
+     * - CI=true / NO_COLOR=1 / TERM=dumb 抑制 ANSI 颜色码与分页/交互式提示，
+     *   否则输出塞满转义序列，模型既读不懂又浪费 token
+     * - cwd 与 command 作为 argv 传入（$1/$2），避免二次引用拼接出错
+     */
+    private fun buildShellCommand(cwdAbs: String, command: String): String =
+        "env CI=true NO_COLOR=1 TERM=dumb sh -lc 'cd -- \"\$1\" && eval \"\$2\"' sh " +
+            shellQuote(cwdAbs) + " " + shellQuote(command)
 
     private fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
@@ -131,6 +148,7 @@ object SshSessionManager {
     ): T = withContext(Dispatchers.IO) {
         val lock = locks.getOrPut(config.id) { Mutex() }
         lock.withLock {
+            closeIfIdle(config.id)
             val session = getOrConnect(config)
             try {
                 block(session)
@@ -138,7 +156,17 @@ object SshSessionManager {
                 // 通道级失败可能是会话已死：丢弃缓存让下次重连，再抛出本次错误
                 invalidate(config.id)
                 throw e
+            } finally {
+                lastUsedAt[config.id] = System.currentTimeMillis()
             }
+        }
+    }
+
+    /** 空闲超过阈值则断开，避免手机端长期挂着远端连接（耗电/被服务端踢） */
+    private fun closeIfIdle(id: String) {
+        val last = lastUsedAt[id] ?: return
+        if (System.currentTimeMillis() - last > IDLE_TIMEOUT_MS) {
+            invalidate(id)
         }
     }
 

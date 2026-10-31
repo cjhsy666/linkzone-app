@@ -855,7 +855,7 @@ private fun AgentEditor(
 
         // ===== SSH 工作区 =====
         item {
-            ConfigCard(title = "SSH 工作区", subtitle = "绑定后注入 ssh_read_file / ssh_write_file / ssh_list_dir / ssh_shell 工具") {
+            ConfigCard(title = "SSH 工作区", subtitle = "绑定后注入 ssh_read_file / ssh_write_file / ssh_edit_file / ssh_list_dir / ssh_shell 工具") {
                 SshWorkspaceSelector(agent, state.sshWorkspaces, viewModel, onNavigate)
             }
         }
