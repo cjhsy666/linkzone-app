@@ -32,11 +32,33 @@ fun createWorkspaceTools(backend: WorkspaceBackend): List<Tool> = listOf(
     buildShellTool(backend),
 )
 
+/** read_file 单次返回上限：行数与字符数双闸，超出走 offset 分页续读 */
+private const val MAX_READ_LINES = 2_000
+private const val MAX_READ_CHARS = 32 * 1024
+
+/** shell 输出头/尾保留量：报错多在尾部，只截头会丢关键信息 */
+private const val SHELL_HEAD_CHARS = 16 * 1024
+private const val SHELL_TAIL_CHARS = 16 * 1024
+
+/** 长输出保头尾，中间用 marker 标注省略的字数（模型可据此 grep/sed 精确定位） */
+private fun headTailKeep(s: String, head: Int, tail: Int): String {
+    if (s.length <= head + tail) return s
+    val omitted = s.length - head - tail
+    return buildString(s.length - omitted + 64) {
+        append(s, 0, head)
+        append("\n[… ").append(omitted).append(" chars omitted; use grep/sed to locate the middle part …]\n")
+        append(s, s.length - tail, s.length)
+    }
+}
+
 private fun buildReadFileTool(backend: WorkspaceBackend): Tool = Tool(
     name = "workspace_read_file",
     description = """
         Read a UTF-8 text file inside the workspace '${backend.name}' (${backend.rootLabel}).
-        Paths are relative to the workspace root (e.g. "src/main.py"). Max 10MB per read.
+        Paths are relative to the workspace root (e.g. "src/main.py"). Max 10MB per file.
+        Returns at most $MAX_READ_LINES lines / ${MAX_READ_CHARS / 1024}KB per call. When the file is longer,
+        a [TRUNCATED …] header is prepended — call again with offset to continue reading.
+        offset: 1-based line number to start from, default 1. limit: max lines to return, default $MAX_READ_LINES.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -45,13 +67,41 @@ private fun buildReadFileTool(backend: WorkspaceBackend): Tool = Tool(
                     put("type", "string")
                     put("description", "Relative path of the file to read")
                 })
+                put("offset", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "1-based line number to start from. Default 1.")
+                })
+                put("limit", buildJsonObject {
+                    put("type", "integer")
+                    put("description", "Max lines to return. Default $MAX_READ_LINES.")
+                })
             },
             required = listOf("path")
         )
     },
     execute = { args ->
         val path = args.jsonObject.stringParam("path") ?: error("path is required")
-        listOf(UIMessagePart.Text(backend.readText(path)))
+        val offset = (args.jsonObject["offset"]?.jsonPrimitive?.intOrNull ?: 1).coerceAtLeast(1)
+        val limit = (args.jsonObject["limit"]?.jsonPrimitive?.intOrNull ?: MAX_READ_LINES)
+            .coerceIn(1, MAX_READ_LINES)
+        val full = backend.readText(path)
+        val lines = full.lines()
+        val totalLines = lines.size
+        val from = (offset - 1).coerceAtMost(totalLines)
+        val to = minOf(from + limit, totalLines)
+        var text = lines.subList(from, to).joinToString("\n")
+        // 单行超长（如压缩 JSON）时按字符截断，避免一次返回过大
+        val hitCharCap = text.length > MAX_READ_CHARS
+        if (hitCharCap) text = text.take(MAX_READ_CHARS)
+        val result = if (to >= totalLines && !hitCharCap) text else buildString {
+            append("[TRUNCATED: showing lines ").append(offset).append('-').append(to)
+                .append(" of ").append(totalLines)
+                .append(" (").append(full.length / 1024).append("KB)")
+            if (hitCharCap) append("; output cut at ").append(MAX_READ_CHARS / 1024).append("KB")
+            append(" — call again with offset=").append(to + 1).append(" to continue]\n")
+            append(text)
+        }
+        listOf(UIMessagePart.Text(result))
     }
 )
 
@@ -165,8 +215,9 @@ private fun buildShellTool(backend: WorkspaceBackend): Tool {
         name = "workspace_shell",
         description = """
         Run a shell command in the workspace '${backend.name}' (${backend.rootLabel}) and return its output.
-        Working directory is the workspace root. Output is capped at 128KB.
-        Default timeout 30s; raise timeout (milliseconds) up to $maxSeconds s for long-running commands.
+        Working directory is the workspace root. Long output keeps the first and last
+        ${SHELL_HEAD_CHARS / 1024}KB with the middle marked as omitted.
+        Default timeout 30s; raise timeout (milliseconds) up to ${maxSeconds * 1000} for long-running commands.
         Interactive commands are not supported.
     """.trimIndent().replace("\n", " "),
         systemPrompt = { _, _ -> skillsHint },
@@ -184,7 +235,7 @@ private fun buildShellTool(backend: WorkspaceBackend): Tool {
                     })
                     put("timeout", buildJsonObject {
                         put("type", "integer")
-                        put("description", "Timeout in milliseconds, max $maxSeconds. Default 30000.")
+                        put("description", "Timeout in milliseconds, max ${maxSeconds * 1000}. Default 30000.")
                     })
                 },
                 required = listOf("command")
@@ -201,8 +252,12 @@ private fun buildShellTool(backend: WorkspaceBackend): Tool {
                 buildJsonObject {
                     put("exit_code", result.exitCode)
                     put("timed_out", result.timedOut)
-                    if (result.stdout.isNotBlank()) put("stdout", result.stdout)
-                    if (result.stderr.isNotBlank()) put("stderr", result.stderr)
+                    if (result.stdout.isNotBlank()) {
+                        put("stdout", headTailKeep(result.stdout, SHELL_HEAD_CHARS, SHELL_TAIL_CHARS))
+                    }
+                    if (result.stderr.isNotBlank()) {
+                        put("stderr", headTailKeep(result.stderr, SHELL_HEAD_CHARS, SHELL_TAIL_CHARS))
+                    }
                 }.toString()
             ))
         }
