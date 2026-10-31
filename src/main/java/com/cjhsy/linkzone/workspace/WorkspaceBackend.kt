@@ -52,6 +52,8 @@ interface WorkspaceBackend {
     suspend fun mkdir(path: String)
     suspend fun touch(path: String)
     suspend fun rename(path: String, newName: String)
+    /** 把 path 移动到 targetDir 目录下（保持原名），targetDir 空串=工作区根 */
+    suspend fun move(path: String, targetDir: String)
     suspend fun delete(path: String)
     suspend fun stats(): WorkspaceStats
 }
@@ -183,6 +185,20 @@ class LocalWorkspaceBackend(
         if (!from.renameTo(to)) error("Failed to rename '$path' to '$newName'")
     }
 
+    override suspend fun move(path: String, targetDir: String) = withContext(Dispatchers.IO) {
+        val from = resolve(path)
+        if (!from.exists()) error("File not found: $path")
+        val destDir = resolve(targetDir.ifBlank { "." })
+        if (!destDir.isDirectory) error("Target is not a directory: $targetDir")
+        if (destDir.path == from.path || destDir.path.startsWith(from.path + File.separator)) {
+            error("Cannot move '$path' into itself")
+        }
+        val to = File(destDir, from.name)
+        if (to.exists()) error("Target already exists: ${to.name}")
+        if (from.parentFile?.path == destDir.path) return@withContext // 原地移动视为成功
+        if (!from.renameTo(to)) error("Failed to move '$path' to '$targetDir'")
+    }
+
     override suspend fun delete(path: String) = withContext(Dispatchers.IO) {
         val target = resolve(path)
         if (target.exists() && !target.deleteRecursively()) error("Failed to delete: $path")
@@ -308,6 +324,21 @@ class SshWorkspaceBackend(
             error("Path '$newName' is outside the workspace")
         }
         sftp.rename(from, target)
+        Unit
+    }
+
+    override suspend fun move(path: String, targetDir: String) = SshSessionManager.withSftp(config) { sftp ->
+        val from = resolveRemote(sftp, config, path)
+        val destDir = resolveRemote(sftp, config, targetDir.ifBlank { "." })
+        if (!sftp.stat(destDir).isDir) error("Target is not a directory: $targetDir")
+        if (destDir == from || destDir.startsWith("$from/")) {
+            error("Cannot move '$path' into itself")
+        }
+        val name = from.substringAfterLast('/')
+        val to = "$destDir/$name"
+        if (from.substringBeforeLast('/') == destDir) return@withSftp // 原地移动视为成功
+        if (runCatching { sftp.stat(to) }.isSuccess) error("Target already exists: $name")
+        sftp.rename(from, to)
         Unit
     }
 
