@@ -131,9 +131,21 @@ object SshSessionManager {
      *   否则输出塞满转义序列，模型既读不懂又浪费 token
      * - cwd 与 command 作为 argv 传入（$1/$2），避免二次引用拼接出错
      */
-    private fun buildShellCommand(cwdAbs: String, command: String): String =
-        "env CI=true NO_COLOR=1 TERM=dumb sh -lc 'cd -- \"\$1\" && eval \"\$2\"' sh " +
-            shellQuote(cwdAbs) + " " + shellQuote(command)
+    private fun buildShellCommand(cwdAbs: String, command: String): String {
+        val env = "env CI=true NO_COLOR=1 TERM=dumb"
+        // "~" 不能走 argv 传参（shellQuote 会阻止 tilde 展开）；且部分主机未设 HOME，
+        // 任何 cd ~ 都会失败。SSH exec 会话初始目录即主目录，以此为基准换算。
+        return when {
+            cwdAbs == "~" ->
+                "$env sh -lc 'eval \"\$1\"' sh " + shellQuote(command)
+            cwdAbs.startsWith("~/") ->
+                "$env sh -lc 'cd -- \"\$1\" && eval \"\$2\"' sh " +
+                    shellQuote("." + cwdAbs.substring(1)) + " " + shellQuote(command)
+            else ->
+                "$env sh -lc 'cd -- \"\$1\" && eval \"\$2\"' sh " +
+                    shellQuote(cwdAbs) + " " + shellQuote(command)
+        }
+    }
 
     private fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
