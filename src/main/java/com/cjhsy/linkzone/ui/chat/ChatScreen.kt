@@ -49,6 +49,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.WindowInsets
@@ -74,6 +76,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.HelpOutline
@@ -97,6 +100,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -131,6 +135,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -392,6 +397,21 @@ fun ChatScreen(
                         prompt = prompt,
                         onSubmit = viewModel::submitAskUser,
                         onSkip = viewModel::skipAskUser
+                    )
+                }
+            }
+
+            // 工具调用确认卡：写文件/改文件/shell 等操作挂起生成，批准后才执行（RikkaHub 式）
+            AnimatedVisibility(
+                visible = state.toolApproval != null,
+                enter = expandVertically(tween(200)) + fadeIn(tween(200)),
+                exit = shrinkVertically(tween(200)) + fadeOut(tween(200))
+            ) {
+                state.toolApproval?.let { req ->
+                    ToolApprovalCard(
+                        request = req,
+                        onApprove = { viewModel.resolveToolApproval(true) },
+                        onDeny = { viewModel.resolveToolApproval(false) }
                     )
                 }
             }
@@ -1093,6 +1113,100 @@ internal data class EditSeed(
     val text: String,
     val images: List<com.cjhsy.linkzone.data.model.MessageSegment>
 )
+
+/**
+ * 工具调用确认卡（RikkaHub 式调用前确认）：
+ * 写文件/改文件/shell 等操作执行前挂起生成，展示工具名+关键参数摘要+完整入参（可展开），
+ * 用户点「批准」继续执行，「拒绝」则以 error 回告模型，不中断整轮回复。
+ */
+@Composable
+private fun ToolApprovalCard(
+    request: ToolApprovalRequest,
+    onApprove: () -> Unit,
+    onDeny: () -> Unit
+) {
+    var showFullInput by remember(request.toolCallId) { mutableStateOf(false) }
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(12.dp),
+        shadowElevation = 2.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Build,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "允许执行「${request.toolName}」吗？",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (request.summary.isNotBlank()) {
+                Text(
+                    text = request.summary,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (showFullInput) Int.MAX_VALUE else 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+            if (showFullInput && request.input.isNotBlank() && request.input != request.summary) {
+                Text(
+                    text = request.input,
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .verticalScroll(rememberScrollState())
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = { showFullInput = !showFullInput }) {
+                    Text(
+                        if (showFullInput) "收起参数" else "查看完整参数",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(
+                    onClick = onDeny,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("拒绝") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onApprove) { Text("批准执行") }
+            }
+        }
+    }
+}
 
 /**
  * ask_user 追问作答卡（HITL）：

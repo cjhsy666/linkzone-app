@@ -79,6 +79,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.CreateNewFolder
@@ -102,12 +103,15 @@ import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -115,6 +119,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -626,47 +632,6 @@ class WorkspaceViewModel(
         }
     }
 
-    /** 批量导出分享（仅本地；只分享文件，跳过目录） */
-    fun exportSelected() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val ws = localRootOrNotify() ?: return@launch
-            val files = selectedEntries().filter { !it.isDir }
-            if (files.isEmpty()) {
-                notify(null, "所选内容中没有可导出的文件（不支持分享文件夹）")
-                return@launch
-            }
-            runCatching {
-                val dir = File(appContext.cacheDir, "exports").apply { mkdirs() }
-                val stamp = System.currentTimeMillis()
-                val uris = files.mapIndexed { idx, entry ->
-                    val src = File(ws.root, entry.relPath)
-                    val dst = File(dir, "${entry.name}_${stamp}_$idx")
-                    src.copyTo(dst, overwrite = true)
-                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", dst)
-                }
-                val intent = if (uris.size == 1) {
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = guessMime(files.first().name)
-                        putExtra(Intent.EXTRA_STREAM, uris.first())
-                    }
-                } else {
-                    Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                        type = "*/*"
-                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                    }
-                }.apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-                withContext(Dispatchers.Main) {
-                    val chooser = Intent.createChooser(intent, "导出 ${files.size} 个文件")
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    appContext.startActivity(chooser)
-                }
-                clearSelection()
-            }.onFailure { e ->
-                notify(null, "导出失败：${e.toUserMessage("未知错误")}")
-            }
-        }
-    }
-
     /** 移动对话框用：列出 path 下的子目录（只含文件夹） */
     suspend fun listDirsFor(path: String): List<FileEntry> = withContext(Dispatchers.IO) {
         val backend = openedBackend() ?: return@withContext emptyList()
@@ -763,15 +728,15 @@ class WorkspaceViewModel(
         }
     }.getOrNull()
 
-    /** 导出：复制到 cacheDir/exports 再走系统分享（FileProvider 仅开放 cache 目录） */
+    /** 分享：读取原始字节到 cacheDir/exports 再走系统分享（本地/SSH 通用，FileProvider 仅开放 cache 目录） */
     fun exportFile(entry: FileEntry) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = localRootOrNotify() ?: return@launch
+            val backend = openedBackend() ?: return@launch
             runCatching {
-                val src = File(ws.root, entry.relPath)
+                val bytes = backend.readBytes(entry.relPath)
                 val dir = File(appContext.cacheDir, "exports").apply { mkdirs() }
                 val dst = File(dir, "${entry.name}_${System.currentTimeMillis()}")
-                src.copyTo(dst, overwrite = true)
+                dst.writeBytes(bytes)
                 val uri = FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", dst)
                 val mime = guessMime(entry.name)
                 val intent = Intent(Intent.ACTION_SEND).apply {
@@ -800,26 +765,55 @@ class WorkspaceViewModel(
     fun currentRootPath(): String? = openedBackend()?.rootLabel
 
     /**
-     * 把单个文件保存到 SAF 用户选定的目录树（Download/U盘/自建文件夹均可）。
+     * 下载单个文件到 SAF 用户选定的目录树（Download/U盘/自建文件夹均可），本地/SSH 通用。
      * treeUri 由 OpenDocumentTree 返回，调用方需先 takePersistableUriPermission。
      */
-    fun exportEntryToTree(entry: FileEntry, treeUri: Uri) {
+    fun downloadEntryToTree(entry: FileEntry, treeUri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ws = localRootOrNotify() ?: return@launch
+            val backend = openedBackend() ?: return@launch
             runCatching {
-                val src = File(ws.root, entry.relPath)
-                require(src.isFile) { "不是文件" }
-                val resolver = appContext.contentResolver
-                val parent = DocumentsContract.buildDocumentUriUsingTree(
-                    treeUri, DocumentsContract.getTreeDocumentId(treeUri)
-                )
-                val doc = DocumentsContract.createDocument(resolver, parent, guessMime(entry.name), entry.name)
-                    ?: error("无法在目标目录创建文件")
-                resolver.openOutputStream(doc)?.use { out -> src.inputStream().use { it.copyTo(out) } }
-                    ?: error("无法写入目标文件")
-                notify("已保存到所选目录：${entry.name}")
-            }.onFailure { e -> notify(null, "保存失败：${e.toUserMessage("未知错误")}") }
+                require(!entry.isDir) { "暂不支持下载文件夹" }
+                val bytes = backend.readBytes(entry.relPath)
+                writeBytesToTree(treeUri, entry.name, bytes)
+                notify("已下载到所选目录：${entry.name}")
+            }.onFailure { e -> notify(null, "下载失败：${e.toUserMessage("未知错误")}") }
         }
+    }
+
+    /** 批量下载所选文件（跳过文件夹）到 SAF 选定目录，本地/SSH 通用 */
+    fun downloadSelectedToTree(treeUri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val backend = openedBackend() ?: return@launch
+            val files = selectedEntries().filter { !it.isDir }
+            if (files.isEmpty()) {
+                notify(null, "所选内容中没有可下载的文件（不支持下载文件夹）")
+                return@launch
+            }
+            var ok = 0
+            var fail = 0
+            files.forEach { entry ->
+                runCatching { writeBytesToTree(treeUri, entry.name, backend.readBytes(entry.relPath)) }
+                    .onSuccess { ok++ }
+                    .onFailure { fail++ }
+            }
+            clearSelection()
+            notify(
+                if (fail == 0) "已下载 $ok 个文件到所选目录" else null,
+                if (fail > 0) "下载完成：成功 $ok，失败 $fail" else null
+            )
+        }
+    }
+
+    /** 在 SAF 树目录下写入字节内容（重名自动加序号） */
+    private fun writeBytesToTree(treeUri: Uri, name: String, bytes: ByteArray) {
+        val resolver = appContext.contentResolver
+        val parent = DocumentsContract.buildDocumentUriUsingTree(
+            treeUri, DocumentsContract.getTreeDocumentId(treeUri)
+        )
+        val doc = DocumentsContract.createDocument(
+            resolver, parent, guessMime(name), uniqueChildName(resolver, treeUri, name)
+        ) ?: error("无法在目标目录创建文件")
+        resolver.openOutputStream(doc)?.use { it.write(bytes) } ?: error("无法写入目标文件")
     }
 
     /**
@@ -1358,7 +1352,7 @@ private fun WorkspaceListPane(
     }
 
     if (showCreate) {
-        NameInputDialog(
+        NameInputSheet(
             title = "新建工作区",
             placeholder = "工作区名称",
             onConfirm = { name ->
@@ -1370,7 +1364,7 @@ private fun WorkspaceListPane(
     }
 
     renaming?.let { ws ->
-        NameInputDialog(
+        NameInputSheet(
             title = "重命名工作区",
             initial = ws.name,
             placeholder = "工作区名称",
@@ -1581,7 +1575,7 @@ private fun WorkspaceDetailPane(
     }
 
     if (showRenameWs) {
-        NameInputDialog(
+        NameInputSheet(
             title = "重命名工作区",
             initial = ws.name,
             placeholder = "工作区名称",
@@ -1894,9 +1888,11 @@ private fun FilesPane(
     var deleting by remember { mutableStateOf<FileEntry?>(null) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
     var showMove by remember { mutableStateOf(false) }
+    // 条目动作底部弹层的目标（点列表 … 或网格 ⋮ 打开）
+    var actionEntry by remember { mutableStateOf<FileEntry?>(null) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val context = LocalContext.current
-    // 导入/导出依赖本机 SAF 与 FileProvider，SSH 工作区不提供
+    // 导入依赖本机 SAF，SSH 工作区不提供
     val isSsh = state.opened?.isSsh == true
     val selecting = state.selection.isNotEmpty()
 
@@ -1907,13 +1903,13 @@ private fun FilesPane(
         uri?.let(viewModel::importFile)
     }
 
-    // 单文件导出：用户自选目标文件夹（Download/自建目录等）
-    var pendingSaveEntry by remember { mutableStateOf<FileEntry?>(null) }
-    val saveToTreeLauncher = rememberLauncherForActivityResult(
+    // 单文件下载：用户自选目标文件夹（Download/自建目录等），本地/SSH 通用
+    var pendingDownloadEntry by remember { mutableStateOf<FileEntry?>(null) }
+    val downloadLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { treeUri ->
-        val entry = pendingSaveEntry
-        pendingSaveEntry = null
+        val entry = pendingDownloadEntry
+        pendingDownloadEntry = null
         if (treeUri != null && entry != null) {
             runCatching {
                 context.contentResolver.takePersistableUriPermission(
@@ -1921,7 +1917,25 @@ private fun FilesPane(
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
             }
-            viewModel.exportEntryToTree(entry, treeUri)
+            viewModel.downloadEntryToTree(entry, treeUri)
+        }
+    }
+
+    // 批量下载：所选文件写入用户自选目录
+    var pendingBatchDownload by remember { mutableStateOf(false) }
+    val batchDownloadLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        val requested = pendingBatchDownload
+        pendingBatchDownload = false
+        if (treeUri != null && requested) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            viewModel.downloadSelectedToTree(treeUri)
         }
     }
 
@@ -2001,21 +2015,9 @@ private fun FilesPane(
                             entry = entry,
                             selecting = selecting,
                             selected = entry.relPath in state.selection,
-                            isSsh = isSsh,
                             onOpen = { openEntry(entry) },
                             onToggleSelect = { viewModel.toggleSelection(entry.relPath) },
-                            onView = {
-                                scope.launch {
-                                    viewModel.readTextFile(entry)?.let { viewing = entry to it }
-                                }
-                            },
-                            onExport = { viewModel.exportFile(entry) },
-                            onSaveToTree = {
-                                pendingSaveEntry = entry
-                                saveToTreeLauncher.launch(null)
-                            },
-                            onRename = { renaming = entry },
-                            onDelete = { deleting = entry },
+                            onMore = { actionEntry = entry },
                         )
                     }
                 }
@@ -2033,6 +2035,7 @@ private fun FilesPane(
                             selected = entry.relPath in state.selection,
                             onOpen = { openEntry(entry) },
                             onToggleSelect = { viewModel.toggleSelection(entry.relPath) },
+                            onMore = { actionEntry = entry },
                         )
                     }
                 }
@@ -2042,9 +2045,11 @@ private fun FilesPane(
         if (selecting) {
             SelectionActionBar(
                 modifier = Modifier.align(Alignment.BottomCenter),
-                isSsh = isSsh,
                 onMove = { showMove = true },
-                onExport = viewModel::exportSelected,
+                onDownload = {
+                    pendingBatchDownload = true
+                    batchDownloadLauncher.launch(null)
+                },
                 onDelete = { confirmBatchDelete = true },
             )
         }
@@ -2059,8 +2064,29 @@ private fun FilesPane(
         )
     }
 
+    // 条目动作底部弹层（MT 管理器风格）：查看/下载/分享/选择/重命名/删除
+    actionEntry?.let { entry ->
+        EntryActionSheet(
+            entry = entry,
+            onDismiss = { actionEntry = null },
+            onView = {
+                scope.launch {
+                    viewModel.readTextFile(entry)?.let { viewing = entry to it }
+                }
+            },
+            onDownload = {
+                pendingDownloadEntry = entry
+                downloadLauncher.launch(null)
+            },
+            onShare = { viewModel.exportFile(entry) },
+            onSelect = { viewModel.toggleSelection(entry.relPath) },
+            onRename = { renaming = entry },
+            onDelete = { deleting = entry },
+        )
+    }
+
     if (showNewDir) {
-        NameInputDialog(
+        NameInputSheet(
             title = "新建文件夹",
             placeholder = "文件夹名称",
             onConfirm = { name -> showNewDir = false; viewModel.createDir(name) },
@@ -2069,7 +2095,7 @@ private fun FilesPane(
     }
 
     if (showNewFile) {
-        NameInputDialog(
+        NameInputSheet(
             title = "新建文件",
             placeholder = "文件名（可含扩展名）",
             onConfirm = { name -> showNewFile = false; viewModel.createFile(name) },
@@ -2078,7 +2104,7 @@ private fun FilesPane(
     }
 
     renaming?.let { entry ->
-        NameInputDialog(
+        NameInputSheet(
             title = "重命名",
             initial = entry.name,
             placeholder = "新名称",
@@ -2091,37 +2117,29 @@ private fun FilesPane(
     }
 
     deleting?.let { entry ->
-        AlertDialog(
-            onDismissRequest = { deleting = null },
-            title = { Text("删除") },
-            text = { Text("删除「${entry.name}」${if (entry.isDir) "及其全部内容" else ""}？") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteEntry(entry)
-                    deleting = null
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        DeleteConfirmSheet(
+            text = "删除「${entry.name}」${if (entry.isDir) "及其全部内容" else ""}？此操作不可恢复。",
+            onConfirm = {
+                viewModel.deleteEntry(entry)
+                deleting = null
             },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }
+            onDismiss = { deleting = null }
         )
     }
 
     if (confirmBatchDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmBatchDelete = false },
-            title = { Text("批量删除") },
-            text = { Text("删除已选的 ${state.selection.size} 项？文件夹会连同其全部内容一起删除，此操作不可恢复。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmBatchDelete = false
-                    viewModel.deleteSelected()
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        DeleteConfirmSheet(
+            text = "删除已选的 ${state.selection.size} 项？文件夹会连同其全部内容一起删除，此操作不可恢复。",
+            onConfirm = {
+                confirmBatchDelete = false
+                viewModel.deleteSelected()
             },
-            dismissButton = { TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") } }
+            onDismiss = { confirmBatchDelete = false }
         )
     }
 
     if (showMove) {
-        MoveTargetDialog(
+        MoveTargetSheet(
             initialPath = state.cwd,
             selection = state.selection,
             viewModel = viewModel,
@@ -2299,23 +2317,17 @@ private fun SortMenuItem(
     )
 }
 
-/** 列表模式行：点击打开，长按进入多选 */
+/** 列表模式行：点击打开，长按进入多选，「…」弹底部动作面板 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileListRow(
     entry: FileEntry,
     selecting: Boolean,
     selected: Boolean,
-    isSsh: Boolean,
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit,
-    onView: () -> Unit,
-    onExport: () -> Unit,
-    onSaveToTree: () -> Unit,
-    onRename: () -> Unit,
-    onDelete: () -> Unit,
+    onMore: () -> Unit,
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -2355,46 +2367,14 @@ private fun FileListRow(
         if (selecting) {
             Checkbox(checked = selected, onCheckedChange = { onToggleSelect() })
         } else {
-            Box {
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "更多", modifier = Modifier.size(18.dp))
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    if (!entry.isDir) {
-                        DropdownMenuItem(
-                            text = { Text("查看") },
-                            onClick = { menuOpen = false; onView() }
-                        )
-                        if (!isSsh) {
-                            DropdownMenuItem(
-                                text = { Text("导出分享") },
-                                onClick = { menuOpen = false; onExport() }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("保存到文件夹…") },
-                                onClick = { menuOpen = false; onSaveToTree() }
-                            )
-                        }
-                    }
-                    DropdownMenuItem(
-                        text = { Text("选择") },
-                        onClick = { menuOpen = false; onToggleSelect() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("重命名") },
-                        onClick = { menuOpen = false; onRename() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("删除", color = MaterialTheme.colorScheme.error) },
-                        onClick = { menuOpen = false; onDelete() }
-                    )
-                }
+            IconButton(onClick = onMore) {
+                Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", modifier = Modifier.size(18.dp))
             }
         }
     }
 }
 
-/** 网格模式单元格 */
+/** 网格模式单元格：点击打开，长按多选，右上角「⋮」弹底部动作面板 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileGridCell(
@@ -2403,6 +2383,7 @@ private fun FileGridCell(
     selected: Boolean,
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit,
+    onMore: () -> Unit,
 ) {
     Box {
         Column(
@@ -2447,17 +2428,25 @@ private fun FileGridCell(
                 onCheckedChange = { onToggleSelect() },
                 modifier = Modifier.align(Alignment.TopEnd)
             )
+        } else {
+            IconButton(onClick = onMore, modifier = Modifier.align(Alignment.TopEnd).size(28.dp)) {
+                Icon(
+                    Icons.Filled.MoreVert,
+                    contentDescription = "更多操作",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
 
-/** 多选模式底部操作栏：移动 / 导出（仅本地） / 删除 */
+/** 多选模式底部操作栏：移动 / 下载到手机 / 删除（本地与 SSH 通用） */
 @Composable
 private fun SelectionActionBar(
     modifier: Modifier = Modifier,
-    isSsh: Boolean,
     onMove: () -> Unit,
-    onExport: () -> Unit,
+    onDownload: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Surface(
@@ -2473,9 +2462,7 @@ private fun SelectionActionBar(
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             BatchAction(Icons.Filled.DriveFileMove, "移动", MaterialTheme.colorScheme.primary, onMove)
-            if (!isSsh) {
-                BatchAction(Icons.Filled.Share, "导出", MaterialTheme.colorScheme.primary, onExport)
-            }
+            BatchAction(Icons.Filled.Download, "下载", MaterialTheme.colorScheme.primary, onDownload)
             BatchAction(Icons.Filled.Delete, "删除", MaterialTheme.colorScheme.error, onDelete)
         }
     }
@@ -2501,9 +2488,10 @@ private fun BatchAction(
     }
 }
 
-/** 批量移动目标目录选择：从当前目录出发逐级浏览，已选目录不可进入（防止移进自己） */
+/** 批量移动目标目录选择（底部弹层）：从当前目录出发逐级浏览，已选目录不可进入（防止移进自己） */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MoveTargetDialog(
+private fun MoveTargetSheet(
     initialPath: String,
     selection: Set<String>,
     viewModel: WorkspaceViewModel,
@@ -2516,19 +2504,24 @@ private fun MoveTargetDialog(
         dirs = null
         dirs = viewModel.listDirsFor(path)
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("移动到…") },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    if (path.isBlank()) "根目录" else path,
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(8.dp))
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Text(
+                "移动到…",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (path.isBlank()) "根目录" else path,
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            Spacer(Modifier.height(8.dp))
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                     thickness = 0.5.dp
@@ -2612,12 +2605,17 @@ private fun MoveTargetDialog(
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(path) }) { Text("移动到此处") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("取消") }
+                Button(onClick = { onConfirm(path) }, modifier = Modifier.weight(1f)) { Text("移动到此处") }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
 }
 
 /** 面包屑：根 / a / b，可横向滑动，每段可点击跳转；尾部刷新按钮 */
@@ -3384,9 +3382,91 @@ private fun commonPrefixLength(a: String, b: String): Int {
 
 // ---------------- 通用小组件 ----------------
 
-/** 名称输入对话框（新建/重命名共用） */
+/** 条目动作底部弹层（MT 管理器风格）：头部文件信息 + 大条目动作列表 */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NameInputDialog(
+private fun EntryActionSheet(
+    entry: FileEntry,
+    onDismiss: () -> Unit,
+    onView: () -> Unit,
+    onDownload: () -> Unit,
+    onShare: () -> Unit,
+    onSelect: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (entry.isDir) Icons.Filled.Folder else fileTypeIcon(entry.name),
+                contentDescription = null,
+                tint = if (entry.isDir) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(26.dp)
+            )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(
+                    entry.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    if (entry.isDir) "文件夹 · ${formatDate(entry.lastModified)}"
+                    else "${formatBytes(entry.size)} · ${formatDate(entry.lastModified)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 8.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+            thickness = 0.5.dp
+        )
+        if (!entry.isDir) {
+            SheetAction(Icons.Filled.Visibility, "查看") { onDismiss(); onView() }
+            SheetAction(Icons.Filled.Download, "下载到手机…") { onDismiss(); onDownload() }
+            SheetAction(Icons.Filled.Share, "分享…") { onDismiss(); onShare() }
+        }
+        SheetAction(Icons.Filled.CheckCircle, "选择") { onDismiss(); onSelect() }
+        SheetAction(Icons.Filled.Edit, "重命名") { onDismiss(); onRename() }
+        SheetAction(Icons.Filled.Delete, "删除", MaterialTheme.colorScheme.error) { onDismiss(); onDelete() }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** 底部弹层动作条目：图标 + 文字，大点击热区 */
+@Composable
+private fun SheetAction(
+    icon: ImageVector,
+    label: String,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(16.dp))
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = tint)
+    }
+}
+
+/** 名称输入底部面板（新建/重命名共用）：自动弹起键盘，输入法「完成」直接确认 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NameInputSheet(
     title: String,
     placeholder: String,
     initial: String = "",
@@ -3394,26 +3474,88 @@ private fun NameInputDialog(
     onDismiss: () -> Unit
 ) {
     var name by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
+    val focusRequester = remember { FocusRequester() }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .padding(horizontal = 20.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
                 placeholder = { Text(placeholder) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(
+                    onDone = { if (name.isNotBlank()) onConfirm(name.trim()) }
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester)
             )
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { if (name.isNotBlank()) onConfirm(name.trim()) },
-                enabled = name.isNotBlank()
+            Spacer(Modifier.height(16.dp))
+            Button(
+                onClick = { onConfirm(name.trim()) },
+                enabled = name.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
             ) { Text("确定") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+}
+
+/** 删除确认底部弹层：单个/批量共用，红色强调不可恢复 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DeleteConfirmSheet(
+    text: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Text(
+                "删除确认",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(20.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("取消") }
+                Button(
+                    onClick = onConfirm,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    ),
+                    modifier = Modifier.weight(1f)
+                ) { Text("删除") }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
 }
 
 private fun formatBytes(bytes: Long): String = when {

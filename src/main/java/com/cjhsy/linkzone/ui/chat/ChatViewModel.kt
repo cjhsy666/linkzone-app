@@ -30,6 +30,7 @@ import com.cjhsy.linkzone.ai.provider.resolveModel
 import com.cjhsy.linkzone.ai.provider.supportsTools
 import com.cjhsy.linkzone.ai.ui.StreamChunk
 import com.cjhsy.linkzone.ai.ui.StreamChunkHandler
+import com.cjhsy.linkzone.ai.ui.ToolApprovalState
 import com.cjhsy.linkzone.ai.ui.UIMessage
 import com.cjhsy.linkzone.ai.document.DocumentParser
 import com.cjhsy.linkzone.ai.ui.UIMessagePart
@@ -71,6 +72,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
@@ -118,6 +120,16 @@ data class AskUserPrompt(
     val questions: List<AskUserQuestion>
 )
 
+/** 一次工具调用审批请求（生成挂起中，等待用户批准/拒绝；RikkaHub 式调用前确认） */
+data class ToolApprovalRequest(
+    val toolCallId: String,
+    val toolName: String,
+    /** 关键参数摘要（命令/路径等），卡片标题下展示 */
+    val summary: String,
+    /** 完整入参 JSON（卡片展开查看） */
+    val input: String,
+)
+
 /** 乐观（未确认）消息 ID 前缀，确认后由服务端同 id 正式消息替换 */
 const val LOCAL_PREFIX = "local-"
 
@@ -146,6 +158,8 @@ data class ChatUiState(
     val generating: Boolean = false,
     /** ask_user 追问挂起中（非空时聊天页显示作答卡，提交后生成继续） */
     val askUser: AskUserPrompt? = null,
+    /** 工具调用审批挂起中（非空时聊天页显示确认卡片，批准/拒绝后生成继续） */
+    val toolApproval: ToolApprovalRequest? = null,
     /** ask_user_for_photo 选图挂起中（非空时聊天页显示选图卡，reason 为给用户的说明） */
     val askPhotoReason: String? = null,
     /** AI 生成的回复建议（首答后生成，点击直接发送） */
@@ -321,6 +335,9 @@ class ChatViewModel(
     /** ask_user 挂起中的应答通道；工具 execute 内 await，提交后 complete 继续 */
     private var pendingAskUser: CompletableDeferred<JsonElement>? = null
 
+    /** 工具审批挂起中的决定通道；executeToolCalls 内 await，用户点击后 complete 继续 */
+    private var pendingToolApproval: CompletableDeferred<Boolean>? = null
+
     /**
      * ask_user 桥：置入 UI 状态并挂起等待用户作答。
      * 用户停止生成时协程被取消，await 抛 CancellationException 随工具链路向上传播。
@@ -376,6 +393,52 @@ class ChatViewModel(
             put("_skipped", "The user skipped these questions. Continue with reasonable assumptions.")
         })
     }
+
+    /**
+     * 工具调用审批（RikkaHub 式调用前确认）：置入 UI 状态并挂起，等用户点「批准/拒绝」。
+     * 用户停止生成时协程被取消，await 抛 CancellationException 随工具链路向上传播。
+     */
+    private suspend fun awaitToolApproval(call: UIMessagePart.Tool): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        pendingToolApproval = deferred
+        _state.value = _state.value.copy(
+            toolApproval = ToolApprovalRequest(
+                toolCallId = call.toolCallId,
+                toolName = call.toolName,
+                summary = summarizeToolInput(call.toolName, call.input),
+                input = call.input
+            )
+        )
+        try {
+            return deferred.await()
+        } finally {
+            pendingToolApproval = null
+            _state.value = _state.value.copy(toolApproval = null)
+        }
+    }
+
+    /** 批准/拒绝待执行的工具调用 */
+    fun resolveToolApproval(approved: Boolean) {
+        pendingToolApproval?.complete(approved)
+    }
+
+    /** 工具入参 → 审批卡片的一句话摘要（命令/路径等关键参数）；解析失败回退原始入参截断 */
+    private fun summarizeToolInput(toolName: String, input: String): String = runCatching {
+        val obj = json.parseToJsonElement(input).jsonObject
+        fun str(key: String): String? =
+            (obj[key] as? JsonPrimitive)?.let { if (it is JsonNull) null else it.content }
+        when (toolName) {
+            "workspace_shell" -> str("command")
+            "workspace_write_file" -> buildString {
+                append(str("path") ?: "?")
+                str("text")?.let { append("（写入 ${it.length} 字符）") }
+            }
+            "workspace_edit_file" -> str("path")
+            else -> obj.entries.take(3).joinToString("  ") { (k, v) ->
+                "$k=${v.toString().take(60)}"
+            }
+        }?.ifBlank { null }
+    }.getOrNull() ?: input.take(120)
 
     /** ask_user_for_photo 挂起中的应答通道；工具 execute 内 await，选完图 complete 继续 */
     private var pendingAskPhoto: CompletableDeferred<JsonElement>? = null
@@ -2485,26 +2548,36 @@ class ChatViewModel(
         return listOf(first.copy(parts = listOf(UIMessagePart.Text("$original\n$extra")))) + messages.drop(1)
     }
 
-    /** 执行工具调用并回填输出；单个工具失败以 error JSON 作为输出继续（对齐 RikkaHub） */
+    /**
+     * 执行工具调用并回填输出；单个工具失败以 error JSON 作为输出继续（对齐 RikkaHub）。
+     * 标记了 needsApproval 的工具（写文件/改文件/shell/日历写删等）先在聊天里挂确认卡片，
+     * 用户批准才执行；拒绝则以 error JSON 告知模型「用户拒绝」，不中断整轮生成。
+     */
     private suspend fun executeToolCalls(
         tools: List<Tool>,
         calls: List<UIMessagePart.Tool>
     ): List<UIMessagePart.Tool> = calls.map { call ->
         val def = tools.firstOrNull { it.name == call.toolName }
-        val output = if (def == null) {
-            listOf(UIMessagePart.Text(errorJson("工具 '${call.toolName}' 不存在")))
-        } else {
-            runCatching {
-                val args = json.parseToJsonElement(call.input.ifBlank { "{}" })
-                // 工具执行统一切 IO：shell 命令等待/文件读写/联系人短信查询等均为阻塞调用，
-                // 在主线程跑满 5s 即触发 ANR 被系统查杀（三次实测 ANR 堆栈均指向此处）
-                withContext(Dispatchers.IO) { def.execute(args) }
-            }.getOrElse { e ->
-                if (e is CancellationException) throw e
-                listOf(UIMessagePart.Text(errorJson(e.toUserMessage("工具调用失败"))))
-            }
+            ?: return@map call.copy(output = listOf(UIMessagePart.Text(errorJson("工具 '${call.toolName}' 不存在"))))
+        val args = runCatching { json.parseToJsonElement(call.input.ifBlank { "{}" }) }
+            .getOrElse { buildJsonObject {} }
+        // 调用前确认：挂起等用户决定；等待期间停止生成 → 协程取消 → CCE 向上传播正常收尾
+        val approvalState = if (runCatching { def.needsApproval(args) }.getOrDefault(false)) {
+            if (awaitToolApproval(call)) ToolApprovalState.Approved
+            else return@map call.copy(
+                output = listOf(UIMessagePart.Text(errorJson("用户拒绝了本次工具调用，未执行。"))),
+                approvalState = ToolApprovalState.Denied("用户拒绝")
+            )
+        } else call.approvalState
+        val output = runCatching {
+            // 工具执行统一切 IO：shell 命令等待/文件读写/联系人短信查询等均为阻塞调用，
+            // 在主线程跑满 5s 即触发 ANR 被系统查杀（三次实测 ANR 堆栈均指向此处）
+            withContext(Dispatchers.IO) { def.execute(args) }
+        }.getOrElse { e ->
+            if (e is CancellationException) throw e
+            listOf(UIMessagePart.Text(errorJson(e.toUserMessage("工具调用失败"))))
         }
-        call.copy(output = output)
+        call.copy(output = output, approvalState = approvalState)
     }
 
     private fun errorJson(message: String): String =

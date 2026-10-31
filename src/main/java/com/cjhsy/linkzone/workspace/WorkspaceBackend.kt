@@ -36,7 +36,7 @@ interface WorkspaceBackend {
     val rootLabel: String
     /** shell 单次执行超时上限（毫秒） */
     val maxTimeoutMs: Long
-    /** 写文件/改文件/执行命令是否需要用户批准 */
+    /** 写文件/改文件/执行命令是否需要用户批准（本地与 SSH 均开启，RikkaHub 式调用前确认） */
     val requiresApproval: Boolean
     /** 技能目录（仅本地后端有，用于 shell 工具提示） */
     val skillsPath: String?
@@ -44,6 +44,8 @@ interface WorkspaceBackend {
     val supportsTerminal: Boolean
 
     suspend fun readText(path: String): String
+    /** 读取文件原始字节（二进制可用），用于下载到本机；超过 [maxBytes] 报错 */
+    suspend fun readBytes(path: String, maxBytes: Long = DOWNLOAD_MAX_BYTES): ByteArray
     suspend fun writeText(path: String, text: String, overwrite: Boolean): Long
     suspend fun editText(path: String, oldText: String, newText: String, replaceAll: Boolean): Pair<Int, Long>
     suspend fun listDir(path: String): List<WorkspaceEntryInfo>
@@ -59,6 +61,7 @@ interface WorkspaceBackend {
 }
 
 internal const val TEXT_MAX_BYTES = 10 * 1024 * 1024 // 单次读写 10MB 上限
+internal const val DOWNLOAD_MAX_BYTES = 200L * 1024 * 1024 // 下载到本机单文件 200MB 上限
 
 internal val BINARY_EXTENSIONS = setOf(
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "pdf", "zip", "jar", "apk",
@@ -85,7 +88,7 @@ class LocalWorkspaceBackend(
     override val name: String get() = workspace.name
     override val rootLabel: String get() = workspace.root.absolutePath
     override val maxTimeoutMs: Long = 120_000L
-    override val requiresApproval: Boolean = false
+    override val requiresApproval: Boolean = true
     override val skillsPath: String get() = runner.skillsPath
     override val supportsTerminal: Boolean = true
 
@@ -108,6 +111,14 @@ class LocalWorkspaceBackend(
         val bytes = file.readBytes()
         if (looksBinary(bytes)) error("'$path' appears to be a binary file")
         String(bytes, Charsets.UTF_8)
+    }
+
+    override suspend fun readBytes(path: String, maxBytes: Long): ByteArray = withContext(Dispatchers.IO) {
+        val file = resolve(path)
+        if (!file.exists()) error("File not found: $path")
+        if (file.isDirectory) error("'$path' is a directory")
+        if (file.length() > maxBytes) error("File too large (>${maxBytes / 1024 / 1024}MB)")
+        file.readBytes()
     }
 
     override suspend fun writeText(path: String, text: String, overwrite: Boolean): Long =
@@ -245,6 +256,17 @@ class SshWorkspaceBackend(
             val bytes = out.toByteArray()
             if (looksBinary(bytes)) error("Binary file type is not supported: $remote")
             String(bytes, Charsets.UTF_8)
+        }
+
+    override suspend fun readBytes(path: String, maxBytes: Long): ByteArray =
+        SshSessionManager.withSftp(config) { sftp ->
+            val remote = resolveRemote(sftp, config, path)
+            val stat = sftp.stat(remote)
+            if (stat.isDir) error("Path is a directory: $remote")
+            if (stat.size > maxBytes) error("File too large: ${stat.size} bytes")
+            val out = ByteArrayOutputStream()
+            sftp.get(remote, out)
+            out.toByteArray()
         }
 
     override suspend fun writeText(path: String, text: String, overwrite: Boolean): Long {
