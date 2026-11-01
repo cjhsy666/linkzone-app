@@ -503,6 +503,35 @@ class ChatCompletionsAPI(
                             put("content", tool.toToolResultContent(supportInputModalities))
                         })
                     }
+
+                    // 工具返回的图片单独作为一条 user 多模态消息（与用户聊天发图完全同一条链路），
+                    // 因为 tool role 只接受字符串 content，图片塞进去会被静默丢弃
+                    if (Modality.IMAGE in supportInputModalities) {
+                        val images = group.tools.flatMap { it.output.filterIsInstance<UIMessagePart.Image>() }
+                        if (images.isNotEmpty()) {
+                            add(buildJsonObject {
+                                put("role", "user")
+                                put("content", buildJsonArray {
+                                    add(buildJsonObject {
+                                        put("type", "text")
+                                        put("text", "[Image(s) returned by the tool call above]")
+                                    })
+                                    images.forEach { image ->
+                                        image.encodeBase64().onSuccess { encoded ->
+                                            add(buildJsonObject {
+                                                put("type", "image_url")
+                                                put("image_url", buildJsonObject {
+                                                    put("url", encoded.base64)
+                                                })
+                                            })
+                                        }.onFailure {
+                                            Log.w(TAG, "encode tool result image failed: ${image.url}", it)
+                                        }
+                                    }
+                                })
+                            })
+                        }
+                    }
                 }
             }
         }
@@ -652,51 +681,23 @@ class ChatCompletionsAPI(
     }
 
     private fun UIMessagePart.Tool.toToolResultContent(supportInputModalities: List<Modality>): JsonElement {
-        // 只考虑文字和图片;只有模型支持图片输入时,图片才作为多模态内容回传,否则以文本占位,避免发给不支持的模型报错
+        // tool 消息的 content 只拼纯文本：多数 OpenAI 兼容接口不接受 tool role 下的多模态数组，
+        // 会把 image_url 静默丢弃。图片改由紧随其后的 user 消息携带（同聊天发图链路）。
         val supportsImageInput = Modality.IMAGE in supportInputModalities
-        val hasImageToSend = output.any { it is UIMessagePart.Image && supportsImageInput }
-        return if (!hasImageToSend) {
-            JsonPrimitive(output.mapNotNull { part ->
-                when (part) {
-                    is UIMessagePart.Text -> part.text
-                    is UIMessagePart.Image -> "[Image output omitted: the current model does not support image input. " +
+        val imageCount = output.count { it is UIMessagePart.Image }
+        val text = output.mapNotNull { part ->
+            when (part) {
+                is UIMessagePart.Text -> part.text
+                is UIMessagePart.Image -> if (supportsImageInput) null else
+                    "[Image output omitted: the current model does not support image input. " +
                         "Do not ask the user to send images again; ask them to describe it in text instead.]"
-                    else -> null
-                }
-            }.joinToString("\n"))
-        } else {
-            buildJsonArray {
-                output.forEach { part ->
-                    when (part) {
-                        is UIMessagePart.Text -> {
-                            if (part.text.isNotBlank()) {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", part.text)
-                                })
-                            }
-                        }
-
-                        is UIMessagePart.Image -> {
-                            add(buildJsonObject {
-                                part.encodeBase64().onSuccess { encodedImage ->
-                                    put("type", "image_url")
-                                    put("image_url", buildJsonObject {
-                                        put("url", encodedImage.base64)
-                                    })
-                                }.onFailure {
-                                    Log.w(TAG, "encode tool result image failed: ${part.url}", it)
-                                    put("type", "text")
-                                    put("text", "Error: Failed to encode image to base64")
-                                }
-                            })
-                        }
-
-                        else -> {}
-                    }
-                }
+                else -> null
             }
+        }.toMutableList()
+        if (imageCount > 0 && supportsImageInput) {
+            text += "[$imageCount image(s) attached in the following user message]"
         }
+        return JsonPrimitive(text.joinToString("\n"))
     }
 
     private fun parseMessage(jsonObject: JsonObject): UIMessage {
