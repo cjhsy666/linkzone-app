@@ -411,6 +411,7 @@ fun ChatScreen(
                     ToolApprovalCard(
                         request = req,
                         onApprove = { viewModel.resolveToolApproval(true) },
+                        onAllowAlways = { viewModel.resolveToolApproval(true, alwaysAllow = true) },
                         onDeny = { viewModel.resolveToolApproval(false) }
                     )
                 }
@@ -1116,13 +1117,14 @@ internal data class EditSeed(
 
 /**
  * 工具调用确认卡（RikkaHub 式调用前确认）：
- * 写文件/改文件/shell 等操作执行前挂起生成，展示工具名+关键参数摘要+完整入参（可展开），
- * 用户点「批准」继续执行，「拒绝」则以 error 回告模型，不中断整轮回复。
+ * 写文件/改文件/shell 等操作执行前挂起生成，展示工具名+关键参数摘要+完整入参（可展开）。
+ * 「批准执行」仅本次放行，「总是允许」写入权限设置后该工具不再询问，「拒绝」以 error 回告模型。
  */
 @Composable
 private fun ToolApprovalCard(
     request: ToolApprovalRequest,
     onApprove: () -> Unit,
+    onAllowAlways: () -> Unit,
     onDeny: () -> Unit
 ) {
     var showFullInput by remember(request.toolCallId) { mutableStateOf(false) }
@@ -1194,15 +1196,22 @@ private fun ToolApprovalCard(
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
-                Spacer(Modifier.weight(1f))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedButton(
                     onClick = onDeny,
+                    modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     )
                 ) { Text("拒绝") }
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = onApprove) { Text("批准执行") }
+                OutlinedButton(onClick = onAllowAlways, modifier = Modifier.weight(1f)) {
+                    Text("总是允许")
+                }
+                Button(onClick = onApprove, modifier = Modifier.weight(1f)) { Text("批准") }
             }
         }
     }

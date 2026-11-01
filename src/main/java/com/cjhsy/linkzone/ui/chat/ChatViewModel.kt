@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.cjhsy.linkzone.core.error.ErrorMessages
 import com.cjhsy.linkzone.core.error.toUserMessage
+import com.cjhsy.linkzone.core.storage.ToolPermission
+import com.cjhsy.linkzone.core.storage.ToolPermissionStore
 import com.cjhsy.linkzone.data.model.ConvItem
 import com.cjhsy.linkzone.data.model.MessageItem
 import com.cjhsy.linkzone.data.model.MessageSegment
@@ -253,6 +255,9 @@ class ChatViewModel(
     /** LLM 功能域偏好（「历史保留工具调用」开关等）：SharedPreferences 同步读写，按需懒加载 */
     private val llmPrefs by lazy { com.cjhsy.linkzone.core.storage.LlmPrefs(appContext, json) }
 
+    /** 工具权限档位（允许/每次询问/禁止），按工具名持久化 */
+    private val toolPermissions by lazy { ToolPermissionStore(appContext) }
+
     /** 当前用户资料（消息气泡显示昵称/头像用），直接透传 UserRepository 的流 */
     val userProfile: StateFlow<com.cjhsy.linkzone.data.model.UserProfile?> = userRepository.profile
 
@@ -417,8 +422,13 @@ class ChatViewModel(
         }
     }
 
-    /** 批准/拒绝待执行的工具调用 */
-    fun resolveToolApproval(approved: Boolean) {
+    /** 批准/拒绝待执行的工具调用；alwaysAllow=记住该工具为「允许」，后续不再询问 */
+    fun resolveToolApproval(approved: Boolean, alwaysAllow: Boolean = false) {
+        if (approved && alwaysAllow) {
+            _state.value.toolApproval?.toolName?.let {
+                toolPermissions.set(it, ToolPermission.Allow)
+            }
+        }
         pendingToolApproval?.complete(approved)
     }
 
@@ -2561,14 +2571,23 @@ class ChatViewModel(
             ?: return@map call.copy(output = listOf(UIMessagePart.Text(errorJson("工具 '${call.toolName}' 不存在"))))
         val args = runCatching { json.parseToJsonElement(call.input.ifBlank { "{}" }) }
             .getOrElse { buildJsonObject {} }
-        // 调用前确认：挂起等用户决定；等待期间停止生成 → 协程取消 → CCE 向上传播正常收尾
-        val approvalState = if (runCatching { def.needsApproval(args) }.getOrDefault(false)) {
-            if (awaitToolApproval(call)) ToolApprovalState.Approved
-            else return@map call.copy(
-                output = listOf(UIMessagePart.Text(errorJson("用户拒绝了本次工具调用，未执行。"))),
-                approvalState = ToolApprovalState.Denied("用户拒绝")
+        // 权限档位（RikkaHub 式）：允许=直接执行，每次询问=挂确认卡片，禁止=拒绝并告知模型。
+        // 用户点「总是允许」后该工具长期免询问；等待期间停止生成 → 协程取消 → CCE 正常传播
+        val askByDefault = runCatching { def.needsApproval(args) }.getOrDefault(false)
+        val approvalState = when (toolPermissions.policyFor(call.toolName, askByDefault)) {
+            ToolPermission.Allow -> call.approvalState
+            ToolPermission.Deny -> return@map call.copy(
+                output = listOf(UIMessagePart.Text(errorJson("工具 '${call.toolName}' 已被用户禁用，未执行。"))) ,
+                approvalState = ToolApprovalState.Denied("已禁用")
             )
-        } else call.approvalState
+            ToolPermission.Ask -> when (awaitToolApproval(call)) {
+                true -> ToolApprovalState.Approved
+                false -> return@map call.copy(
+                    output = listOf(UIMessagePart.Text(errorJson("用户拒绝了本次工具调用，未执行。"))) ,
+                    approvalState = ToolApprovalState.Denied("用户拒绝")
+                )
+            }
+        }
         val output = runCatching {
             // 工具执行统一切 IO：shell 命令等待/文件读写/联系人短信查询等均为阻塞调用，
             // 在主线程跑满 5s 即触发 ANR 被系统查杀（三次实测 ANR 堆栈均指向此处）

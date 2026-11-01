@@ -1,6 +1,8 @@
 package com.cjhsy.linkzone.ui.workspace
 
 import com.cjhsy.linkzone.core.error.toUserMessage
+import com.cjhsy.linkzone.core.storage.ToolPermission
+import com.cjhsy.linkzone.core.storage.ToolPermissionStore
 
 import android.content.ContentValues
 import android.content.Context
@@ -101,6 +103,7 @@ import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Terminal
@@ -245,6 +248,7 @@ class WorkspaceViewModel(
     private val appContext = context.applicationContext
     private val manager = WorkspaceManager(appContext)
     private val repo = UnifiedWorkspaceRepository(manager, llmRepository)
+    private val toolPermissions = ToolPermissionStore(appContext)
 
     /** 每次按当前环境重新选择 runner（安装完成后立即生效，无需重建 VM） */
     private fun runner(): WorkspaceShellRunner = WorkspaceShellRunner.select(appContext)
@@ -767,6 +771,21 @@ class WorkspaceViewModel(
     /** 当前打开工作区的根路径（本地绝对路径 / SSH host:port · workDir） */
     fun currentRootPath(): String? = openedBackend()?.rootLabel
 
+    /** 工作区工具权限快照：名称/说明/当前档位（读默认允许，写操作默认每次询问） */
+    fun toolPolicies(): List<ToolPolicyItem> = WORKSPACE_TOOLS.map { (name, label, askByDefault) ->
+        ToolPolicyItem(
+            name = name,
+            label = label,
+            permission = toolPermissions.policyFor(name, askByDefault),
+            askByDefault = askByDefault
+        )
+    }
+
+    /** 设置某个工作区工具的权限档位（持久化，立即对后续调用生效） */
+    fun setToolPermission(toolName: String, permission: ToolPermission) {
+        toolPermissions.set(toolName, permission)
+    }
+
     /**
      * 下载单个文件到系统下载目录（Download/LinkZone/Workspace/），本地/SSH 通用。
      * 与聊天里的媒体/代码下载一致：走 MediaStore 直接落盘，不弹目录选择器。
@@ -1021,6 +1040,22 @@ class WorkspaceViewModel(
 
 /** 工作区文件下载落盘目录（与聊天媒体下载同一套 LinkZone 分类目录） */
 private const val DOWNLOAD_DIR_LABEL = "Download/LinkZone/Workspace"
+
+/** 工作区四工具：(工具名, 展示名, 未配置时是否默认询问) */
+private val WORKSPACE_TOOLS = listOf(
+    Triple("workspace_read_file", "读取文件", false),
+    Triple("workspace_write_file", "写入文件", true),
+    Triple("workspace_edit_file", "修改文件", true),
+    Triple("workspace_shell", "执行命令", true),
+)
+
+/** 工具权限列表项（设置面板用） */
+data class ToolPolicyItem(
+    val name: String,
+    val label: String,
+    val permission: ToolPermission,
+    val askByDefault: Boolean,
+)
 
 /** 拼接相对路径（cwd 为空串时直接返回 name） */
 private fun joinPath(cwd: String, name: String): String =
@@ -1457,6 +1492,7 @@ private fun WorkspaceDetailPane(
     val stats = state.stats[ws.id]
     var showRenameWs by remember { mutableStateOf(false) }
     var showDeleteWs by remember { mutableStateOf(false) }
+    var showToolPerm by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val rootPath = remember(ws.id) { viewModel.currentRootPath() }
 
@@ -1556,6 +1592,13 @@ private fun WorkspaceDetailPane(
                     )
                 }
             }
+            IconButton(onClick = { showToolPerm = true }) {
+                Icon(
+                    Icons.Filled.Security,
+                    contentDescription = "工具权限",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
             IconButton(onClick = { showRenameWs = true }) {
                 Icon(Icons.Filled.Edit, contentDescription = "重命名工作区", modifier = Modifier.size(20.dp))
             }
@@ -1626,6 +1669,73 @@ private fun WorkspaceDetailPane(
                 TextButton(onClick = { showDeleteWs = false }) { Text("取消") }
             }
         )
+    }
+
+    if (showToolPerm) {
+        ToolPermissionSheet(
+            items = viewModel.toolPolicies(),
+            onSet = { name, perm -> viewModel.setToolPermission(name, perm) },
+            onDismiss = { showToolPerm = false }
+        )
+    }
+}
+
+/** 工具权限设置面板：逐工具三档（允许 / 每次询问 / 禁止），与聊天里的确认卡「总是允许」共用存储 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ToolPermissionSheet(
+    items: List<ToolPolicyItem>,
+    onSet: (String, ToolPermission) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var policies by remember { mutableStateOf(items) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Text(
+                "工具权限",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "控制智能体在工作区里能做什么：允许=自动执行，每次询问=弹确认卡片，禁止=直接拒绝。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+            )
+            policies.forEach { item ->
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        item.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ToolPermission.entries.forEach { perm ->
+                            FilterChip(
+                                selected = item.permission == perm,
+                                onClick = {
+                                    onSet(item.name, perm)
+                                    policies = policies.map {
+                                        if (it.name == item.name) it.copy(permission = perm) else it
+                                    }
+                                },
+                                label = { Text(perm.label) }
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                    thickness = 0.5.dp
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
 
