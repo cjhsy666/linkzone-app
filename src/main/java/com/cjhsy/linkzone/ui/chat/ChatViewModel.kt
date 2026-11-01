@@ -1741,7 +1741,10 @@ class ChatViewModel(
             addAll(createSearchTools(searchOptions))
             addAll(createSkillTools(agent.enabledSkills, llmRepository.getSkills()))
             // 本地工具：时间感知/剪贴板/追问/日历/TTS，按智能体开关启用
-            addAll(createLocalTools(appContext, agent.localTools, askUserBridge, askPhotoBridge))
+            addAll(createLocalTools(
+                appContext, agent.localTools, askUserBridge, askPhotoBridge,
+                supportsImageInput = supportsVision(model)
+            ))
             // 会话查询工具：让模型按需检索历史会话（仅本地会话可见）
             if (agent.enableConversationTools) {
                 addAll(createConversationTools(
@@ -2181,6 +2184,17 @@ class ChatViewModel(
                 } else m
             }
         )
+    }
+
+    /**
+     * 模型是否能看图：自身显式声明优先；只声明了 TEXT 或未声明时查 ModelRegistry 默认能力。
+     * 用于按模型能力裁剪视觉类工具（不支持时不给 ask_user_for_photo 白忙一场）。
+     */
+    private fun supportsVision(m: Model): Boolean {
+        val registryInput = com.cjhsy.linkzone.ai.registry.ModelRegistry.MODEL_INPUT_MODALITIES.getData(m.modelId)
+        return Modality.IMAGE in m.inputModalities ||
+            (m.inputModalities.size == 1 && m.inputModalities.first() == Modality.TEXT && Modality.IMAGE in registryInput) ||
+            (m.inputModalities.isEmpty() && Modality.IMAGE in registryInput)
     }
 
     /** 解析 Agent 绑定的模型；未绑定时回退第一个可用 Provider 的首个 CHAT 模型 */

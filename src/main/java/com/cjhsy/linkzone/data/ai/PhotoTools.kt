@@ -41,15 +41,23 @@ fun interface AskPhotoBridge {
     suspend fun ask(reason: String): JsonElement
 }
 
-fun buildAskUserPhotoTool(bridge: AskPhotoBridge): Tool = Tool(
+fun buildAskUserPhotoTool(
+    bridge: AskPhotoBridge,
+    /** 当前模型是否支持图像输入；不支持时直接拒绝，避免让用户白选一张图 */
+    supportsImageInput: Boolean = true,
+): Tool = Tool(
     name = "ask_user_for_photo",
-    description = """
+    description = if (supportsImageInput) """
         Pause the conversation and ask the user to pick one image (photo or screenshot) from their
         device gallery via the system photo picker. Pass a short 'reason' explaining what you need to
         see (e.g. "the error message shown on your screen").
         The picked image is returned as an attached image you can see, plus its file metadata;
         if the user skips, cancelled=true is returned — then adapt (ask them to paste text instead, etc.).
         Use this whenever the user refers to something visual you cannot see yet.
+    """.trimIndent().replace("\n", " ") else """
+        NOT AVAILABLE: the current model cannot accept image input, so this tool must not be called.
+        If the user refers to something visual, ask them to describe it in text (or to copy-paste
+        the text shown on their screen). Never say you can see images in this conversation.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -62,6 +70,13 @@ fun buildAskUserPhotoTool(bridge: AskPhotoBridge): Tool = Tool(
         )
     },
     execute = { args ->
+        if (!supportsImageInput) {
+            return@Tool listOf(UIMessagePart.Text(buildJsonObject {
+                put("error", "vision_not_supported")
+                put("message", "This model cannot accept image input, so no image was requested. " +
+                    "Ask the user to describe the visual content in text instead.")
+            }.toString()))
+        }
         val reason = args.jsonObject["reason"]?.jsonPrimitive?.contentOrNull ?: "请选择一张图片"
         val result = bridge.ask(reason).jsonObject
 

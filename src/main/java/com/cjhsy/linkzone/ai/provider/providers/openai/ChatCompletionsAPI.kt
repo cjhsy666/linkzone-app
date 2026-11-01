@@ -659,7 +659,8 @@ class ChatCompletionsAPI(
             JsonPrimitive(output.mapNotNull { part ->
                 when (part) {
                     is UIMessagePart.Text -> part.text
-                    is UIMessagePart.Image -> "[Image output omitted: current model does not support image input]"
+                    is UIMessagePart.Image -> "[Image output omitted: the current model does not support image input. " +
+                        "Do not ask the user to send images again; ask them to describe it in text instead.]"
                     else -> null
                 }
             }.joinToString("\n"))

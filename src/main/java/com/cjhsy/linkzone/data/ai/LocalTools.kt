@@ -45,11 +45,15 @@ fun createLocalTools(
     options: List<LocalToolOption>,
     askUser: AskUserBridge,
     askPhoto: AskPhotoBridge,
+    /** 当前模型是否支持图像输入（决定 ask_user_for_photo 是否可用） */
+    supportsImageInput: Boolean = true,
 ): List<Tool> = buildList {
     if (options.contains(LocalToolOption.TimeInfo)) add(buildTimeInfoTool())
     if (options.contains(LocalToolOption.Clipboard)) add(buildClipboardTool(context))
     if (options.contains(LocalToolOption.AskUser)) add(buildAskUserTool(askUser))
-    if (options.contains(LocalToolOption.AskUserPhoto)) add(buildAskUserPhotoTool(askPhoto))
+    if (options.contains(LocalToolOption.AskUserPhoto)) {
+        add(buildAskUserPhotoTool(askPhoto, supportsImageInput))
+    }
     if (options.contains(LocalToolOption.PhotoSearch)) add(buildPhotoQueryTool(context))
     if (options.contains(LocalToolOption.Javascript)) add(buildJavascriptTool())
     if (options.contains(LocalToolOption.Calendar)) {
