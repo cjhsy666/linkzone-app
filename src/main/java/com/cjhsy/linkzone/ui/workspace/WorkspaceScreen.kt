@@ -2,10 +2,13 @@ package com.cjhsy.linkzone.ui.workspace
 
 import com.cjhsy.linkzone.core.error.toUserMessage
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -765,23 +768,23 @@ class WorkspaceViewModel(
     fun currentRootPath(): String? = openedBackend()?.rootLabel
 
     /**
-     * 下载单个文件到 SAF 用户选定的目录树（Download/U盘/自建文件夹均可），本地/SSH 通用。
-     * treeUri 由 OpenDocumentTree 返回，调用方需先 takePersistableUriPermission。
+     * 下载单个文件到系统下载目录（Download/LinkZone/Workspace/），本地/SSH 通用。
+     * 与聊天里的媒体/代码下载一致：走 MediaStore 直接落盘，不弹目录选择器。
      */
-    fun downloadEntryToTree(entry: FileEntry, treeUri: Uri) {
+    fun downloadEntry(entry: FileEntry) {
         viewModelScope.launch(Dispatchers.IO) {
             val backend = openedBackend() ?: return@launch
             runCatching {
                 require(!entry.isDir) { "暂不支持下载文件夹" }
                 val bytes = backend.readBytes(entry.relPath)
-                writeBytesToTree(treeUri, entry.name, bytes)
-                notify("已下载到所选目录：${entry.name}")
+                saveToDownloads(entry.name, bytes)
+                notify("已保存到 $DOWNLOAD_DIR_LABEL/${entry.name}")
             }.onFailure { e -> notify(null, "下载失败：${e.toUserMessage("未知错误")}") }
         }
     }
 
-    /** 批量下载所选文件（跳过文件夹）到 SAF 选定目录，本地/SSH 通用 */
-    fun downloadSelectedToTree(treeUri: Uri) {
+    /** 批量下载所选文件（跳过文件夹）到系统下载目录，本地/SSH 通用 */
+    fun downloadSelected() {
         viewModelScope.launch(Dispatchers.IO) {
             val backend = openedBackend() ?: return@launch
             val files = selectedEntries().filter { !it.isDir }
@@ -792,28 +795,41 @@ class WorkspaceViewModel(
             var ok = 0
             var fail = 0
             files.forEach { entry ->
-                runCatching { writeBytesToTree(treeUri, entry.name, backend.readBytes(entry.relPath)) }
+                runCatching { saveToDownloads(entry.name, backend.readBytes(entry.relPath)) }
                     .onSuccess { ok++ }
                     .onFailure { fail++ }
             }
             clearSelection()
             notify(
-                if (fail == 0) "已下载 $ok 个文件到所选目录" else null,
+                if (fail == 0) "已下载 $ok 个文件到 $DOWNLOAD_DIR_LABEL" else null,
                 if (fail > 0) "下载完成：成功 $ok，失败 $fail" else null
             )
         }
     }
 
-    /** 在 SAF 树目录下写入字节内容（重名自动加序号） */
-    private fun writeBytesToTree(treeUri: Uri, name: String, bytes: ByteArray) {
+    /**
+     * 写入系统下载目录 Download/LinkZone/Workspace/（targetSdk 29+ 无需存储权限）。
+     * 同名文件由 MediaStore 自动追加序号，不会覆盖已有文件。
+     */
+    private fun saveToDownloads(name: String, bytes: ByteArray) {
         val resolver = appContext.contentResolver
-        val parent = DocumentsContract.buildDocumentUriUsingTree(
-            treeUri, DocumentsContract.getTreeDocumentId(treeUri)
-        )
-        val doc = DocumentsContract.createDocument(
-            resolver, parent, guessMime(name), uniqueChildName(resolver, treeUri, name)
-        ) ?: error("无法在目标目录创建文件")
-        resolver.openOutputStream(doc)?.use { it.write(bytes) } ?: error("无法写入目标文件")
+        val safeName = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+            put(MediaStore.Downloads.MIME_TYPE, guessMime(name))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Downloads.RELATIVE_PATH, DOWNLOAD_DIR_LABEL)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("无法在下载目录创建文件")
+        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("无法写入目标文件")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }
     }
 
     /**
@@ -1002,6 +1018,9 @@ class WorkspaceViewModel(
         const val MAX_PREVIEW_CHARS = 256 * 1024
     }
 }
+
+/** 工作区文件下载落盘目录（与聊天媒体下载同一套 LinkZone 分类目录） */
+private const val DOWNLOAD_DIR_LABEL = "Download/LinkZone/Workspace"
 
 /** 拼接相对路径（cwd 为空串时直接返回 name） */
 private fun joinPath(cwd: String, name: String): String =
@@ -1891,7 +1910,6 @@ private fun FilesPane(
     // 条目动作底部弹层的目标（点列表 … 或网格 ⋮ 打开）
     var actionEntry by remember { mutableStateOf<FileEntry?>(null) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val context = LocalContext.current
     // 导入依赖本机 SAF，SSH 工作区不提供
     val isSsh = state.opened?.isSsh == true
     val selecting = state.selection.isNotEmpty()
@@ -1901,42 +1919,6 @@ private fun FilesPane(
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let(viewModel::importFile)
-    }
-
-    // 单文件下载：用户自选目标文件夹（Download/自建目录等），本地/SSH 通用
-    var pendingDownloadEntry by remember { mutableStateOf<FileEntry?>(null) }
-    val downloadLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { treeUri ->
-        val entry = pendingDownloadEntry
-        pendingDownloadEntry = null
-        if (treeUri != null && entry != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            }
-            viewModel.downloadEntryToTree(entry, treeUri)
-        }
-    }
-
-    // 批量下载：所选文件写入用户自选目录
-    var pendingBatchDownload by remember { mutableStateOf(false) }
-    val batchDownloadLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { treeUri ->
-        val requested = pendingBatchDownload
-        pendingBatchDownload = false
-        if (treeUri != null && requested) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            }
-            viewModel.downloadSelectedToTree(treeUri)
-        }
     }
 
     // 过滤 + 排序（文件夹始终在前）
@@ -2046,10 +2028,7 @@ private fun FilesPane(
             SelectionActionBar(
                 modifier = Modifier.align(Alignment.BottomCenter),
                 onMove = { showMove = true },
-                onDownload = {
-                    pendingBatchDownload = true
-                    batchDownloadLauncher.launch(null)
-                },
+                onDownload = viewModel::downloadSelected,
                 onDelete = { confirmBatchDelete = true },
             )
         }
@@ -2074,10 +2053,7 @@ private fun FilesPane(
                     viewModel.readTextFile(entry)?.let { viewing = entry to it }
                 }
             },
-            onDownload = {
-                pendingDownloadEntry = entry
-                downloadLauncher.launch(null)
-            },
+            onDownload = { viewModel.downloadEntry(entry) },
             onShare = { viewModel.exportFile(entry) },
             onSelect = { viewModel.toggleSelection(entry.relPath) },
             onRename = { renaming = entry },
@@ -2604,7 +2580,6 @@ private fun MoveTargetSheet(
                         }
                     }
                 }
-            }
             Spacer(Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
