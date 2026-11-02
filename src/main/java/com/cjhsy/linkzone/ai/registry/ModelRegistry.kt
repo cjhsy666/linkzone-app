@@ -280,15 +280,15 @@ object ModelRegistry {
         )
     }
 
+    // DeepSeek 官方全系模型均不支持图像输入；乱标 vision 会让网关在 tool 链路
+    // 收到图片时把 base64 当文本注入上下文，导致模型注意力被污染、输出错乱
     private val DEEPSEEK_V3_MODEL = defineModel {
         tokens("deepseek", "v", "3")
-        visionInput()
         toolAbility()
     }
 
     private val DEEPSEEK_CHAT = defineModel {
         tokens("deepseek", "chat")
-        visionInput()
         toolAbility()
     }
 
@@ -308,13 +308,11 @@ object ModelRegistry {
 
     private val DEEPSEEK_FLASH = defineModel {
         tokens("deepseek", "flash")
-        visionInput()
         toolReasoningAbility()
     }
 
     private val DEEPSEEK_V4_FLASH = defineModel {
         tokens("deepseek", "v", "4", "flash")
-        visionInput()
         toolReasoningAbility()
         contextLength(1.m)
     }
@@ -328,14 +326,12 @@ object ModelRegistry {
 
     private val DEEPSEEK_V4_1_FLASH = defineModel {
         tokens("deepseek", "v", "4", "1", "flash")
-        visionInput()
         toolReasoningAbility()
         contextLength(1.m)
     }
 
     private val DEEPSEEK_V4_PRO = defineModel {
         tokens("deepseek", "v", "4", "pro")
-        visionInput()
         toolReasoningAbility()
         contextLength(1.m)
     }
