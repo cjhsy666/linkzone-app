@@ -8,6 +8,8 @@ import com.cjhsy.linkzone.core.error.ErrorMessages
 import com.cjhsy.linkzone.core.error.toUserMessage
 import com.cjhsy.linkzone.core.storage.ToolPermission
 import com.cjhsy.linkzone.core.storage.ToolPermissionStore
+import com.cjhsy.linkzone.data.importer.DeepSeekChatImporter
+import com.cjhsy.linkzone.data.importer.ImportedChat
 import com.cjhsy.linkzone.data.model.ConvItem
 import com.cjhsy.linkzone.data.model.MessageItem
 import com.cjhsy.linkzone.data.model.MessageSegment
@@ -16,6 +18,7 @@ import com.cjhsy.linkzone.data.model.displayText
 import com.cjhsy.linkzone.data.remote.ChatSocketManager
 import com.cjhsy.linkzone.data.repository.ChatRepository
 import com.cjhsy.linkzone.data.repository.CloudChatStore
+import com.cjhsy.linkzone.data.repository.ImportConversation
 import com.cjhsy.linkzone.data.repository.LocalChatStore
 import com.cjhsy.linkzone.data.repository.UserRepository
 import com.cjhsy.linkzone.ai.core.MessageRole
@@ -283,6 +286,14 @@ class ChatViewModel(
     /** 本地智能体列表（抽屉「新建本地对话」选择器用） */
     val localAgents: StateFlow<List<LlmAgent>> = llmRepository.observeAgents()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** DeepSeek 聊天记录导入的一次性提示（由主界面以 Toast 消费） */
+    private val _chatImportNotice = MutableStateFlow<String?>(null)
+    val chatImportNotice: StateFlow<String?> = _chatImportNotice.asStateFlow()
+
+    fun consumeChatImportNotice() {
+        _chatImportNotice.value = null
+    }
 
     /** 当前会话输入区上方的快捷指令：本地智能体按关联过滤；云端主会话显示独立的云端快捷指令 */
     val quickMessages: StateFlow<List<LlmQuickMessage>> = combine(
@@ -638,6 +649,103 @@ class ChatViewModel(
             }
             openConv(conv)
         }
+    }
+
+    /**
+     * 导入 DeepSeek 聊天记录（JSON / JSONL / ZIP）。
+     * 自动查找名为「DeepSeek」的本地智能体，不存在则新建；会话全部挂到该智能体下。
+     * 会话 id 由来源稳定生成，重复导入同一文件时跳过已有会话。
+     */
+    fun importDeepSeekChats(uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                val (fileName, bytes) = withContext(Dispatchers.IO) {
+                    val name = runCatching {
+                        appContext.contentResolver.query(
+                            uri,
+                            arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                            null, null, null
+                        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+                    }.getOrNull() ?: uri.lastPathSegment.orEmpty()
+                    val data = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: error("无法读取所选文件")
+                    name to data
+                }
+                val chats = withContext(Dispatchers.IO) {
+                    DeepSeekChatImporter.parse(fileName, bytes)
+                }
+                if (chats.isEmpty()) {
+                    error("没有解析到可导入的会话，请确认是 DeepSeek 导出的 JSON / ZIP 文件")
+                }
+                val agent = ensureDeepSeekAgent()
+                val conversations = chats.mapNotNull { toImportConversation(it, agent) }
+                if (conversations.isEmpty()) error("没有解析到有效的聊天消息")
+                val result = localStore.importConversations(agent, conversations)
+                _chatImportNotice.value = buildString {
+                    append("已导入 ${result.imported.size} 个会话到「${agent.name}」")
+                    if (result.skipped > 0) append("，跳过 ${result.skipped} 个已导入会话")
+                }
+                // 打开最近导入的会话，便于立即确认结果
+                result.imported.maxByOrNull { it.lastTime }?.let { openConv(it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _chatImportNotice.value = "导入失败：${e.toUserMessage("未知错误")}"
+            }
+        }
+    }
+
+    /** 按名称复用/新建 DeepSeek 智能体（名称大小写不敏感） */
+    private suspend fun ensureDeepSeekAgent(): LlmAgent {
+        llmRepository.getAgents()
+            .firstOrNull { it.name.trim().equals("DeepSeek", ignoreCase = true) }
+            ?.let { return it }
+        val agent = LlmAgent(
+            name = "DeepSeek",
+            avatarEmoji = "🐋",
+            systemPrompt = "你是 DeepSeek 智能助手，请用简体中文友好、准确地回答用户的问题。",
+            createdAt = System.currentTimeMillis(),
+        )
+        llmRepository.upsertAgent(agent)
+        return agent
+    }
+
+    /** 解析结果 → 本地会话实体参数（会话/消息 id 稳定，时间补齐为严格递增） */
+    private fun toImportConversation(chat: ImportedChat, agent: LlmAgent): ImportConversation? {
+        if (chat.messages.isEmpty()) return null
+        val sourceKey = chat.sourceId?.takeIf { it.isNotBlank() }
+            ?: "${chat.title}|${chat.createdAt ?: 0L}|${chat.messages.first().content.take(120)}"
+        val convId = LOCAL_CONV_PREFIX + "dsim-" +
+            UUID.nameUUIDFromBytes(sourceKey.toByteArray(Charsets.UTF_8)).toString()
+        val explicitTimes = chat.messages.mapNotNull { it.timestamp?.takeIf { t -> t > 0 } }
+        val anchor = listOfNotNull(chat.createdAt, explicitTimes.minOrNull()).minOrNull()
+            ?: System.currentTimeMillis()
+        var previous = 0L
+        val messages = chat.messages.mapIndexed { index, msg ->
+            val raw = msg.timestamp?.takeIf { it > 0 } ?: (anchor + index * 1000L)
+            val timestamp = if (previous > 0 && raw <= previous) previous + 1 else raw
+            previous = timestamp
+            val isSelf = msg.role == "user"
+            MessageItem(
+                id = "$convId-m$index",
+                convId = convId,
+                senderId = if (isSelf) "me" else LOCAL_BOT_PREFIX + agent.id,
+                senderName = if (isSelf) "" else agent.name,
+                segments = listOf(Segments.markdown(msg.content)),
+                content = msg.content,
+                isSelf = isSelf,
+                timestamp = timestamp,
+            )
+        }
+        val last = messages.last()
+        return ImportConversation(
+            id = convId,
+            name = chat.title.trim().ifBlank { "DeepSeek 对话" }.take(RENAME_MAX_LEN),
+            createdAt = chat.createdAt ?: messages.first().timestamp,
+            lastTime = last.timestamp,
+            lastMsg = last.content.take(NAME_MAX_LEN),
+            messages = messages,
+        )
     }
 
     /** bot-local-{agentId}（或旧格式 bot-local-{agentId}:{suffix}）→ agentId */

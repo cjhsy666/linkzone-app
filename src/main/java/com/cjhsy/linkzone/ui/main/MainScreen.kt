@@ -1,5 +1,6 @@
 package com.cjhsy.linkzone.ui.main
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cjhsy.linkzone.ui.chat.ChatScreen
 import com.cjhsy.linkzone.ui.chat.ChatViewModel
@@ -67,6 +69,15 @@ fun MainScreen(
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(DrawerChatData())
     val localAgents by chatViewModel.localAgents.collectAsStateWithLifecycle()
+    // DeepSeek 聊天记录导入结果提示
+    val chatImportNotice by chatViewModel.chatImportNotice.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LaunchedEffect(chatImportNotice) {
+        chatImportNotice?.let {
+            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            chatViewModel.consumeChatImportNotice()
+        }
+    }
 
     // 对话引擎选择器：抽屉「新建对话」= 新建；顶栏引擎 chip = 切换（换引擎分叉）
     var showEnginePicker by remember { mutableStateOf(false) }
@@ -124,6 +135,11 @@ fun MainScreen(
                             pickerForNew = true
                             showEnginePicker = true
                         }
+                    },
+                    onImportDeepSeekChats = { uri ->
+                        Toast.makeText(context, "正在导入 DeepSeek 聊天记录…", Toast.LENGTH_SHORT).show()
+                        closeDrawer()
+                        chatViewModel.importDeepSeekChats(uri)
                     },
                     onNavigate = { route ->
                         closeDrawer()

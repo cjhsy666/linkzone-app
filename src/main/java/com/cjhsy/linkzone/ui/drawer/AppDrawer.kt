@@ -1,5 +1,7 @@
 package com.cjhsy.linkzone.ui.drawer
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -98,6 +100,8 @@ fun AppDrawer(
     onClearMainConversation: () -> Unit = {},
     /** 搜索框后「+」按钮：新建本地智能体对话（弹智能体选择器） */
     onNewLocalConversation: () -> Unit = {},
+    /** 「导入」按钮：导入 DeepSeek 聊天记录（JSON / ZIP） */
+    onImportDeepSeekChats: (android.net.Uri) -> Unit = {},
     onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -163,6 +167,13 @@ fun AppDrawer(
                 }
             )
         }
+    }
+
+    // DeepSeek 聊天记录导入：JSON / JSONL / ZIP（部分文件管理器不报标准 MIME，放开为任意文件）
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) onImportDeepSeekChats(uri)
     }
 
     Column(
@@ -282,7 +293,19 @@ fun AppDrawer(
             )
         }
 
-        SectionLabel(if (searchQuery.isBlank()) "本地智能体" else "搜索结果")
+        SectionLabel(if (searchQuery.isBlank()) "本地智能体" else "搜索结果") {
+            if (searchQuery.isBlank()) {
+                Text(
+                    text = "导入 DeepSeek 聊天",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { importLauncher.launch(arrayOf("*/*")) }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
 
         // ---------- 会话区（搜索时拍平；否则按智能体分组折叠） ----------
         if (filtered.isEmpty()) {
@@ -419,13 +442,23 @@ fun AppDrawer(
 
 /** 分区小标题：极小、淡色 */
 @Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-        modifier = Modifier.padding(start = 22.dp, top = 16.dp, bottom = 4.dp)
-    )
+private fun SectionLabel(text: String, trailing: (@Composable () -> Unit)? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 22.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+        )
+        if (trailing != null) {
+            Spacer(Modifier.weight(1f))
+            trailing()
+        }
+    }
 }
 
 /**

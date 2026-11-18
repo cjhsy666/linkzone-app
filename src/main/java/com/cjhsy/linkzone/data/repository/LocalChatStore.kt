@@ -16,6 +16,22 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
 
+/** 待导入的本地会话（id 由调用方按来源生成，重复导入时用于跳过） */
+data class ImportConversation(
+    val id: String,
+    val name: String,
+    val createdAt: Long,
+    val lastTime: Long,
+    val lastMsg: String,
+    val messages: List<MessageItem>,
+)
+
+/** 导入结果：新写入的会话 + 已存在而跳过的数量 */
+data class ImportConversationsResult(
+    val imported: List<ConvItem>,
+    val skipped: Int,
+)
+
 /**
  * 本地智能体会话存储（RikkaHub 式，完全脱离服务器）。
  *
@@ -72,6 +88,42 @@ class LocalChatStore(
         )
         dao.upsertConversation(entity)
         return entity.toConvItem()
+    }
+
+    /**
+     * 批量导入会话到指定智能体。
+     * 会话 id 由来源稳定生成：已存在同 id 会话时整段跳过，避免重复导入产生副本，
+     * 也避免覆盖用户在导入后继续聊的内容。
+     */
+    suspend fun importConversations(
+        agent: LlmAgent,
+        conversations: List<ImportConversation>,
+    ): ImportConversationsResult {
+        val imported = mutableListOf<ConvItem>()
+        var skipped = 0
+        db.withTransaction {
+            conversations.forEach { conv ->
+                if (dao.getConversation(conv.id) != null) {
+                    skipped++
+                    return@forEach
+                }
+                val entity = LocalConversationEntity(
+                    id = conv.id,
+                    name = conv.name,
+                    agentId = agent.id,
+                    botId = BOT_PREFIX + agent.id,
+                    pinned = false,
+                    unread = 0,
+                    lastMsg = conv.lastMsg,
+                    lastTime = conv.lastTime,
+                    createdAt = conv.createdAt,
+                )
+                dao.upsertConversation(entity)
+                dao.insertMessages(conv.messages.map { it.copy(convId = conv.id).toEntity() })
+                imported += entity.toConvItem()
+            }
+        }
+        return ImportConversationsResult(imported, skipped)
     }
 
     suspend fun rename(convId: String, name: String) {
