@@ -6,7 +6,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import java.io.ByteArrayInputStream
+import kotlinx.serialization.json.decodeToSequence
+import java.io.BufferedInputStream
+import java.io.InputStream
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
@@ -51,59 +53,77 @@ object DeepSeekChatImporter {
     )
 
     /**
-     * @param fileName 用于无标题时兜底命名，也用于判定 ZIP
-     * @param bytes 文件原始内容（JSON / JSONL / ZIP）
+     * 流式解析（推荐）：逐会话产出，峰值内存只取决于单个会话，适合大导出文件。
+     * 调用方负责关闭 [input]；ZIP 逐 entry、JSON/JSONL 逐元素惰性解码，不构建整树 DOM。
      */
-    fun parse(fileName: String, bytes: ByteArray): List<ImportedChat> {
-        require(bytes.isNotEmpty()) { "文件为空" }
-        return if (isZip(fileName, bytes)) parseZip(bytes) else parseText(decode(bytes), fileName)
-    }
-
-    // ============ 容器 ============
-
-    private fun isZip(fileName: String, bytes: ByteArray): Boolean =
-        fileName.endsWith(".zip", ignoreCase = true) ||
-            (bytes.size >= 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte())
-
-    private fun parseZip(bytes: ByteArray): List<ImportedChat> {
-        val result = mutableListOf<ImportedChat>()
-        var jsonEntries = 0
-        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+    fun parseStreaming(fileName: String, input: InputStream): Sequence<ImportedChat> = sequence {
+        val buffered = BufferedInputStream(input)
+        if (isZipStream(fileName, buffered)) {
+            val zip = ZipInputStream(buffered)
+            var jsonEntries = 0
             while (true) {
                 val entry = zip.nextEntry ?: break
                 if (entry.isDirectory) continue
                 val entryName = entry.name ?: continue
                 val lower = entryName.lowercase()
                 if (!lower.endsWith(".json") && !lower.endsWith(".jsonl")) continue
-                val data = runCatching { zip.readBytes() }.getOrElse { continue }
-                if (data.isEmpty()) continue
                 jsonEntries++
-                result += runCatching {
-                    parseText(decode(data), entryName.substringAfterLast('/'))
-                }.getOrDefault(emptyList())
+                // ZipInputStream 在当前 entry 末尾返回 -1，逐 entry 包装流式解码，不会读进下一 entry
+                val entryStream = BufferedInputStream(zip)
+                skipBom(entryStream)
+                yieldAll(parseElementStream(entryName.substringAfterLast('/'), entryStream))
             }
+            if (jsonEntries == 0) error("压缩包内没有找到 JSON 聊天记录")
+        } else {
+            skipBom(buffered)
+            yieldAll(parseElementStream(fileName, buffered))
         }
-        if (jsonEntries == 0) error("压缩包内没有找到 JSON 聊天记录")
-        return result
     }
 
-    private fun parseText(text: String, fileName: String): List<ImportedChat> {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return emptyList()
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            val root = runCatching { json.parseToJsonElement(trimmed) }.getOrNull()
-            if (root != null) {
-                val chats = fromRoot(root, fileName)
-                if (chats.isNotEmpty()) return chats
+    /** 兼容旧调用：一次性返回全量列表（大文件请改用 [parseStreaming]） */
+    fun parse(fileName: String, bytes: ByteArray): List<ImportedChat> {
+        require(bytes.isNotEmpty()) { "文件为空" }
+        return parseStreaming(fileName, bytes.inputStream()).toList()
+    }
+
+    // ============ 容器 ============
+
+    private fun isZipStream(fileName: String, input: BufferedInputStream): Boolean {
+        if (fileName.endsWith(".zip", ignoreCase = true)) return true
+        input.mark(2)
+        val b0 = input.read()
+        val b1 = input.read()
+        input.reset()
+        return b0 == 'P'.code && b1 == 'K'.code
+    }
+
+    private fun skipBom(input: BufferedInputStream) {
+        input.mark(3)
+        if (input.read() == 0xEF && input.read() == 0xBB && input.read() == 0xBF) return
+        input.reset()
+    }
+
+    /**
+     * 对单个 JSON/JSONL 流逐元素解码：
+     * - 会话样元素（含 messages/mapping 等）直接解析产出；
+     * - 消息样元素先按 conversation_id 分组缓冲，在会话边界或流尾 flush，保留原有分组语义。
+     */
+    private fun parseElementStream(fileName: String, input: InputStream): Sequence<ImportedChat> = sequence {
+        val pending = mutableListOf<JsonObject>()
+        fun flush(): List<ImportedChat> =
+            if (pending.isEmpty()) emptyList()
+            else fromFlatMessages(pending.toList(), fileName).also { pending.clear() }
+
+        for (el in json.decodeToSequence(input, JsonElement.serializer())) {
+            val obj = el as? JsonObject
+            if (obj != null && isMessageLike(obj)) {
+                pending += obj
+            } else {
+                yieldAll(flush())
+                yieldAll(fromRoot(el, fileName))
             }
         }
-        // JSONL：每行一个 JSON（消息或会话）
-        val elements = trimmed.lineSequence()
-            .map { it.trim() }
-            .filter { it.startsWith("{") || it.startsWith("[") }
-            .mapNotNull { line -> runCatching { json.parseToJsonElement(line) }.getOrNull() }
-            .toList()
-        return fromElements(elements, fileName)
+        yieldAll(flush())
     }
 
     private fun fromRoot(root: JsonElement, fileName: String): List<ImportedChat> {
@@ -412,7 +432,4 @@ object DeepSeekChatImporter {
         title.isBlank() || title.trim().lowercase() in setOf(
             "新对话", "未命名对话", "无标题", "new chat", "untitled"
         )
-
-    private fun decode(bytes: ByteArray): String =
-        String(bytes, Charsets.UTF_8).removePrefix("\uFEFF")
 }

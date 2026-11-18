@@ -145,6 +145,9 @@ private const val MAX_TOOL_STEPS = 32
 private const val TOOL_OUTPUT_MAX = 2000
 private const val TOOL_INPUT_MAX = 1000
 
+/** 导入聊天记录时每批落库的会话数：限制峰值内存，避免大导出文件 OOM */
+private const val IMPORT_BATCH_SIZE = 20
+
 data class ChatUiState(
     val currentConvId: String = "",
     /** 当前会话的 bot_id（= 会话 target_id），发送消息时携带 */
@@ -659,34 +662,58 @@ class ChatViewModel(
     fun importDeepSeekChats(uri: android.net.Uri) {
         viewModelScope.launch {
             try {
-                val (fileName, bytes) = withContext(Dispatchers.IO) {
-                    val name = runCatching {
+                val fileName = withContext(Dispatchers.IO) {
+                    runCatching {
                         appContext.contentResolver.query(
                             uri,
                             arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
                             null, null, null
                         )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
-                    }.getOrNull() ?: uri.lastPathSegment.orEmpty()
-                    val data = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    }.getOrNull()
+                } ?: uri.lastPathSegment.orEmpty()
+
+                val agent = ensureDeepSeekAgent()
+                var importedCount = 0
+                var skipped = 0
+                var latest: ConvItem? = null
+
+                // 流式逐会话解析 + 分批落库：峰值内存只保留一批会话，大导出文件不再 OOM
+                withContext(Dispatchers.IO) {
+                    val batch = mutableListOf<ImportConversation>()
+                    suspend fun flushBatch() {
+                        if (batch.isEmpty()) return
+                        val result = localStore.importConversations(agent, batch.toList())
+                        importedCount += result.imported.size
+                        skipped += result.skipped
+                        result.imported.maxByOrNull { it.lastTime }?.let { c ->
+                            val prev = latest
+                            if (prev == null || c.lastTime > prev.lastTime) latest = c
+                        }
+                        batch.clear()
+                    }
+
+                    val input = appContext.contentResolver.openInputStream(uri)
                         ?: error("无法读取所选文件")
-                    name to data
+                    input.use { stream ->
+                        for (chat in DeepSeekChatImporter.parseStreaming(fileName, stream)) {
+                            toImportConversation(chat, agent)?.let { conv ->
+                                batch += conv
+                                if (batch.size >= IMPORT_BATCH_SIZE) flushBatch()
+                            }
+                        }
+                    }
+                    flushBatch()
                 }
-                val chats = withContext(Dispatchers.IO) {
-                    DeepSeekChatImporter.parse(fileName, bytes)
-                }
-                if (chats.isEmpty()) {
+
+                if (importedCount == 0 && skipped == 0) {
                     error("没有解析到可导入的会话，请确认是 DeepSeek 导出的 JSON / ZIP 文件")
                 }
-                val agent = ensureDeepSeekAgent()
-                val conversations = chats.mapNotNull { toImportConversation(it, agent) }
-                if (conversations.isEmpty()) error("没有解析到有效的聊天消息")
-                val result = localStore.importConversations(agent, conversations)
                 _chatImportNotice.value = buildString {
-                    append("已导入 ${result.imported.size} 个会话到「${agent.name}」")
-                    if (result.skipped > 0) append("，跳过 ${result.skipped} 个已导入会话")
+                    append("已导入 $importedCount 个会话到「${agent.name}」")
+                    if (skipped > 0) append("，跳过 $skipped 个已导入会话")
                 }
                 // 打开最近导入的会话，便于立即确认结果
-                result.imported.maxByOrNull { it.lastTime }?.let { openConv(it) }
+                latest?.let { openConv(it) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
