@@ -51,6 +51,7 @@ import com.cjhsy.linkzone.data.ai.buildMemoryTools
 import com.cjhsy.linkzone.data.ai.createLocalTools
 import com.cjhsy.linkzone.data.ai.createSearchTools
 import com.cjhsy.linkzone.data.ai.createSkillTools
+import com.cjhsy.linkzone.data.ai.createSkillWriteTools
 import com.cjhsy.linkzone.data.ai.createConversationTools
 import com.cjhsy.linkzone.data.ai.ConvSummary
 import com.cjhsy.linkzone.data.ai.buildImageGenerateTool
@@ -1875,6 +1876,11 @@ class ChatViewModel(
             }
             addAll(createSearchTools(searchOptions))
             addAll(createSkillTools(agent.enabledSkills, llmRepository.getSkills()))
+            // skill 创作工具：对话中创建/优化本地 skill（对齐 skill-creator 的对话驱动体验）
+            addAll(createSkillWriteTools(
+                getSkills = { llmRepository.getSkills() },
+                upsertSkill = { llmRepository.upsertSkill(it) }
+            ))
             // 本地工具：时间感知/剪贴板/追问/日历/TTS，按智能体开关启用
             addAll(createLocalTools(
                 appContext, agent.localTools, askUserBridge, askPhotoBridge,
