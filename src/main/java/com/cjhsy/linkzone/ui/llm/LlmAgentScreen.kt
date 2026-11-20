@@ -630,6 +630,13 @@ private fun AgentEditor(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
+                OutlinedTextField(
+                    value = if (agent.maxToolSteps == 0) "" else agent.maxToolSteps.toString(),
+                    onValueChange = { v -> viewModel.updateEditing { it.copy(maxToolSteps = v.toIntOrNull() ?: 0) } },
+                    label = { Text("工具调用步数上限（0 = 默认 32）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
                 Text("推理等级", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ReasoningLevel.entries.forEach { level ->

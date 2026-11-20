@@ -88,19 +88,28 @@ private fun buildReadFileTool(backend: WorkspaceBackend): Tool = Tool(
         val full = backend.readText(path)
         val lines = full.lines()
         val totalLines = lines.size
-        val from = (offset - 1).coerceAtMost(totalLines)
-        val to = minOf(from + limit, totalLines)
-        var text = lines.subList(from, to).joinToString("\n")
-        // 单行超长（如压缩 JSON）时按字符截断，避免一次返回过大
-        val hitCharCap = text.length > MAX_READ_CHARS
-        if (hitCharCap) text = text.take(MAX_READ_CHARS)
-        val result = if (to >= totalLines && !hitCharCap) text else buildString {
-            append("[TRUNCATED: showing lines ").append(offset).append('-').append(to)
-                .append(" of ").append(totalLines)
-                .append(" (").append(full.length / 1024).append("KB)")
-            if (hitCharCap) append("; output cut at ").append(MAX_READ_CHARS / 1024).append("KB")
-            append(" — call again with offset=").append(to + 1).append(" to continue]\n")
-            append(text)
+        val result = when {
+            totalLines == 0 -> ""
+            // 明确提示越界，避免模型把空返回误判成「文件为空」而反复重试
+            offset > totalLines ->
+                "[ERROR] offset=$offset is beyond EOF: '$path' has $totalLines lines. " +
+                    "Use offset in 1..$totalLines."
+            else -> {
+                val from = offset - 1
+                val to = minOf(from + limit, totalLines)
+                var text = lines.subList(from, to).joinToString("\n")
+                // 单行超长（如压缩 JSON）时按字符截断，避免一次返回过大
+                val hitCharCap = text.length > MAX_READ_CHARS
+                if (hitCharCap) text = text.take(MAX_READ_CHARS)
+                if (to >= totalLines && !hitCharCap) text else buildString {
+                    append("[TRUNCATED: showing lines ").append(offset).append('-').append(to)
+                        .append(" of ").append(totalLines)
+                        .append(" (").append(full.length / 1024).append("KB)")
+                    if (hitCharCap) append("; output cut at ").append(MAX_READ_CHARS / 1024).append("KB")
+                    append(" — call again with offset=").append(to + 1).append(" to continue]\n")
+                    append(text)
+                }
+            }
         }
         listOf(UIMessagePart.Text(result))
     }

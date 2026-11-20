@@ -2020,9 +2020,10 @@ class ChatViewModel(
 
         try {
             var step = 0
+            val maxToolSteps = agent.maxToolSteps.takeIf { it > 0 }?.coerceAtMost(200) ?: MAX_TOOL_STEPS
             while (true) {
-                if (++step > MAX_TOOL_STEPS) {
-                    _state.value = _state.value.copy(error = "工具调用步数超过 $MAX_TOOL_STEPS，已中止")
+                if (++step > maxToolSteps) {
+                    _state.value = _state.value.copy(error = "工具调用步数超过 $maxToolSteps，已中止")
                     break
                 }
                 val stepStartedAt = System.currentTimeMillis()

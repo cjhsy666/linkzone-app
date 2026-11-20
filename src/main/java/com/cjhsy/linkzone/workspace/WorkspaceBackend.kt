@@ -146,8 +146,7 @@ class LocalWorkspaceBackend(
             require(bytes.size <= TEXT_MAX_BYTES) { "Content too large (>10MB)" }
             val file = resolve(path)
             if (file.exists() && !overwrite) error("File already exists: $path (overwrite=false)")
-            file.parentFile?.mkdirs()
-            file.writeText(text, Charsets.UTF_8)
+            writeAtomic(file, bytes)
             file.length()
         }
 
@@ -165,7 +164,7 @@ class LocalWorkspaceBackend(
         val edit = applyTextEdit(original, oldText, newText, replaceAll)
         val bytes = edit.text.toByteArray(Charsets.UTF_8)
         require(bytes.size <= TEXT_MAX_BYTES) { "Result too large (>10MB)" }
-        file.writeText(edit.text, Charsets.UTF_8)
+        writeAtomic(file, bytes)
         edit.count to file.length()
     }
 
@@ -196,6 +195,23 @@ class LocalWorkspaceBackend(
             )
             WorkspaceExecResult(result.exitCode, result.stdout, result.stderr, result.timedOut)
         }
+
+    /** 原子写入：同目录临时文件 + rename，进程被杀或磁盘写满时不留下半截文件 */
+    private fun writeAtomic(file: File, bytes: ByteArray) {
+        file.parentFile?.mkdirs()
+        val tmp = File(file.parentFile, ".${file.name}.tmp")
+        try {
+            tmp.writeBytes(bytes)
+            if (file.exists() && !file.delete()) error("Failed to replace: ${file.name}")
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            tmp.delete()
+            throw e
+        }
+    }
 
     override suspend fun mkdir(path: String) = withContext(Dispatchers.IO) {
         val dir = resolve(path)

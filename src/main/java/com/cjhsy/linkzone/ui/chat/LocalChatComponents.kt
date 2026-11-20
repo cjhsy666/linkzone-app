@@ -772,6 +772,30 @@ internal fun LocalExtensionSheet(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
+                            Text("工具调用步数上限", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "单轮回复内最多执行多少次工具调用",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        SessionIntField(
+                            label = "",
+                            value = agent.maxToolSteps.takeIf { it > 0 },
+                            placeholder = "默认 32",
+                            modifier = Modifier.width(110.dp),
+                            onChange = { v -> onUpdate { it.copy(maxToolSteps = v ?: 0) } }
+                        )
+                    }
+                }
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
                             Text("立即压缩上下文", style = MaterialTheme.typography.bodyMedium)
                             Text(
                                 "手动总结较早消息为检查点，长对话立即瘦身",

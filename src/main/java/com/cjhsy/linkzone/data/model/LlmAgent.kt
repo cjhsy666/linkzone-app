@@ -28,6 +28,8 @@ data class LlmAgent(
     val reasoningLevel: ReasoningLevel = ReasoningLevel.AUTO,
     /** 上下文消息条数上限，超出后阶梯式截断；0 表示不限制 */
     val contextMessageLimit: Int = 0,
+    /** 单轮回复内工具调用步数上限；0 表示使用默认值（32） */
+    val maxToolSteps: Int = 0,
     val streamOutput: Boolean = true,
     /** 启用的 skill 名称列表（use_skill 工具注入） */
     val enabledSkills: Set<String> = emptySet(),
