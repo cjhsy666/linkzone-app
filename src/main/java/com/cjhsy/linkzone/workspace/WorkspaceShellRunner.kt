@@ -11,6 +11,12 @@ interface WorkspaceShellRunner {
     /** 技能目录在 shell 视角下的路径（PRoot 为 /skills，宿主为 filesDir/skills 绝对路径） */
     val skillsPath: String
 
+    /** 技能目录在宿主文件系统中的实际位置（供本地文件工具直接读写） */
+    val skillsDir: File
+
+    /** shell 中工作区根的可达路径；null 表示用工作区宿主绝对路径即可直接访问 */
+    val workspaceShellPath: String?
+
     fun execute(context: WorkspaceShellContext): WorkspaceCommandResult
 
     companion object {
@@ -60,9 +66,13 @@ data class WorkspaceCommandResult(
  * 工作目录锁定在工作区内。技能目录以绝对路径可达（同 uid）。
  */
 class HostShellRunner(
-    private val skillsDir: File,
+    private val skillsRoot: File,
 ) : WorkspaceShellRunner {
-    override val skillsPath: String get() = skillsDir.absolutePath
+    override val skillsPath: String get() = skillsRoot.absolutePath
+    override val skillsDir: File get() = skillsRoot
+
+    /** 宿主 shell 直接以工作区绝对路径为 cwd，无需路径映射 */
+    override val workspaceShellPath: String? get() = null
 
     override fun execute(context: WorkspaceShellContext): WorkspaceCommandResult {
         val workingDir = context.root.resolve(context.cwd.ifBlank { "." })
@@ -91,10 +101,11 @@ class ProotShellRunner(
     private val prootBinary: File,
     private val loader: File,
     private val rootfs: File,
-    private val skillsDir: File,
+    override val skillsDir: File,
     private val tempDir: File,
 ) : WorkspaceShellRunner {
     override val skillsPath: String = SKILLS_MOUNT
+    override val workspaceShellPath: String = WORKSPACE_MOUNT
 
     override fun execute(context: WorkspaceShellContext): WorkspaceCommandResult {
         val workingDir = context.root.resolve(context.cwd.ifBlank { "." })
@@ -111,7 +122,7 @@ class ProotShellRunner(
             add("-r")
             add(rootfs.absolutePath)
             add("-b")
-            add("${context.root.absolutePath}:/workspace")
+            add("${context.root.absolutePath}:$WORKSPACE_MOUNT")
             add("-b")
             add("${skillsDir.absolutePath}:$SKILLS_MOUNT")
             // 内核文件系统：guest rootfs 里这些目录是空的，必须借宿主
@@ -120,7 +131,7 @@ class ProotShellRunner(
                 add(it)
             }
             add("-w")
-            add("/workspace/${context.cwd.trimStart('/')}")
+            add("$WORKSPACE_MOUNT/${context.cwd.trimStart('/')}")
             add("/usr/bin/env")
             add("-i")
             add("HOME=/root")
@@ -153,6 +164,7 @@ class ProotShellRunner(
 
     companion object {
         const val SKILLS_MOUNT = "/skills"
+        const val WORKSPACE_MOUNT = "/workspace"
         const val GUEST_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     }
 }
@@ -161,9 +173,11 @@ class ProotShellRunner(
 const val MAX_SHELL_OUTPUT_CHARS = 128 * 1024
 
 private fun Process.readResult(timeoutMillis: Long, stdin: ByteArray?): WorkspaceCommandResult {
-    val stdout = StreamCollector(inputStream)
-    val stderr = StreamCollector(errorStream)
-    val stdinWriter = stdin?.let { StreamWriter(outputStream, it) }
+    // 必须在 waitFor 之前启动 drain 线程：否则 stdout/stderr 管道无人读取，
+    // 输出一多（超过管道缓冲区）子进程就会永久阻塞，表现为假超时；短输出则整段丢失。
+    val stdout = StreamCollector(inputStream).apply { start() }
+    val stderr = StreamCollector(errorStream).apply { start() }
+    val stdinWriter = stdin?.let { StreamWriter(outputStream, it).apply { start() } }
     if (stdinWriter == null) {
         // 无 stdin 输入时立即关闭管道，避免 cat 等按 isatty 判断的命令永久阻塞
         try { outputStream.close() } catch (_: IOException) { }
@@ -182,28 +196,26 @@ private fun Process.readResult(timeoutMillis: Long, stdin: ByteArray?): Workspac
 }
 
 private class StreamCollector(private val input: InputStream) : Thread() {
-    private val builder = StringBuilder()
+    // 先按字节累积、最后整体解码：逐块 String(…, UTF_8) 会把跨块的多字节汉字拆坏
+    private val buffer = java.io.ByteArrayOutputStream()
     override fun run() {
-        val buffer = ByteArray(4096)
+        val chunk = ByteArray(4096)
         while (true) {
             val n = try {
-                input.read(buffer)
+                input.read(chunk)
             } catch (_: IOException) {
                 break
             }
             if (n <= 0) break
-            if (builder.length < MAX_SHELL_OUTPUT_CHARS) {
-                val available = MAX_SHELL_OUTPUT_CHARS - builder.length
-                val text = String(buffer, 0, n, Charsets.UTF_8)
-                builder.append(text.take(available))
-            }
+            val room = MAX_SHELL_OUTPUT_CHARS - buffer.size()
+            if (room > 0) buffer.write(chunk, 0, minOf(n, room))
         }
     }
 
     fun toString(charset: Charset): String {
         runCatching { join(500) }
-        var text = builder.toString()
-        if (text.length >= MAX_SHELL_OUTPUT_CHARS) {
+        var text = String(buffer.toByteArray(), charset)
+        if (buffer.size() >= MAX_SHELL_OUTPUT_CHARS) {
             text += "\n... [output truncated]"
         }
         return text

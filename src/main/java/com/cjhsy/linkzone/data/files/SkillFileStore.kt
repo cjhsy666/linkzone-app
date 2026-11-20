@@ -94,9 +94,16 @@ class SkillFileStore(context: Context) {
             ?: previousDirName?.let { rootDir.resolve(it) }?.takeIf { it.isDirectory }
         val targetDir = if (existing != null && existing.name != desired) {
             val dest = rootDir.resolve(desired)
-            if (dest.exists()) dest.deleteRecursively()
-            if (!existing.renameTo(dest)) return null
-            dest
+            if (dest.exists()) {
+                // 目标名已有目录（历史遗留/重复安装）：保留目标目录，删掉旧副本后全量覆盖写入，
+                // 避免旧副本反向覆盖目标内容
+                existing.deleteRecursively()
+                dest
+            } else if (existing.renameTo(dest)) {
+                dest
+            } else {
+                return null
+            }
         } else {
             rootDir.resolve(desired).apply { mkdirs() }
         }
@@ -143,6 +150,13 @@ class SkillFileStore(context: Context) {
                 if (f.startsWithShebang()) f.setExecutable(true, false)
             }
             cleanEmptyDirectories(targetDir)
+            // 7) 清理同一技能的残留副本（旧版本曾以 name-<id8> 形式并存，会污染 shell /skills 与索引）
+            rootDir.listFiles { f -> f.isDirectory && f != targetDir }?.forEach { sibling ->
+                val owner = runCatching {
+                    sibling.resolve(ID_MARKER).takeIf { it.isFile }?.readText()?.trim()
+                }.getOrNull()
+                if (owner == skill.id) sibling.deleteRecursively()
+            }
             desired
         } catch (_: Exception) {
             null
@@ -180,7 +194,9 @@ class SkillFileStore(context: Context) {
             val owner = runCatching {
                 dir.resolve(ID_MARKER).takeIf { it.isFile }?.readText()?.trim()
             }.getOrNull()
-            if (!dir.exists() || owner == skillId) return candidate
+            // 无 id 标记的旧目录按同名认领，避免升级后产生 name-<hash> 平行副本；
+            // 有标记且属于其他 id 时才追加后缀消歧。
+            if (!dir.exists() || owner == skillId || owner.isNullOrBlank()) return candidate
             attempt++
             candidate = if (attempt == 1) "$base-${skillId.take(8)}" else "$base-${skillId.take(8)}-$attempt"
         }

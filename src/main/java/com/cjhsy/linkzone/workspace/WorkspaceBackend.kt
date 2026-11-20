@@ -34,6 +34,8 @@ interface WorkspaceBackend {
     val name: String
     /** 展示用根路径：本地为绝对路径，SSH 为 host:port · workDir */
     val rootLabel: String
+    /** shell 中工作区根的实际可达路径（PRoot 为 /workspace，宿主/SSH 为真实绝对路径） */
+    val shellWorkspacePath: String
     /** shell 单次执行超时上限（毫秒） */
     val maxTimeoutMs: Long
     /** 写文件/改文件/执行命令是否需要用户批准（本地与 SSH 均开启，RikkaHub 式调用前确认） */
@@ -61,6 +63,8 @@ interface WorkspaceBackend {
 }
 
 internal const val TEXT_MAX_BYTES = 10 * 1024 * 1024 // 单次读写 10MB 上限
+/** 技能目录在文件工具中的虚拟前缀（本地后端），与 shell 内 /skills 保持一致 */
+internal const val SKILLS_PREFIX = "/skills"
 internal const val DOWNLOAD_MAX_BYTES = 200L * 1024 * 1024 // 下载到本机单文件 200MB 上限
 
 internal val BINARY_EXTENSIONS = setOf(
@@ -87,13 +91,28 @@ class LocalWorkspaceBackend(
     override val id: String get() = workspace.id
     override val name: String get() = workspace.name
     override val rootLabel: String get() = workspace.root.absolutePath
+    override val shellWorkspacePath: String get() = runner.workspaceShellPath ?: workspace.root.absolutePath
     override val maxTimeoutMs: Long = 120_000L
     override val requiresApproval: Boolean = true
     override val skillsPath: String get() = runner.skillsPath
     override val supportsTerminal: Boolean = true
 
     private fun resolve(rawPath: String): File {
-        val safe = rawPath.trim().removePrefix("/")
+        val raw = rawPath.trim()
+        // /skills 虚拟前缀：映射到应用技能目录，使文件工具可直接读写技能脚本，
+        // 与 shell 中的 /skills 视角保持一致。工作区内若已有同名 skills 目录则沿用旧行为。
+        if ((raw == SKILLS_PREFIX || raw.startsWith("$SKILLS_PREFIX/")) &&
+            !File(workspace.root, SKILLS_PREFIX.trimStart('/')).exists()
+        ) {
+            val skillsRoot = runner.skillsDir.canonicalFile
+            val rel = raw.removePrefix(SKILLS_PREFIX).trimStart('/')
+            val target = File(skillsRoot, rel).canonicalFile
+            if (target.path != skillsRoot.path && !target.path.startsWith(skillsRoot.path + File.separator)) {
+                error("Path '$rawPath' is outside the skills directory")
+            }
+            return target
+        }
+        val safe = raw.removePrefix("/")
         val rootCanonical = workspace.root.canonicalPath
         val target = File(workspace.root, safe).canonicalFile
         if (!target.path.startsWith(rootCanonical + File.separator) && target.path != rootCanonical) {
@@ -239,6 +258,7 @@ class SshWorkspaceBackend(
     override val id: String get() = config.id
     override val name: String get() = config.name.ifBlank { config.summary }
     override val rootLabel: String get() = "${config.summary} · ${config.workDir}"
+    override val shellWorkspacePath: String get() = config.workDir
     override val maxTimeoutMs: Long = 600_000L
     override val requiresApproval: Boolean = true
     override val skillsPath: String? = null

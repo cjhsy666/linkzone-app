@@ -165,8 +165,14 @@ class LlmExtensionViewModel(
                 } ?: throw IllegalArgumentException("包内未找到 SKILL.md")
                 val parsed = LlmSkill.fromContent(pkg.skillMd)
                     ?: throw IllegalArgumentException("SKILL.md frontmatter 缺少 name 或 description")
+                // 同名技能视为「更新」而非「新装」：复用原 id，避免导入两次产生 name-<hash> 平行副本
+                val existing = llmRepository.getSkills().firstOrNull { it.name == parsed.name }
                 llmRepository.upsertSkill(
-                    parsed.copy(files = pkg.files),
+                    parsed.copy(
+                        id = existing?.id ?: parsed.id,
+                        createdAt = existing?.createdAt ?: parsed.createdAt,
+                        files = pkg.files,
+                    ),
                     binaryFiles = pkg.binaryFiles
                 )
                 _state.value = _state.value.copy(error = null)

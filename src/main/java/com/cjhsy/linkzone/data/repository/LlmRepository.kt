@@ -166,7 +166,9 @@ class LlmRepository(
             )
             candidate.takeIf { it.isDirectory }
         }
-        val onDisk = dir?.let { skillStore.read(it.name) } ?: return this
+        // 磁盘缺失时不再沿用 DB 里的旧 files：那些路径读不到，
+        // 会表现为 use_skill 索引列出「不存在于磁盘」的文件。
+        val onDisk = dir?.let { skillStore.read(it.name) } ?: return copy(files = emptyMap())
         return copy(content = onDisk.skillMd, files = onDisk.files)
     }
 

@@ -56,6 +56,7 @@ private fun buildReadFileTool(backend: WorkspaceBackend): Tool = Tool(
     description = """
         Read a UTF-8 text file inside the workspace '${backend.name}' (${backend.rootLabel}).
         Paths are relative to the workspace root (e.g. "src/main.py"). Max 10MB per file.
+        ${if (backend.skillsPath != null) "Paths starting with /skills/ access installed skill files (e.g. /skills/my-skill/scripts/x.py)." else ""}
         Returns at most $MAX_READ_LINES lines / ${MAX_READ_CHARS / 1024}KB per call. When the file is longer,
         a [TRUNCATED …] header is prepended — call again with offset to continue reading.
         offset: 1-based line number to start from, default 1. limit: max lines to return, default $MAX_READ_LINES.
@@ -110,6 +111,7 @@ private fun buildWriteFileTool(backend: WorkspaceBackend): Tool = Tool(
     description = """
         Write UTF-8 text to a file inside the workspace '${backend.name}' (${backend.rootLabel}),
         creating parent directories. Overwrites existing files by default; set overwrite=false to refuse.
+        ${if (backend.skillsPath != null) "Paths starting with /skills/ write into installed skill directories." else ""}
     """.trimIndent().replace("\n", " "),
     needsApproval = { backend.requiresApproval },
     parameters = {
@@ -152,6 +154,7 @@ private fun buildEditFileTool(backend: WorkspaceBackend): Tool = Tool(
         Replace an exact fragment of a UTF-8 text file in the workspace '${backend.name}' (${backend.rootLabel}).
         Provide old_text (must be unique unless replace_all=true) and new_text.
         Whitespace-tolerant line matching is used as a fallback. Prefer this over write_file when changing part of a file.
+        ${if (backend.skillsPath != null) "Paths starting with /skills/ edit installed skill files without shell escaping." else ""}
     """.trimIndent().replace("\n", " "),
     needsApproval = { backend.requiresApproval },
     parameters = {
@@ -203,8 +206,9 @@ private fun buildShellTool(backend: WorkspaceBackend): Tool {
             if (names.isEmpty()) "" else """
 
                 **Skill scripts**: Installed skill packages are available at '$path/<skill-name>/'
-                with SKILL.md and bundled scripts/references. You may read them and execute their scripts,
-                but treat this directory as READ-ONLY: never create, modify, or delete files there.
+                with SKILL.md and bundled scripts/references. You may read them and execute their scripts.
+                When the user asks to fix or customize a skill, edit its files with workspace_edit_file /
+                workspace_write_file using '/skills/<skill-name>/...' paths; never delete a skill directory.
                 Available skills: ${names.joinToString(", ")}
             """.trimIndent()
         }.getOrDefault("")
@@ -214,8 +218,12 @@ private fun buildShellTool(backend: WorkspaceBackend): Tool {
     return Tool(
         name = "workspace_shell",
         description = """
-        Run a shell command in the workspace '${backend.name}' (${backend.rootLabel}) and return its output.
-        Working directory is the workspace root. Long output keeps the first and last
+        Run a shell command in the workspace '${backend.name}' and return its output.
+        Working directory is the workspace root, which the shell sees at '${backend.shellWorkspacePath}'.
+        ${if (backend.shellWorkspacePath != backend.rootLabel)
+            "Host absolute paths such as '${backend.rootLabel}' are NOT accessible inside this shell; use '${backend.shellWorkspacePath}' instead."
+        else ""}
+        Long output keeps the first and last
         ${SHELL_HEAD_CHARS / 1024}KB with the middle marked as omitted.
         Default timeout 30s; raise timeout (milliseconds) up to ${maxSeconds * 1000} for long-running commands.
         Interactive commands are not supported.
